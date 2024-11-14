@@ -60,6 +60,12 @@ jobs:
       - name: Verify zrok installation
         run: zrok version 
 
+      - name: Configure zrok
+        run: |
+          mkdir -p ~/.zrok
+          echo '{"apiEndpoint": "https://api.zrok.io"}' > ~/.zrok/config.json
+          echo "zrok configuration has been set."
+
       - name: enable zrok
         run: zrok enable ${{ secrets.ZROK_TOKEN }}
           
