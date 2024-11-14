@@ -1,53 +1,53 @@
-name: Dev Branch EC2 deploy
-on:
-  push:
-    branches:
-      - dev
+# name: Dev Branch EC2 deploy
+# on:
+#   push:
+#     branches:
+#       - dev
 
-jobs:
-  build:
-    # runs-on: ubuntu-latest
-    runs-on: self-hosted
-    steps:
-      - name: Checkout dev
-        uses: actions/checkout@v4
+# jobs:
+#   build:
+#     # runs-on: ubuntu-latest
+#     runs-on: self-hosted
+#     steps:
+#       - name: Checkout dev
+#         uses: actions/checkout@v4
     
-      - name: Set up Python
-        uses: actions/setup-python@v2
-        with:
-          python-version: '3.x'          
+#       - name: Set up Python
+#         uses: actions/setup-python@v2
+#         with:
+#           python-version: '3.x'          
           
-      - name: Verify zrok installation and Connect to LocalStack EC2 via zrok
-        env:
-          ZROK_URL: ${{ secrets.ZROK_URL }}
-        run: |
-          PATH=~/bin:$PATH
-          zrok version 
-          zrok access private $ZROK_URL &
-          sleep 5  # Wait for the connection to establish
+#       - name: Verify zrok installation and Connect to LocalStack EC2 via zrok
+#         env:
+#           ZROK_URL: ${{ secrets.ZROK_URL }}
+#         run: |
+#           PATH=~/bin:$PATH
+#           zrok version 
+#           zrok access private $ZROK_URL &
+#           sleep 5  # Wait for the connection to establish
 
-      - name: Set up SSH
-        env:
-          SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          echo "$SSH_KEY" | tr -d '\r' > ~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
+#       - name: Set up SSH
+#         env:
+#           SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+#         run: |
+#           mkdir -p ~/.ssh
+#           echo "$SSH_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+#           chmod 600 ~/.ssh/id_rsa
   
-      - name: Connect and Run Docker Commands on EC2
-        env:
-          EC2_USER: ec2-user  # 사용자명
-          EC2_HOST: your_ec2_public_ip  # 공용 IP 주소
-        run: |
-          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa $EC2_USER@$EC2_HOST << 'EOF'
-            # sudo 설치
-            if ! command -v sudo &> /dev/null; then
-              apt update && apt install -y sudo
-            fi
-            # 명령어 실행
-            sudo docker rm -f $(sudo docker ps -qa)
-            sudo docker pull wonjun0120/nebula-ai
-            sudo docker-compose up -d
-            sudo docker image prune -f
-          EOF
+#       - name: Connect and Run Docker Commands on EC2
+#         env:
+#           EC2_USER: ec2-user  # 사용자명
+#           EC2_HOST: your_ec2_public_ip  # 공용 IP 주소
+#         run: |
+#           ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa $EC2_USER@$EC2_HOST << 'EOF'
+#             # sudo 설치
+#             if ! command -v sudo &> /dev/null; then
+#               apt update && apt install -y sudo
+#             fi
+#             # 명령어 실행
+#             sudo docker rm -f $(sudo docker ps -qa)
+#             sudo docker pull wonjun0120/nebula-ai
+#             sudo docker-compose up -d
+#             sudo docker image prune -f
+#           EOF
       
