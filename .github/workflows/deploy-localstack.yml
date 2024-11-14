@@ -21,6 +21,25 @@ jobs:
           echo "$EC2_SSH_KEY" > ec2_key.pem
           chmod 400 ec2_key.pem
           ssh -i ec2_key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST '
+            # Docker 설치
+            sudo apt-get update
+            sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common
+            curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+            sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable"
+            sudo apt-get update
+            sudo apt-get install -y docker-ce docker-ce-cli containerd.io
+  
+            # Docker 서비스 시작 및 활성화
+            sudo systemctl start docker
+            sudo systemctl enable docker
+  
+            # 현재 사용자를 docker 그룹에 추가 (선택사항)
+            sudo usermod -aG docker $USER
+  
+            # Docker 버전 확인
+            docker --version
+
             docker pull your-docker-image:latest
             docker run -d your-docker-image:latest
           '
+          
