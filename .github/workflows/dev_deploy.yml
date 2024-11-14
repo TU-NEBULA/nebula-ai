@@ -16,59 +16,11 @@ jobs:
         uses: actions/setup-python@v2
         with:
           python-version: '3.x'
-
-      - name: Docker image build and push
-        uses: docker/build-push-action@v1
-        with:
-          username: ${{ secrets.DOCKER_ID }}
-          password: ${{ secrets.DOCKER_PW }}
-          repository: wonjun0120/nebula-ai
-          tags: latest
         
-      - name: Install jq
-        run: sudo apt-get update && sudo apt-get install -y jq
-
-      - name: Install zrok
-        run: |
-          if ! command -v zrok &> /dev/null; then
-            echo "zrok not found, proceeding with installation."
-            cd $(mktemp -d)
-            
-            # Get latest ZROK version
-            ZROK_VERSION=$(
-              curl -sSf https://api.github.com/repos/openziti/zrok/releases/latest \
-              | jq -r '.tag_name'
-            )
-
-            # Determine architecture
-            case $(uname -m) in
-              x86_64)         GOXARCH=amd64 ;;
-              aarch64|arm64)  GOXARCH=arm64 ;;
-              arm*)           GOXARCH=armv7 ;;
-              *)              echo "ERROR: unknown arch '$(uname -m)'" >&2; exit 1 ;;
-            esac
-
-            # Download and install zrok
-            curl -sSfL \
-              "https://github.com/openziti/zrok/releases/download/${ZROK_VERSION}/zrok_${ZROK_VERSION#v}_linux_${GOXARCH}.tar.gz" \
-              | tar -xz -f -
-
-            sudo install -o root -g root ./zrok /usr/local/bin/
-          else
-            echo "zrok is already installed, skipping installation."
-          fi
-
       - name: Verify zrok installation
-        run: zrok version 
-
-      - name: Configure zrok
         run: |
-          mkdir -p ~/.zrok
-          echo '{"apiEndpoint": "https://api.zrok.io"}' > ~/.zrok/config.json
-          echo "zrok configuration has been set."
-
-      - name: enable zrok
-        run: zrok enable ${{ secrets.ZROK_TOKEN }}
+          PATH=~/bin:$PATH
+          zrok version 
           
       - name: Connect to LocalStack EC2 via zrok
         env:
