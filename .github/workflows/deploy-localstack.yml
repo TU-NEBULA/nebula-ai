@@ -5,8 +5,7 @@ on:
     types:
       - completed
 jobs:
-  build:
-    # runs-on: ubuntu-latest
+  on-success:
     runs-on: self-hosted
     steps:
       - name: Checkout dev
