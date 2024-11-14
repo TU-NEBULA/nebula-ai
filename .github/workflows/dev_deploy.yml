@@ -15,17 +15,14 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
-          python-version: '3.x'
-        
-      - name: Verify zrok installation
-        run: |
-          PATH=~/bin:$PATH
-          zrok version 
+          python-version: '3.x'          
           
-      - name: Connect to LocalStack EC2 via zrok
+      - name: Verify zrok installation and Connect to LocalStack EC2 via zrok
         env:
           ZROK_URL: ${{ secrets.ZROK_URL }}
         run: |
+          PATH=~/bin:$PATH
+          zrok version 
           zrok access private $ZROK_URL &
           sleep 5  # Wait for the connection to establish
 
