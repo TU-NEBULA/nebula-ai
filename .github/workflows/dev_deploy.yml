@@ -53,7 +53,10 @@ jobs:
           sudo install -o root -g root ./zrok /usr/local/bin/
 
       - name: Verify zrok installation
-        run: zrok version
+        run: zrok version ${{ secrets.ZROK_TOKEN }}
+
+      - name: enable zrok
+        run: zrok enable 
           
       - name: Connect to LocalStack EC2 via zrok
         env:
