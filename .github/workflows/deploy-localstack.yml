@@ -1,4 +1,4 @@
-name: Dev Branch EC2 deploy
+name: Dev Branch LocalStack EC2 deploy
 on:
   push:
     branches:
@@ -37,14 +37,14 @@ jobs:
             # Docker 서비스 시작 및 활성화
             sudo systemctl start docker
             sudo systemctl enable docker
-  
-            # 현재 사용자를 docker 그룹에 추가 (선택사항)
-            sudo usermod -aG docker $USER
-  
+    
             # Docker 버전 확인
             docker --version
 
-            docker pull your-docker-image:latest
-            docker run -d your-docker-image:latest
+            # 명령어 실행
+            sudo docker rm -f $(sudo docker ps -qa)
+            sudo docker pull wonjun0120/nebula-ai
+            sudo docker-compose up -d
+            sudo docker image prune -f
           '
           
