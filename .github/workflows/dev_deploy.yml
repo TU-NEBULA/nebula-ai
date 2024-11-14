@@ -58,10 +58,10 @@ jobs:
           fi
 
       - name: Verify zrok installation
-        run: zrok version ${{ secrets.ZROK_TOKEN }}
+        run: zrok version 
 
       - name: enable zrok
-        run: zrok enable 
+        run: zrok enable ${{ secrets.ZROK_TOKEN }}
           
       - name: Connect to LocalStack EC2 via zrok
         env:
