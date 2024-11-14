@@ -60,14 +60,12 @@ jobs:
         run: |
           scp -o StrictHostKeyChecking=no -i ec2_key.pem docker-compose.yml ${EC2_USER}@${EC2_HOST}:~/
 
-      - name: Connect to EC2 and install docker 
+      - name: pull docker and run server
         env:
           EC2_HOST: ${{ secrets.EC2_HOST }}
           EC2_USER: ${{ secrets.EC2_USERNAME }}
           EC2_SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
         run: |
-          echo "$EC2_SSH_KEY" > ec2_key.pem
-          chmod 400 ec2_key.pem
           ssh -i ec2_key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST '
             # 명령어 실행
             sudo docker rm -f $(sudo docker compose ps -qa)
