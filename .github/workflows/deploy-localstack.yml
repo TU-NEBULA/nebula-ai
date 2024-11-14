@@ -1,9 +1,9 @@
 name: Dev Branch LocalStack EC2 deploy
 on:
-  push:
-    branches:
-      - dev
-
+  workflow_run:
+    workflows: ["Docker Build"]
+    types:
+      - completed
 jobs:
   build:
     # runs-on: ubuntu-latest
