@@ -1,0 +1,59 @@
+name: Dev Branch EC2 deploy
+on:
+  push:
+    branches:
+      - dev
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout dev
+        uses: actions/checkout@dev
+
+      - uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+
+      - name: Docker image build and push
+        uses: docker/build-push-action@v1
+        with:
+          username: ${{ secrets.DOCKER_ID }}
+          password: ${{ secrets.DOCKER_PW }}
+          repository: wonjun0120/nebula-ai
+          tags: latest
+          
+      - name: Connect to LocalStack EC2 via zrok
+        env:
+          ZROK_URL: ${{ secrets.ZROK_URL }}
+        run: |
+          zrok access private $ZROK_URL &
+          sleep 5  # Wait for the connection to establish
+
+      - name: Run SSH commands
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          echo "$SSH_PRIVATE_KEY" > nebula-key.pem
+          chmod 400 key.pem
+          ssh -o StrictHostKeyChecking=no -i key.pem root@127.0.0.1 -p 9191 'echo "Connected to LocalStack EC2"'
+
+
+      - name: Deploy to test, localstack
+        uses: appleboy/ssh-action@v0.1.6
+        id: deploy-localstack
+        if: contains(github.ref, 'dev')
+        with:
+          host: ${{ secrets.EC2_HOST}}
+          username: ${{ secrets.EC2_USERNAME }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: 22
+          envs: GITHUB_SHA
+          script: |
+            sudo docker rm -f $(docker ps -qa)
+            sudo docker pull wonjun0120/nebula-ai
+            docker-compose up -d
+            docker image prune -f
