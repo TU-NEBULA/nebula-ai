@@ -8,9 +8,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout dev
-        uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
@@ -24,21 +21,46 @@ jobs:
           repository: wonjun0120/nebula-ai
           tags: latest
           
+      - name: Checkout dev
+        uses: actions/checkout@v4
+        
+      - name: Install jq
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install zrok
+        run: |
+          cd $(mktemp -d)
+          
+          # Get latest ZROK version
+          ZROK_VERSION=$(
+            curl -sSf https://api.github.com/repos/openziti/zrok/releases/latest \
+            | jq -r '.tag_name'
+          )
+
+          # Determine architecture
+          case $(uname -m) in
+            x86_64)         GOXARCH=amd64 ;;
+            aarch64|arm64)  GOXARCH=arm64 ;;
+            arm*)           GOXARCH=armv7 ;;
+            *)              echo "ERROR: unknown arch '$(uname -m)'" >&2; exit 1 ;;
+          esac
+
+          # Download and install zrok
+          curl -sSfL \
+            "https://github.com/openziti/zrok/releases/download/${ZROK_VERSION}/zrok_${ZROK_VERSION#v}_linux_${GOXARCH}.tar.gz" \
+            | tar -xz -f -
+
+          sudo install -o root -g root ./zrok /usr/local/bin/
+
+      - name: Verify zrok installation
+        run: zrok version
+          
       - name: Connect to LocalStack EC2 via zrok
         env:
           ZROK_URL: ${{ secrets.ZROK_URL }}
         run: |
           zrok access private $ZROK_URL &
           sleep 5  # Wait for the connection to establish
-
-      # - name: Run SSH commands
-      #   env:
-      #     SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-      #   run: |
-      #     echo "$SSH_PRIVATE_KEY" > nebula-key.pem
-      #     chmod 400 nebula-key.pem
-      #     ssh -o StrictHostKeyChecking=no -i nebula-key.pem root@127.0.0.1 -p 9191 'echo "Connected to LocalStack EC2"'
-
 
       - name: Deploy to test, localstack
         uses: appleboy/ssh-action@v0.1.6
