@@ -21,6 +21,11 @@ jobs:
           echo "$EC2_SSH_KEY" > ec2_key.pem
           chmod 400 ec2_key.pem
           ssh -i ec2_key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST '
+            # sudo 설치
+            if ! command -v sudo &> /dev/null; then
+              apt update && apt install -y sudo
+            fi
+            
             # Docker 설치
             sudo apt-get update
             sudo apt-get install -y apt-transport-https ca-certificates curl software-properties-common
