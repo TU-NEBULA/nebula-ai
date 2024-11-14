@@ -31,13 +31,13 @@ jobs:
           zrok access private $ZROK_URL &
           sleep 5  # Wait for the connection to establish
 
-      - name: Run SSH commands
-        env:
-          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-        run: |
-          echo "$SSH_PRIVATE_KEY" > nebula-key.pem
-          chmod 400 key.pem
-          ssh -o StrictHostKeyChecking=no -i key.pem root@127.0.0.1 -p 9191 'echo "Connected to LocalStack EC2"'
+      # - name: Run SSH commands
+      #   env:
+      #     SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+      #   run: |
+      #     echo "$SSH_PRIVATE_KEY" > nebula-key.pem
+      #     chmod 400 nebula-key.pem
+      #     ssh -o StrictHostKeyChecking=no -i nebula-key.pem root@127.0.0.1 -p 9191 'echo "Connected to LocalStack EC2"'
 
 
       - name: Deploy to test, localstack
