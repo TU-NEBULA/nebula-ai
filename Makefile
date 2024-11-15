@@ -13,3 +13,10 @@ start:
 .PHONY: stop
 stop: 
 	docker-compose down
+
+.PHONY: build
+build:
+	docker-compose build --no-cache
+
+.PHONY: restart
+restart: stop build start

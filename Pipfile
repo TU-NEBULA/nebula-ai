@@ -8,6 +8,7 @@ fastapi = "*"
 uvicorn = "*"
 requests = "*"
 beautifulsoup4 = "*"
+yake = "*"
 
 [dev-packages]
 
