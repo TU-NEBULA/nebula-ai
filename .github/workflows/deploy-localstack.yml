@@ -1,0 +1,75 @@
+name: Dev Branch LocalStack EC2 deploy
+on:
+  workflow_run:
+    workflows: ["Docker Build"]
+    types:
+      - completed
+jobs:
+  on-success:
+    runs-on: self-hosted
+    steps:
+      - name: Checkout dev
+        uses: actions/checkout@v4
+    
+      - name: Connect to EC2 and install docker 
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USERNAME }}
+          EC2_SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          echo "$EC2_SSH_KEY" > ec2_key.pem
+          chmod 400 ec2_key.pem
+          ssh -i ec2_key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST '
+            # sudo 설치
+            if ! command -v sudo &> /dev/null; then
+              apt update && apt install -y sudo
+            fi
+            
+            # Docker 설치
+            sudo apt-get update
+            sudo apt-get install ca-certificates curl
+            sudo install -m 0755 -d /etc/apt/keyrings
+            sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+            sudo chmod a+r /etc/apt/keyrings/docker.asc
+            
+            # Add the repository to Apt sources:
+            echo \
+              "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+              $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+              sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+            sudo apt-get update
+            
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  
+            # Docker 서비스 시작 및 활성화
+            sudo systemctl start docker
+            sudo systemctl enable docker
+    
+            # Docker 버전 확인
+            docker --version
+            docker compose version
+          '
+            
+          
+      - name: Copy docker-compose file to EC2
+        env:
+          EC2_SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USERNAME }}
+        run: |
+          scp -o StrictHostKeyChecking=no -i ec2_key.pem docker-compose.yml ${EC2_USER}@${EC2_HOST}:~/
+
+      - name: pull docker and run server
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USERNAME }}
+          EC2_SSH_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+        run: |
+          ssh -i ec2_key.pem -o StrictHostKeyChecking=no $EC2_USER@$EC2_HOST '
+            # 명령어 실행
+            sudo docker rm -f $(sudo docker compose ps -qa)
+            sudo docker pull wonjun0120/nebula-ai
+            sudo docker compose up -d
+            sudo docker image prune -f
+          '
+          
