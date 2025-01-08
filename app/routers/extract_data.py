@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
-from app.models.keyword_extractor import DataInputs
-from app.services.keyword_extractor import extract_data_from_html
+from app.models.extract_data import DataInputs
+from app.services.extract_data import extract_data_from_html
 
 import requests
 
@@ -12,12 +12,18 @@ async def extract_data(data_input: DataInputs):
         url = data_input.url
         html_content = data_input.html_content
 
+        print(f"URL: {url}")
+        print(f"HTML Content: {html_content}")
+
         if html_content == "":
             response = requests.get(url)    
             response.raise_for_status()
             html_content = response.text
 
         data = extract_data_from_html(html_content)
+
+        from pprint import pprint
+        pprint(data)
 
         return {
             "thubmnail": data.get("thumbnail", ""),

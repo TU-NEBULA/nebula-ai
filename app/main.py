@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from app.routers import extract_data
 from fastapi.middleware.cors import CORSMiddleware
+from app.middlewares.headers_middleware import HeadersMiddleware
 
 app = FastAPI()
 
@@ -12,6 +13,8 @@ app.add_middleware(
     allow_methods=["*"],  # 모든 HTTP 메서드 허용
     allow_headers=["*"],  # 모든 헤더 허용
 )
+
+app.add_middleware(HeadersMiddleware)
 
 app.include_router(extract_data.router, prefix="/api", tags=["extract data"])
 
