@@ -13,9 +13,9 @@ def extract_keywords_from_url(url: str):
         text = soup.get_text()
         
         language = "ko"  # 한국어 기준 (영어도 함께 처리 가능)
-        max_ngram_size = 2  # 1-gram과 2-gram 고려
+        max_ngram_size = 2 
         deduplication_threshold = 0.9
-        num_of_keywords = 10
+        num_of_keywords = 3
 
         kw_extractor = yake.KeywordExtractor(
             lan=language, 
