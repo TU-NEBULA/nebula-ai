@@ -1,16 +1,22 @@
-import requests
 from bs4 import BeautifulSoup
 from fastapi import HTTPException
 import yake
 
-def extract_keywords_from_url(url: str):
+def extract_data_from_html(html_content: str):
     try:
-        response = requests.get(url)
-        response.raise_for_status()
-        html_content = response.text
-
         soup = BeautifulSoup(html_content, 'html.parser')
         text = soup.get_text()
+        
+        # 썸네일 추출 
+        og_image = soup.find('meta', property='og:image')
+        twitter_image = soup.find('meta', attrs={'name': 'twitter:image'})
+        
+        if og_image and og_image.get('content'):
+            thumbnail = og_image['content']
+        elif twitter_image and twitter_image.get('content'):
+            thumbnail = twitter_image['content']
+        else:
+            thumbnail = "basetumbnail.jpg" # todo: 기본 썸네일 이미지
         
         language = "ko"  # 한국어 기준 (영어도 함께 처리 가능)
         max_ngram_size = 2 
@@ -27,11 +33,10 @@ def extract_keywords_from_url(url: str):
         keywords = kw_extractor.extract_keywords(text)
 
         return {
-            "keywords": [{"keyword": kw, "score": score} for kw, score in keywords]
+            "thumbnail": thumbnail,
+            "keywords": [kw for kw, score in keywords]
         }
-
-    except requests.RequestException as e:
-        raise HTTPException(status_code=400, detail=f"Error fetching URL: {str(e)}")
     
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+    
