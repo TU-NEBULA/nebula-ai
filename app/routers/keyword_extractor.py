@@ -21,7 +21,6 @@ async def extract_data(data_input: DataInputs):
 
         return {
             "thubmnail": data.get("thumbnail", ""),
-            "title": data.get("title", ""),
             "url": data_input.url,
             "keywords": data.get("keywords", [])
         }
