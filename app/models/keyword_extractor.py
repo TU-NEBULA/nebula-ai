@@ -1,4 +1,5 @@
 from pydantic import BaseModel, HttpUrl
 
-class UrlInput(BaseModel):
+class DataInputs(BaseModel):
     url: HttpUrl
+    html_content: str = None
