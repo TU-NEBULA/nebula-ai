@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 from app.routers import extract_data
 from fastapi.middleware.cors import CORSMiddleware
 from app.middlewares.headers_middleware import HeadersMiddleware
