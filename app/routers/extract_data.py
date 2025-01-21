@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from app.models.extract_data import DataInputs
 from app.services.extract_data import extract_data_from_html
+from app.common.response.base_response import success_response, error_response
 
 import requests
 
@@ -25,11 +26,13 @@ async def extract_data(data_input: DataInputs):
         from pprint import pprint
         pprint(data)
 
-        return {
-            "thubmnail": data.get("thumbnail", ""),
+        return_data = {
+            "thumbnail": data.get("thumbnail", ""),
             "url": data_input.url,
             "keywords": data.get("keywords", [])
         }
-    
+
+        return success_response(data=return_data)
+        
     except requests.RequestException as e:
-        raise HTTPException(status_code=400, detail=f"Error fetching URL: {str(e)}")
+        return error_response(code=500, message=f"An error occurred: {str(e)}")
