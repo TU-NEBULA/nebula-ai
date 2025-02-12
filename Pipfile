@@ -9,6 +9,10 @@ uvicorn = "*"
 requests = "*"
 beautifulsoup4 = "*"
 yake = "*"
+rake-nltk = "*"
+konlpy = "*"
+neo4j = "*"
+python-dotenv = "*"
 
 [dev-packages]
 
