@@ -1,6 +1,8 @@
-from fastapi import FastAPI, File, UploadFile
-from app.routers import extract_data
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# 라우터 추가
+from app.routers import extract_data, embedding_router
 from app.middlewares.headers_middleware import HeadersMiddleware
 
 app = FastAPI()
@@ -14,9 +16,12 @@ app.add_middleware(
     allow_headers=["*"],  # 모든 헤더 허용
 )
 
+# 커스텀 미들웨어 추가
 app.add_middleware(HeadersMiddleware)
 
+# 라우터 등록
 app.include_router(extract_data.router, prefix="/api", tags=["extract data"])
+app.include_router(embedding_router.router, prefix="/api", tags=["embedding"])
 
 @app.get("/")
 async def root():

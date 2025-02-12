@@ -13,6 +13,9 @@ rake-nltk = "*"
 konlpy = "*"
 neo4j = "*"
 python-dotenv = "*"
+torch = "*"
+transformers = "*"
+python-multipart = "*"
 
 [dev-packages]
 
