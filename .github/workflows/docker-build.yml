@@ -16,6 +16,10 @@ jobs:
         with:
           python-version: '3.x'  
 
+      - name: Create .env file
+        run: |
+          echo "${{ secrets.DEV_ENV_FILE }}" > .env
+
       - name: Docker image build and push
         uses: docker/build-push-action@v1
         with:
