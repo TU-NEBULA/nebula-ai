@@ -10,7 +10,7 @@ model = AutoModel.from_pretrained(MODEL_NAME, cache_dir=CACHE_DIR)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
 
-def get_embedding(text: str):
+def get_embedding(text: str) -> list:
     """입력된 HTML 문자열을 임베딩 변환"""
     formatted_text = f"query: {text}"
     inputs = tokenizer(formatted_text, return_tensors="pt", padding=True, truncation=True)
