@@ -17,6 +17,7 @@ torch = "*"
 transformers = "*"
 python-multipart = "*"
 boto3 = "*"
+scikit-learn = "*"
 
 [dev-packages]
 

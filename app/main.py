@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 # 라우터 추가
-from app.routers import embedding, extract_data
+from app.routers import embedding
 from app.middlewares.headers_middleware import HeadersMiddleware
 
 app = FastAPI()
@@ -20,7 +20,6 @@ app.add_middleware(
 app.add_middleware(HeadersMiddleware)
 
 # 라우터 등록
-app.include_router(extract_data.router, prefix="/api", tags=["extract data"])
 app.include_router(embedding.router, prefix="/api", tags=["embedding"])
 
 @app.get("/")
