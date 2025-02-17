@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException
-from app.models.extract_data import DataInputs
+from app.schemas.extract_data import DataInputs
 from app.services.extract_data import extract_data_from_html
 from app.common.response.base_response import success_response, error_response
 
