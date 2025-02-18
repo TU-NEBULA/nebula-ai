@@ -1,5 +1,7 @@
-from transformers import AutoTokenizer, AutoModel
 import torch
+import numpy as np
+
+from transformers import AutoTokenizer, AutoModel
 
 MODEL_NAME = "intfloat/multilingual-e5-large-instruct"
 CACHE_DIR = "./models"
@@ -10,14 +12,16 @@ model = AutoModel.from_pretrained(MODEL_NAME, cache_dir=CACHE_DIR)
 device = "cuda" if torch.cuda.is_available() else "cpu"
 model.to(device)
 
-def get_embedding(text: str):
-    """입력된 HTML 문자열을 임베딩 변환"""
-    formatted_text = f"query: {text}"
-    inputs = tokenizer(formatted_text, return_tensors="pt", padding=True, truncation=True)
-    inputs = {key: value.to(device) for key, value in inputs.items()}
+def get_embedding(text: str, prefix="passage: ") -> np.ndarray:
+    """
+    E5 모델을 사용해 단일 문자열의 임베딩을 구하여 (hidden_size,) 형태의 넘파이 배열로 반환.
+    """
+    prompt_text = f"{prefix}{text}"
+    inputs = tokenizer(prompt_text, return_tensors="pt", truncation=True)
+    inputs = {k: v.to(device) for k, v in inputs.items()}
 
     with torch.no_grad():
         outputs = model(**inputs)
 
-    embedding = outputs.last_hidden_state[:, 0, :].cpu().numpy()
-    return embedding.tolist()
+    cls_embedding = outputs.last_hidden_state[:, 0, :]
+    return cls_embedding.squeeze(0).cpu().numpy()

@@ -1,42 +1,24 @@
 from bs4 import BeautifulSoup
-from fastapi import HTTPException
-import yake
+from app.core.embedding_model import get_embedding
+from app.external.s3_service import download_html_from_s3
+from app.utils.text_processing import extract_main_text, extract_keywords_tfidf
 
-def extract_data_from_html(html_content: str):
-    try:
-        soup = BeautifulSoup(html_content, 'html.parser')
-        text = soup.get_text()
-        
-        # 썸네일 추출 
-        og_image = soup.find('meta', property='og:image')
-        twitter_image = soup.find('meta', attrs={'name': 'twitter:image'})
-        
-        if og_image and og_image.get('content'):
-            thumbnail = og_image['content']
-        elif twitter_image and twitter_image.get('content'):
-            thumbnail = twitter_image['content']
-        else:
-            thumbnail = "basetumbnail.jpg" # todo: 기본 썸네일 이미지
-        
-        language = "ko"  # 한국어 기준 (영어도 함께 처리 가능)
-        max_ngram_size = 2 
-        deduplication_threshold = 0.9
-        num_of_keywords = 3
+def extract_data_from_s3(id: str, s3_key: str):
+    """s3 키를 입력받아 HTML에서 데이터 추출"""
+    html_content = download_html_from_s3(s3_key)
 
-        kw_extractor = yake.KeywordExtractor(
-            lan=language, 
-            n=max_ngram_size, 
-            dedupLim=deduplication_threshold, 
-            top=num_of_keywords, 
-            features=None
-        )
-        keywords = kw_extractor.extract_keywords(text)
-
-        return {
-            "thumbnail": thumbnail,
-            "keywords": [kw for kw, score in keywords]
-        }
+    soup = BeautifulSoup(html_content, 'html.parser')
+    og_image = soup.find('meta', property='og:image')
     
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+    if og_image and og_image.get('content'):
+        thumbnail = og_image['content']
+    else:
+        thumbnail = "basetumbnail.jpg" # todo: 기본 썸네일 이미지
+
+    main_text = extract_main_text(html_content)
+    keywords = extract_keywords_tfidf(main_text)
     
+    return {
+        "image_url": thumbnail,
+        "keywords": keywords
+    }
