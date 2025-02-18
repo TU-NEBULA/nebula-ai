@@ -25,3 +25,8 @@ app.include_router(embedding.router, prefix="/api", tags=["embedding"])
 @app.get("/")
 async def root():
     return {"message": "Hello World"}
+
+
+# todo
+# todo 1: 키워드 추출 다시 확인
+# todo 2: 임베딩 시간 줄이기 -> 키워드, 사진 추출 이후 트리거, 임베딩 진행
