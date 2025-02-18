@@ -5,7 +5,6 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from konlpy.tag import Okt
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
-from keybert import KeyBERT
 
 
 def extract_main_text(html: str) -> str:
@@ -88,9 +87,6 @@ def extract_keywords_tfidf(text, top_n=3) -> list:
 
     keywords = [(word, score) for word, score in zip(vectorizer.get_feature_names_out(), scores)]
     keywords = sorted(keywords, key=lambda x: x[1], reverse=True)
-    
-    import pprint
-    pprint.pprint(keywords)
     
     return [word for word, score in keywords[:top_n]]
 
