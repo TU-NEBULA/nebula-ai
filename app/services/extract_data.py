@@ -1,5 +1,4 @@
 from bs4 import BeautifulSoup
-from app.core.embedding_model import get_embedding
 from app.external.s3_service import download_html_from_s3
 from app.utils.text_processing import extract_main_text, extract_keywords_tfidf
 

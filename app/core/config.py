@@ -1,16 +1,20 @@
 import os
 from dotenv import load_dotenv
+from pydantic_settings import BaseSettings
 
 load_dotenv()
+class Settings(BaseSettings):
+    HUGGINGFACEHUB_API_TOKEN: str
+    MODEL_NAME: str
+    CACHE_DIR: str
+    AWS_ACCESS_KEY_ID: str
+    AWS_SECRET_KEY_ID: str
+    REGION: str
+    BUCKET_NAME: str
+    CHROMA_DB_URI: str
 
-class Settings:
-    NEO4J_URI: str = os.getenv("NEO4J_URI")
-    NEO4J_USER: str = os.getenv("NEO4J_USER")
-    NEO4J_PASSWORD: str = os.getenv("NEO4J_PASSWORD")
-    HUGGINGFACEHUB_API_TOKEN: str = os.getenv("HUGGINGFACEHUB_API_TOKEN")
-    AWS_ACCESS_KEY_ID: str = os.getenv("AWS_ACCESS_KEY_ID")
-    AWS_SECRET_KEY_ID: str = os.getenv("AWS_SECRET_KEY_ID")
-    REGION: str = os.getenv("REGION")
-    BUCKET_NAME: str = os.getenv("BUCKET_NAME")
+    class Config:
+        env_file = ".env"
 
 settings = Settings()
+    

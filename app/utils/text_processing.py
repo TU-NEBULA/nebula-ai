@@ -10,23 +10,24 @@ from nltk.corpus import stopwords
 def extract_main_text(html: str) -> str:
     """
     BeautifulSoup으로 HTML을 파싱하여 본문 텍스트를 최대한 깔끔하게 추출.
-    여기서는 <div>, <article>, <section> 태그 기준으로 텍스트를 모음.
+    <div>, <article>, <section> 태그 기준으로 텍스트를 모음.
     """
     soup = BeautifulSoup(html, "html.parser")
-    
+
     # 본문 내용을 포함할 가능성이 높은 태그들
-    # print(soup.text)
     content_tags = soup.find_all(['div', 'article', 'section'])
     texts = []
-    
+
     for tag in content_tags:
-        text = tag.get_text(strip=True)
+        text = tag.get_text(separator=" ", strip=True)  # 태그 사이 공백 유지
         if text:
             texts.append(text)
-    
+
     main_text = "\n".join(texts)
+
     main_text = re.sub(r'[^\w\s]', '', main_text)  # 특수문자 제거
     main_text = re.sub(r'\s+', ' ', main_text).strip()  # 다중 공백 제거
+
     return main_text
 
 
@@ -81,7 +82,11 @@ def remove_stopwords(tokens, language='en'):
 
 
 def extract_keywords_tfidf(text, top_n=3) -> list:
-    vectorizer = TfidfVectorizer(tokenizer=tokenize, token_pattern=None)
+    vectorizer = TfidfVectorizer(
+        tokenizer=tokenize, 
+        token_pattern=None,
+        ngram_range=(1, 2)
+    )
     tfidf_matrix = vectorizer.fit_transform([text])
     scores = tfidf_matrix.toarray()[0]
 
