@@ -182,4 +182,8 @@ pyrightconfig.json
 # Hugging Face Transformers
 models/*
 
+# Chroma db files
+chroma/*
+chroma_db/*
+
 # End of https://www.toptal.com/developers/gitignore/api/python

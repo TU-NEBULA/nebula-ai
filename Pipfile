@@ -18,6 +18,9 @@ transformers = "*"
 python-multipart = "*"
 boto3 = "*"
 scikit-learn = "*"
+langchain = "*"
+pydantic-settings = "*"
+chromadb = "*"
 
 [dev-packages]
 
