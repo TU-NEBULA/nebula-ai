@@ -8,7 +8,9 @@ RUN apt-get update && apt-get install -y \
     libffi-dev \
     && rm -rf /var/lib/apt/lists/*
 
-RUN pip install --no-cache-dir pipenv
+RUN pip install --no-cache-dir --upgrade pip pipenv
+
+RUN pipenv --python /usr/local/bin/python3.11
 
 COPY Pipfile Pipfile.lock ./
 
@@ -20,4 +22,4 @@ COPY .env /app/.env
 
 EXPOSE 8000
 
-CMD ["python", "app.py"]
+CMD ["pipenv", "run", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
