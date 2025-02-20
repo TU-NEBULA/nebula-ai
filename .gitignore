@@ -186,4 +186,7 @@ models/*
 chroma/*
 chroma_db/*
 
+# Mac
+.DS_Store
+
 # End of https://www.toptal.com/developers/gitignore/api/python
