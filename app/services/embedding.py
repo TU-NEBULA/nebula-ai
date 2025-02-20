@@ -34,7 +34,8 @@ def save_html_to_chroma_db(id: str, user_id: str, s3_key: str):
         metas.append({
             "user_id": user_id,
             "doc_id": id,
-            "chunk_index": i
+            "chunk_index": i,
+            "s3_key": s3_key
         })
         # 예: "문서ID_chunk_순번"
         chunk_id = f"{id}_chunk_{i}"
