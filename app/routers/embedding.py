@@ -8,8 +8,9 @@ router = APIRouter()
 @router.post("/embed", response_model=EmbedResponse)
 def embeddging(request: EmbedRequest):
     """Neo4j id와 S3 키를 입력받아 S3에 있는 HTML 문자열 임베딩 변환"""    
-    embeddging_res = save_html_to_chroma_db(request.id, request.user_id ,request.s3_key)
+    simmilar_ids = save_html_to_chroma_db(request.id, request.user_id ,request.s3_key)
 
     return EmbedResponse(
         id=request.id,
+        simmilar_ids=simmilar_ids
     )
