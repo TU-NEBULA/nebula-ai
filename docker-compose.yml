@@ -16,6 +16,8 @@ services:
       - redis
     env_file:
       - .env
+    volumes:
+      - chroma_data:/app/chroma_db 
 
   rabbitmq:
     image: rabbitmq:3-management
@@ -48,6 +50,8 @@ services:
       - redis
     env_file:
       - .env
+    volumes:
+      - chroma_data:/app/chroma_db 
 
   flower:
     image: mher/flower
@@ -61,6 +65,6 @@ services:
     ports:
       - "5555:5555"
 
-
 volumes:
   rabbitmq_data:
+  chroma_data:
