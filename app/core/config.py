@@ -14,6 +14,9 @@ class Settings(BaseSettings):
     CHROMA_DB_URI: str
     RABBITMQ_HOST: str
     RABBITMQ_QUEUE: str
+    REDIS_HOST: str
+    REDIS_PORT: int
+    REDIS_DB: int
 
     class Config:
         env_file = ".env"

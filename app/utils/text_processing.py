@@ -1,4 +1,5 @@
 import re
+import os
 import numpy as np
 from bs4 import BeautifulSoup
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -14,19 +15,18 @@ def extract_main_text(html: str) -> str:
     """
     soup = BeautifulSoup(html, "html.parser")
 
-    # 본문 내용을 포함할 가능성이 높은 태그들
     content_tags = soup.find_all(['div', 'article', 'section'])
     texts = []
 
     for tag in content_tags:
-        text = tag.get_text(separator=" ", strip=True)  # 태그 사이 공백 유지
+        text = tag.get_text(separator=" ", strip=True)
         if text:
             texts.append(text)
 
     main_text = "\n".join(texts)
 
-    main_text = re.sub(r'[^\w\s]', '', main_text)  # 특수문자 제거
-    main_text = re.sub(r'\s+', ' ', main_text).strip()  # 다중 공백 제거
+    main_text = re.sub(r'[^\w\s]', '', main_text)
+    main_text = re.sub(r'\s+', ' ', main_text).strip()
 
     return main_text
 
@@ -35,10 +35,8 @@ def split_sentences(text: str) -> list:
     """
     간단히 정규식으로 마침표, 느낌표, 물음표 뒤에서 분리.
     """
-    # (?<=[.!?]) 뒤에 공백 또는 문장 끝이 오면 분리
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
-    sentences = [s.strip() for s in sentences if s.strip()]
-    return sentences
+    return [s.strip() for s in sentences if s.strip()]
 
 
 def tokenize(text):
@@ -54,12 +52,13 @@ def tokenize(text):
     return korean_tokens + english_tokens
 
 
-
-def load_korean_stopwords(file_path='/Users/choiwonjun/nebula/nebula-ai/app/utils/ko_stopwords.txt'
-                          , tokenizer=None):
+def load_korean_stopwords(file_name='ko_stopwords.txt', tokenizer=None):
     """
     한국어 불용어 리스트를 파일에서 불러오는 함수.
     """
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(current_dir, file_name)
+
     with open(file_path, 'r', encoding='utf-8') as f:
         stop_words = f.read().splitlines()
     
@@ -94,4 +93,3 @@ def extract_keywords_tfidf(text, top_n=3) -> list:
     keywords = sorted(keywords, key=lambda x: x[1], reverse=True)
     
     return [word for word, score in keywords[:top_n]]
-

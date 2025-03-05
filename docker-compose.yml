@@ -11,24 +11,56 @@ services:
     command: pipenv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
-    volumes:
-      - chroma:/app/chroma
     depends_on:
       - rabbitmq
+      - redis
+    env_file:
+      - .env
 
   rabbitmq:
     image: rabbitmq:3-management
     container_name: rabbitmq
     restart: always
     ports:
-      - "5672:5672"     
-      - "15672:15672"   
+      - "5672:5672"
+      - "15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
 
+  redis:
+    image: redis:alpine
+    container_name: redis
+    restart: always
+    ports:
+      - "6379:6379"
+
+  celery_worker:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    container_name: celery_worker
+    command: pipenv run celery -A app.core.celery_worker worker --loglevel=info -Q embedding
+    depends_on:
+      - rabbitmq
+      - redis
+    env_file:
+      - .env
+
+  flower:
+    image: mher/flower
+    container_name: flower
+    restart: always
+    environment:
+      - FLOWER_PORT=5555
+      - CELERY_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
+    depends_on:
+      - rabbitmq
+    ports:
+      - "5555:5555"
+
+
 volumes:
-  chroma:
   rabbitmq_data:
