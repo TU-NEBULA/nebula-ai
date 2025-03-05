@@ -12,6 +12,8 @@ class Settings(BaseSettings):
     REGION: str
     BUCKET_NAME: str
     CHROMA_DB_URI: str
+    RABBITMQ_HOST: str
+    RABBITMQ_QUEUE: str
 
     class Config:
         env_file = ".env"

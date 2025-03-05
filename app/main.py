@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import embedding
 from app.routers import extract_data
+
 from app.middlewares.headers_middleware import HeadersMiddleware
 
 async def lifespan(app: FastAPI):
