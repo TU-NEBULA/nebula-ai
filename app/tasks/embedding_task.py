@@ -50,5 +50,8 @@ def embed_bookmark(bookmark_id: str, user_id: str, s3_key: str):
             metadatas=metas
         )
         print(f"[DONE] Bookmark {bookmark_id} 임베딩 완료")
+        return {"bookmark_id": bookmark_id, "user_id": user_id}
+    
     except Exception as e:
         print(f"[ERROR] Bookmark {bookmark_id} 처리 실패: {e}")
+        raise e

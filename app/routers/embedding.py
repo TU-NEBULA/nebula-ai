@@ -1,24 +1,24 @@
 from fastapi import APIRouter
-from datetime import datetime
-from app.schemas.embed_response import EmbedResponse
 from app.schemas.embed_request import EmbedRequest
 from app.tasks.embedding_task import embed_bookmark
+from app.tasks.similarity_task import calculate_similarity
+from celery import chain
 
 router = APIRouter()
 
-@router.post("/embed", response_model=EmbedResponse)
-def embeddging(request: EmbedRequest):
-    """북마크 임베딩 작업을 Celery로 비동기 트리거"""
-    
-    task = embed_bookmark.delay(
-        bookmark_id=request.id,
-        user_id=request.user_id,
-        s3_key=request.s3_key
+@router.post("/embed")
+def embed_bookmark_api(request: EmbedRequest):
+    """
+    북마크 임베딩 후 유사도 검사까지 순차 실행
+    """
+    workflow = chain(
+        embed_bookmark.s(request.id, request.user_id, request.s3_key),
+        calculate_similarity.s()
     )
 
-    return EmbedResponse(
-        id=request.id,
-        status="queued",
-        message="임베딩 작업이 Celery에 등록되었습니다.",
-        task_id=task.id
-    )
+    result = workflow.apply_async()
+
+    return {
+        "status": "started",
+        "task_id": result.id  
+    }
