@@ -26,7 +26,7 @@ def calculate_similarity(data):
 
         similar_results = collection.query(
             query_embeddings=[query_embedding],
-            n_results=10, 
+            n_results=50,
             where={"user_id": user_id},
             include=["distances", "metadatas"]
         )
@@ -37,7 +37,7 @@ def calculate_similarity(data):
         filtered_results = [
             {"doc_id": meta["doc_id"], "distance": distance}
             for meta, distance in zip(all_metadatas, all_distances)
-            if meta["doc_id"] != bookmark_id
+            if meta["doc_id"] != bookmark_id and distance <= 0.5
         ]
 
 
