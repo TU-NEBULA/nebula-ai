@@ -1,16 +1,24 @@
 from fastapi import APIRouter
-from app.services.embedding import save_html_to_chroma_db
-from app.schemas.embed_response import EmbedResponse
 from app.schemas.embed_request import EmbedRequest
+from app.tasks.embedding_task import embed_bookmark
+from app.tasks.similarity_task import calculate_similarity
+from celery import chain
 
 router = APIRouter()
 
-@router.post("/embed", response_model=EmbedResponse)
-def embeddging(request: EmbedRequest):
-    """Neo4j id와 S3 키를 입력받아 S3에 있는 HTML 문자열 임베딩 변환"""    
-    simmilar_ids = save_html_to_chroma_db(request.id, request.user_id ,request.s3_key)
-
-    return EmbedResponse(
-        id=request.id,
-        simmilar_ids=simmilar_ids
+@router.post("/embed")
+def embed_bookmark_api(request: EmbedRequest):
+    """
+    북마크 임베딩 후 유사도 검사까지 순차 실행
+    """
+    workflow = chain(
+        embed_bookmark.s(request.id, request.user_id, request.s3_key),
+        calculate_similarity.s()
     )
+
+    result = workflow.apply_async()
+
+    return {
+        "status": "started",
+        "task_id": result.id  
+    }

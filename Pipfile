@@ -21,6 +21,9 @@ scikit-learn = "*"
 langchain = "*"
 pydantic-settings = "*"
 chromadb = "*"
+pika = "*"
+celery = "*"
+redis = "*"
 
 [dev-packages]
 
