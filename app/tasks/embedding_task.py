@@ -5,8 +5,15 @@ from app.external.s3_service import download_html_from_s3
 from app.utils.text_processing import extract_main_text
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 
-@celery.task(name="app.tasks.embedding_task.embed_bookmark")
-def embed_bookmark(bookmark_id: str, user_id: str, s3_key: str):
+@celery.task(
+    name="app.tasks.embedding_task.embed_bookmark",
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_kwargs={'max_retries': 3, 'countdown': 60},
+    retry_backoff=True,
+    retry_jitter=True,
+)
+def embed_bookmark(self, bookmark_id: str, user_id: str, s3_key: str):
     print(f"[START] Bookmark {bookmark_id} 임베딩 시작")
     try:
         html_content = download_html_from_s3(s3_key)
@@ -51,7 +58,7 @@ def embed_bookmark(bookmark_id: str, user_id: str, s3_key: str):
         )
         print(f"[DONE] Bookmark {bookmark_id} 임베딩 완료")
         return {"bookmark_id": bookmark_id, "user_id": user_id}
-    
+
     except Exception as e:
         print(f"[ERROR] Bookmark {bookmark_id} 처리 실패: {e}")
-        raise e
+        raise self.retry(exc=e)

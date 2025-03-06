@@ -2,11 +2,19 @@ from app.core.celery_worker import celery
 from app.core.embedding_model import EmbeddingModel
 from app.core.chroma_db import ChromaDBClient
 
-@celery.task(name="app.tasks.similarity_task.calculate_similarity")
-def calculate_similarity(data):
+@celery.task(
+    name="app.tasks.similarity_task.calculate_similarity",
+    bind=True,  # self로 태스크 인스턴스 접근 가능
+    autoretry_for=(Exception,),  # 예외 발생 시 자동 재시도
+    retry_kwargs={'max_retries': 3, 'countdown': 60},  # 최대 3회, 60초 간격 재시도
+    retry_backoff=True,  # 재시도 간격 증가
+    retry_jitter=True,  # 랜덤 지연 추가
+)
+def calculate_similarity(self, data):
     bookmark_id = data["bookmark_id"]
     user_id = data["user_id"]
     print(f"[START] Similarity check for bookmark {bookmark_id}")
+    
     try:
         chroma_db = ChromaDBClient()
         collection = chroma_db.get_or_create_collection()
@@ -40,7 +48,6 @@ def calculate_similarity(data):
             if meta["doc_id"] != bookmark_id and distance <= 0.5
         ]
 
-
         print(f"[DONE] Similarity check for bookmark {bookmark_id}")
         return {
             "bookmark_id": bookmark_id,
@@ -49,4 +56,4 @@ def calculate_similarity(data):
 
     except Exception as e:
         print(f"[ERROR] Similarity check failed: {e}")
-        return {"status": "failed", "error": str(e)}
+        raise self.retry(exc=e)
