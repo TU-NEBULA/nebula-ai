@@ -2,11 +2,8 @@ version: '3.8'
 
 services:
   fastapi:
-    image: nebula-fastapi
+    image: wonjun0120/nebula-ai:latest 
     container_name: fastapi-dev
-    build:
-      context: .
-      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     env_file:
