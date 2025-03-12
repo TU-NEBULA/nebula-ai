@@ -1,0 +1,29 @@
+name: CI Test
+on:
+  push:
+    branches:
+      - test
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout dev
+        uses: actions/checkout@v4
+    
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'  
+
+      - name: Create .env file
+        run: |
+          echo "${{ secrets.DEV_ENV_FILE }}" > .env
+
+      - name: Docker image build and push
+        uses: docker/build-push-action@v1
+        with:
+          username: ${{ secrets.DOCKER_ID }}
+          password: ${{ secrets.DOCKER_PW }}
+          repository: wonjun0120/nebula-ai
+          tags: latest
