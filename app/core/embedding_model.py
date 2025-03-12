@@ -1,9 +1,7 @@
 import torch
 import numpy as np
 from transformers import AutoTokenizer, AutoModel
-
 from app.core.config import settings
-
 
 
 class EmbeddingModel:
@@ -11,7 +9,7 @@ class EmbeddingModel:
     CACHE_DIR = settings.CACHE_DIR
 
     def __init__(self, model_name: str = MODEL_NAME, cache_dir: str = CACHE_DIR):
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
         self.model = AutoModel.from_pretrained(model_name, cache_dir=cache_dir)
         self.model.to(self.device)
