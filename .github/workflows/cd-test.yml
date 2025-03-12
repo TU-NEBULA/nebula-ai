@@ -29,7 +29,7 @@ jobs:
         ssh -o StrictHostKeyChecking=no -i private_key.pem ubuntu@${{ secrets.DEV_FASTAPI_IP }} << EOF
           cd /home/ubuntu/
           git pull origin dev
-          docker-compose -f docker-compose.fastapi.dev.yml up -d --build
+          docker compose -f docker-compose.fastapi.dev.yml up -d --build
         EOF
 
     - name: Deploy Celery to AWS
@@ -37,7 +37,7 @@ jobs:
         ssh -o StrictHostKeyChecking=no -i private_key.pem ubuntu@${{ secrets.DEV_CELERY_IP }} << EOF
           cd /home/ubuntu/
           git pull origin dev
-          docker-compose -f docker-compose.celery.dev.yml up -d --build
+          docker compose -f docker-compose.celery.dev.yml up -d --build
         EOF
 
     - name: Deploy ChromaDB to AWS
@@ -45,5 +45,5 @@ jobs:
         ssh -o StrictHostKeyChecking=no -i private_key.pem ubuntu@${{ secrets.DEV_CHROMA_IP }} << EOF
           cd /home/ubuntu/
           git pull origin dev
-          docker-compose -f docker-compose.chroma.dev.yml up -d --build
+          docker compose -f docker-compose.chroma.dev.yml up -d --build
         EOF
