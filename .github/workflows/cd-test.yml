@@ -15,35 +15,40 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Create .env File
-      run: |
-        echo "${{ secrets.DEV_ENV_FILE }}" > .env
-
     - name: Set up SSH Key
       run: |
         echo "${{ secrets.AWS_SSH_KEY }}" > private_key.pem
         chmod 600 private_key.pem
 
+    - name: Copy Docker Compose Files to FastAPI Server
+      run: |
+        scp -o StrictHostKeyChecking=no -i private_key.pem docker-compose.fastapi.dev.yml ubuntu@${{ secrets.DEV_FASTAPI_IP }}:/home/ubuntu/docker-compose.yml
+        scp -o StrictHostKeyChecking=no -i private_key.pem .env ubuntu@${{ secrets.DEV_FASTAPI_IP }}:/home/ubuntu/.env
+
     - name: Deploy FastAPI to AWS
       run: |
         ssh -o StrictHostKeyChecking=no -i private_key.pem ubuntu@${{ secrets.DEV_FASTAPI_IP }} << EOF
-          cd /home/ubuntu/
-          git pull origin dev
-          docker compose -f docker-compose.fastapi.dev.yml up -d --build
+          docker compose -f /home/ubuntu/docker-compose.yml up -d --build
         EOF
+
+    - name: Copy Docker Compose Files to Celery Server
+      run: |
+        scp -o StrictHostKeyChecking=no -i private_key.pem docker-compose.celery.dev.yml ubuntu@${{ secrets.DEV_CELERY_IP }}:/home/ubuntu/docker-compose.yml
+        scp -o StrictHostKeyChecking=no -i private_key.pem .env ubuntu@${{ secrets.DEV_CELERY_IP }}:/home/ubuntu/.env
 
     - name: Deploy Celery to AWS
       run: |
         ssh -o StrictHostKeyChecking=no -i private_key.pem ubuntu@${{ secrets.DEV_CELERY_IP }} << EOF
-          cd /home/ubuntu/
-          git pull origin dev
-          docker compose -f docker-compose.celery.dev.yml up -d --build
+          docker compose -f /home/ubuntu/docker-compose.yml up -d --build
         EOF
+
+    - name: Copy Docker Compose Files to ChromaDB Server
+      run: |
+        scp -o StrictHostKeyChecking=no -i private_key.pem docker-compose.chroma.dev.yml ubuntu@${{ secrets.DEV_CHROMA_IP }}:/home/ubuntu/docker-compose.yml
+        scp -o StrictHostKeyChecking=no -i private_key.pem .env ubuntu@${{ secrets.DEV_CHROMA_IP }}:/home/ubuntu/.env
 
     - name: Deploy ChromaDB to AWS
       run: |
         ssh -o StrictHostKeyChecking=no -i private_key.pem ubuntu@${{ secrets.DEV_CHROMA_IP }} << EOF
-          cd /home/ubuntu/
-          git pull origin dev
-          docker compose -f docker-compose.chroma.dev.yml up -d --build
+          docker compose -f /home/ubuntu/docker-compose.yml up -d --build
         EOF
