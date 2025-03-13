@@ -3,10 +3,12 @@ import os
 import numpy as np
 from bs4 import BeautifulSoup
 from sklearn.feature_extraction.text import TfidfVectorizer
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from konlpy.tag import Okt
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 
+from app.core.chroma_db import ChromaDBClient
 
 def extract_main_text(html: str) -> str:
     """
@@ -80,16 +82,57 @@ def remove_stopwords(tokens, language='en'):
     return [token for token in tokens if token not in stop_words]
 
 
-def extract_keywords_tfidf(text, top_n=3) -> list:
+
+def extract_keywords_tfidf(user_id: str, text: str, top_n=5) -> list:
+    """
+    문서를 RecursiveCharacterTextSplitter를 활용해 분할 후, TF-IDF 기반 키워드를 추출.
+    또한 사용자의 ChromaDB 키워드 정보를 반영하여 가중치를 적용함.
+    """
+    chroma_db = ChromaDBClient()
+    collection = chroma_db.get_or_create_collection("user_keyword_embeddings")
+
+    # ChromaDB에서 사용자의 키워드 및 가중치 가져오기
+    user_keywords_data = collection.get(
+        where={"user_id": user_id},
+        include=["documents", "metadatas"]
+    )
+
+    user_keywords = user_keywords_data.get("documents", [])  # 사용자 키워드 리스트
+    user_keyword_weights = {
+        data["keyword"]: data["weight"] for data in user_keywords_data.get("metadatas", [])
+    }
+
+    # 문서 분할: RecursiveCharacterTextSplitter 활용
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=500,
+        chunk_overlap=50,
+        length_function=len,
+        separators=["\n\n", "\n", " ", ""]
+    )
+    
+    chunks = text_splitter.split_text(text)
+    
+    # TF-IDF 벡터화 (청크 단위)
     vectorizer = TfidfVectorizer(
-        tokenizer=tokenize, 
+        tokenizer=tokenize,
         token_pattern=None,
         ngram_range=(1, 2)
     )
-    tfidf_matrix = vectorizer.fit_transform([text])
-    scores = tfidf_matrix.toarray()[0]
-
-    keywords = [(word, score) for word, score in zip(vectorizer.get_feature_names_out(), scores)]
-    keywords = sorted(keywords, key=lambda x: x[1], reverse=True)
     
-    return [word for word, score in keywords[:top_n]]
+    tfidf_matrix = vectorizer.fit_transform(chunks)
+    scores = np.mean(tfidf_matrix.toarray(), axis=0)  # 각 청크의 TF-IDF 평균값 계산
+
+    extracted_keywords = [(word, score) for word, score in zip(vectorizer.get_feature_names_out(), scores)]
+
+    # ChromaDB에서 가져온 사용자의 키워드 가중치 반영
+    weighted_keywords = []
+    for word, score in extracted_keywords:
+        weight = user_keyword_weights.get(word, 1.0)  # 사용자의 키워드 가중치 적용
+        if word in user_keywords:
+            weight *= 1.5  # 사용자가 자주 사용한 키워드는 추가 가중치 적용
+        weighted_keywords.append((word, score * weight))
+
+    # 가중치를 반영한 정렬 후 상위 n개 선택
+    weighted_keywords = sorted(weighted_keywords, key=lambda x: x[1], reverse=True)
+    
+    return [word for word, score in weighted_keywords[:top_n]]
