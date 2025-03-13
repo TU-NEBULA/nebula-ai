@@ -20,3 +20,7 @@ build:
 
 .PHONY: restart
 restart: stop build start
+
+.PHONY: test
+test:
+	pytest tests --disable-warnings -v
