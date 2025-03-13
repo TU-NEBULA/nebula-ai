@@ -24,6 +24,7 @@ chromadb = "*"
 pika = "*"
 celery = "*"
 redis = "*"
+pytest = "*"
 
 [dev-packages]
 
