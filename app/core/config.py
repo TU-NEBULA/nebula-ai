@@ -4,7 +4,8 @@ from pydantic_settings import BaseSettings
 
 load_dotenv()
 class Settings(BaseSettings):
-    HUGGINGFACEHUB_API_TOKEN: str
+    HF_API_TOKEN: str
+    USE_HF_API: bool
     MODEL_NAME: str
     CACHE_DIR: str
     AWS_ACCESS_KEY_ID: str
@@ -17,6 +18,9 @@ class Settings(BaseSettings):
     REDIS_HOST: str
     REDIS_PORT: int
     REDIS_DB: int
+    NEO4J_URI: str
+    NEO4J_USER: str
+    NEO4J_PASSWORD: str
 
     class Config:
         env_file = ".env"
