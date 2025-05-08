@@ -83,56 +83,78 @@ def remove_stopwords(tokens, language='en'):
 
 
 
-def extract_keywords_tfidf(user_id: str, text: str, top_n=5) -> list:
+def extract_keywords_tfidf(user_id: str, text: str, s3_key:str, top_n=3) -> list:
     """
     문서를 RecursiveCharacterTextSplitter를 활용해 분할 후, TF-IDF 기반 키워드를 추출.
     또한 사용자의 ChromaDB 키워드 정보를 반영하여 가중치를 적용함.
+    빈 입력이나 에러 발생 시 빈 리스트 반환.
     """
+    # 1) 빈 입력 예외 처리
+    if not text or not text.strip():
+        print("입력 텍스트가 비어있습니다.")
+        print(f"s3_key: {s3_key}")
+        return []
+
     chroma_db = ChromaDBClient()
     collection = chroma_db.get_or_create_collection("user_keyword_embeddings")
 
-    # ChromaDB에서 사용자의 키워드 및 가중치 가져오기
-    user_keywords_data = collection.get(
+    # 2) 사용자 기존 키워드/가중치 조회
+    user_data = collection.get(
         where={"user_id": user_id},
         include=["documents", "metadatas"]
     )
-
-    user_keywords = user_keywords_data.get("documents", [])  # 사용자 키워드 리스트
+    user_keywords = user_data.get("documents", [])
     user_keyword_weights = {
-        data["keyword"]: data["weight"] for data in user_keywords_data.get("metadatas", [])
+        meta["keyword"]: meta["weight"]
+        for meta in user_data.get("metadatas", [])
     }
 
-    # 문서 분할: RecursiveCharacterTextSplitter 활용
+    # 3) 문서 분할
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
         chunk_overlap=50,
         length_function=len,
         separators=["\n\n", "\n", " ", ""]
     )
-    
     chunks = text_splitter.split_text(text)
-    
-    # TF-IDF 벡터화 (청크 단위)
+
+    # 4) 토큰이 전혀 없거나 모두 공백인 청크만 있을 때 예외 처리
+    if not any(chunk.strip() for chunk in chunks):
+        print("모든 청크가 비어있습니다.")
+        print(f"s3_key: {s3_key}")
+        return []
+
+    # 5) TF-IDF 벡터화 및 예외 처리
     vectorizer = TfidfVectorizer(
         tokenizer=tokenize,
         token_pattern=None,
         ngram_range=(1, 2)
     )
-    
-    tfidf_matrix = vectorizer.fit_transform(chunks)
-    scores = np.mean(tfidf_matrix.toarray(), axis=0)  # 각 청크의 TF-IDF 평균값 계산
+    try:
+        tfidf_matrix = vectorizer.fit_transform(chunks)
+    except ValueError as e:
+        # sklearn 에러 메시지가 "empty vocabulary" 일 경우 빈 리스트 반환
+        if "empty vocabulary" in str(e):
+            print("어휘가 비어있습니다.")
+            print(f"s3_key: {s3_key}")
+            return []
+        else:
+            # 예측하지 못한 에러는 다시 발생시켜 상위 로직에서 처리하게 함
+            raise
 
-    extracted_keywords = [(word, score) for word, score in zip(vectorizer.get_feature_names_out(), scores)]
+    # 6) 각 토큰에 대한 평균 스코어 계산
+    scores = np.mean(tfidf_matrix.toarray(), axis=0)
+    features = vectorizer.get_feature_names_out()
+    extracted = list(zip(features, scores))
 
-    # ChromaDB에서 가져온 사용자의 키워드 가중치 반영
-    weighted_keywords = []
-    for word, score in extracted_keywords:
-        weight = user_keyword_weights.get(word, 1.0)  # 사용자의 키워드 가중치 적용
+    # 7) 사용자 가중치 반영
+    weighted = []
+    for word, score in extracted:
+        weight = user_keyword_weights.get(word, 1.0)
         if word in user_keywords:
-            weight *= 1.5  # 사용자가 자주 사용한 키워드는 추가 가중치 적용
-        weighted_keywords.append((word, score * weight))
+            weight *= 1.5
+        weighted.append((word, score * weight))
 
-    # 가중치를 반영한 정렬 후 상위 n개 선택
-    weighted_keywords = sorted(weighted_keywords, key=lambda x: x[1], reverse=True)
-    
-    return [word for word, score in weighted_keywords[:top_n]]
+    # 8) 정렬 후 상위 N개 반환
+    weighted.sort(key=lambda x: x[1], reverse=True)
+    return [word for word, _ in weighted[:top_n]]

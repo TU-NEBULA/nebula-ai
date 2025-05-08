@@ -15,7 +15,7 @@ def extract_data_from_s3(id: str, s3_key: str):
         thumbnail = "basetumbnail.jpg" # todo: 기본 썸네일 이미지
 
     main_text = extract_main_text(html_content)
-    keywords = extract_keywords_tfidf(main_text)
+    keywords = extract_keywords_tfidf(id, main_text, s3_key)
     
     return {
         "image_url": thumbnail,

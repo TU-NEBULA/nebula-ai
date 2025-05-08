@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM python:slim
 
 WORKDIR /app
 
@@ -14,7 +14,7 @@ ENV PATH="$JAVA_HOME/bin:$PATH"
 
 RUN pip install --no-cache-dir --upgrade pip pipenv
 
-RUN pipenv --python /usr/local/bin/python3.11
+RUN pipenv --python /usr/local/bin/python3.13
 
 COPY Pipfile Pipfile.lock ./
 
