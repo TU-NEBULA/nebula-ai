@@ -4,12 +4,6 @@ from app.core.embedding_model import EmbeddingModel
 
 router = APIRouter()
 
-from fastapi import APIRouter, HTTPException, Path, Query
-from app.core.chroma_db import ChromaDBClient
-from app.core.embedding_model import EmbeddingModel
-
-router = APIRouter()
-
 @router.get("/embed/check/{bookmark_id}")
 def check_embedding(
     bookmark_id: str = Path(..., description="북마크 ID"),
