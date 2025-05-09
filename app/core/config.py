@@ -5,6 +5,7 @@ from pydantic_settings import BaseSettings
 load_dotenv(override=True)
 class Settings(BaseSettings):
     HUGGINGFACEHUB_API_TOKEN: str
+    EMBEDDING_MODEL_NAME: str
     MODEL_NAME: str
     CACHE_DIR: str
     AWS_ACCESS_KEY_ID: str

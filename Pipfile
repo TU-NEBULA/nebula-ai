@@ -25,6 +25,7 @@ pika = "*"
 celery = "*"
 redis = "*"
 pytest = "*"
+huggingface-hub = "*"
 
 [dev-packages]
 
