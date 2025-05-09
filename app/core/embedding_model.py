@@ -8,7 +8,7 @@ class EmbeddingModel:
     """
 
     API_URL = f"https://api-inference.huggingface.co/pipeline/feature-extraction/{settings.EMBEDDING_MODEL_NAME}"
-    TOKEN = settings.HUGGINGFACE_API_TOKEN
+    TOKEN = settings.HUGGINGFACEHUB_API_TOKEN
 
     def __init__(self):
         if not self.TOKEN:
