@@ -2,6 +2,13 @@
 freeze:
 	pipenv requirements > requirements.txt
 
+.PHONY: install
+install:
+	pipenv install --dev
+
+.PHONY: local
+local: stop build start
+
 .PHONY: run
 run:
 	uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload
