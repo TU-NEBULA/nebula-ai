@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 
 class ExtractDataRequest(BaseModel):
-    id: str
+    id: int
     user_id: str
     s3_key: str
     

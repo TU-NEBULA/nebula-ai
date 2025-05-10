@@ -12,7 +12,7 @@ from app.core.config import settings
 
 BASE_THUMBNAIL = settings.BASE_THUMBNAIL
 
-def extract_data_from_s3(user_id: str, s3_key: str):
+def extract_data_from_s3(user_id: int, s3_key: str):
     """s3 키를 입력받아 HTML에서 데이터 추출"""
     html_content = download_html_from_s3(s3_key)
 
@@ -33,7 +33,7 @@ def extract_data_from_s3(user_id: str, s3_key: str):
     }
 
 
-async def extract_data_from_s3_async(user_id: str, s3_key: str):
+async def extract_data_from_s3_async(user_id: int, s3_key: str):
     """
     ThreadPoolExecutor로 extract_data_from_s3 off-load 하여
     이벤트 루프를 블로킹하지 않고 재사용.

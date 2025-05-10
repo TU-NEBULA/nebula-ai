@@ -7,7 +7,7 @@ from app.schemas.extract_data_response import ExtractDataResponse
 @pytest.fixture
 def mock_request_data():
     return {
-        "id": "test_neo4j_id",
+        "id": 5,
         "user_id": "test_user_id",
         "s3_key": "html_files/expo 소셜 로그인/b2cdc2c2-d935-492a-bba6-26f6bfde4de4_test.html"
     }
@@ -15,7 +15,7 @@ def mock_request_data():
 @pytest.fixture
 def mock_response_data():
     return {
-        "id": "test_neo4j_id",
+        "id": 5,
         "image_url": "https://s3.amazonaws.com/test_bucket/test_image.jpg",
         "keywords": ["인공지능", "자연어 처리", "딥러닝"]
     }

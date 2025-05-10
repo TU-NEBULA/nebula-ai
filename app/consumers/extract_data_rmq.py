@@ -2,7 +2,8 @@ import json
 import uuid
 import logging
 from aio_pika import IncomingMessage, Message
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
+
 
 from app.core.rabbit import get_rabbit_connection
 from app.services.extract_data import extract_data_from_s3_async
@@ -11,15 +12,21 @@ from app.core.config import settings
 
 log = logging.getLogger(__name__)
 
+# class ExtractDataRequest(BaseModel):
+#     user_id: str = Field(..., alias="userId")
+#     s3_key:  str = Field(..., alias="s3Key")
+
+#     class Config:
+#         allow_population_by_field_name = True
+
 class ExtractDataRequest(BaseModel):
-    user_id: str = Field(..., alias="userId")
-    s3_key:  str = Field(..., alias="s3Key")
+    user_id: int = Field(..., alias="userId")
+    s3_key: str = Field(..., alias="s3Key")
 
-    class Config:
-        allow_population_by_field_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
-async def on_extract_message(message: IncomingMessage):
+async def on_extract_message(ch, message: IncomingMessage):
     async with message.process():
         try:
             req = ExtractDataRequest.model_validate_json(message.body)
@@ -32,7 +39,7 @@ async def on_extract_message(message: IncomingMessage):
                 keywords = data["keywords"],
             )
 
-            await message.channel.default_exchange.publish(
+            await ch.default_exchange.publish(
                 Message(
                     body = response.model_dump_json().encode(),
                     correlation_id = message.correlation_id or str(uuid.uuid4())
@@ -41,7 +48,7 @@ async def on_extract_message(message: IncomingMessage):
             )
 
             log.info("ExtractData 완료 id=%s", req.user_id)
-            
+
         except Exception as e:
             log.error("ExtractData 실패 error=%s body=%s", str(e), message.body)
             raise
@@ -49,11 +56,14 @@ async def on_extract_message(message: IncomingMessage):
 
 async def start_extract_consumer():
     conn = await get_rabbit_connection()
-    ch   = await conn.channel()
+    ch = await conn.channel()
 
     await ch.set_qos(prefetch_count=1)
 
     q = await ch.declare_queue(settings.EXTRACT_REQ_QUEUE, durable=True)
-    await q.consume(on_extract_message)
+    async def handler(message: IncomingMessage):
+        await on_extract_message(ch, message)
+
+    await q.consume(handler)
 
     log.info(" [*] extract_data_rmq 리스너 시작, queue=%s", q.name)

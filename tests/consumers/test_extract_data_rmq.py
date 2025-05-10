@@ -40,11 +40,11 @@ async def test_on_extract_message(monkeypatch):
         async def publish(self, message, routing_key):
             self.published.append((message, routing_key))
 
-    req_payload = {"userId": "user123", "s3Key": "path/to/file.html"}
+    req_payload = {"userId": 5, "s3Key": "path/to/file.html"}
     body_bytes = json.dumps(req_payload).encode()
     msg = DummyMessage(body_bytes)
 
-    await on_extract_message(msg)
+    await on_extract_message(msg.channel, msg)
 
     assert len(msg.published) == 1
     published_msg, routing_key = msg.published[0]
@@ -123,12 +123,12 @@ async def test_on_extract_message_error(monkeypatch):
                     return False 
             return Ctx()
     
-    req_payload = {"userId": "user123", "s3Key": "path/to/file.html"}
+    req_payload = {"userId": 5, "s3Key": "path/to/file.html"}
     body_bytes = json.dumps(req_payload).encode()
     msg = DummyMessage(body_bytes)
     
     with pytest.raises(Exception):
-        await on_extract_message(msg)
+        await on_extract_message(msg.channel, msg)
     
     assert len(msg.published) == 0
     assert msg.exception_raised == True
