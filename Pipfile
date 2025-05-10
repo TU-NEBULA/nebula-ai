@@ -26,6 +26,8 @@ celery = "*"
 redis = "*"
 pytest = "*"
 huggingface-hub = "*"
+pytest-cov = "*"
+coverage = "*"
 
 [dev-packages]
 
