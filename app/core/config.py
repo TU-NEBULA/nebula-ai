@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     REDIS_HOST: str
     REDIS_PORT: int
     REDIS_DB: int
+    REDIS_URL: str
     NEO4J_URI: str
     NEO4J_USER: str
     NEO4J_PASSWORD: str
