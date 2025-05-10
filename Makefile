@@ -7,7 +7,7 @@ install:
 	pipenv install --dev
 
 .PHONY: local
-local: stop build start
+local: test stop build start
 
 .PHONY: run
 run:
