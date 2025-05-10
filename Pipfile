@@ -28,6 +28,8 @@ huggingface-hub = "*"
 pytest-cov = "*"
 coverage = "*"
 aio-pika = "*"
+langchain-openai = "*"
+openai = "*"
 
 [dev-packages]
 pytest-asyncio = "*"

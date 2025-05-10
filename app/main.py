@@ -13,7 +13,7 @@ from app.routers import task_status
 from app.middlewares.headers_middleware import HeadersMiddleware
 
 from app.consumers.extract_data_rmq import start_extract_consumer
-from app.consumers.chat_request_rmq import process_chat_request
+from app.consumers.chat_request_rmq import start_chat_consumer
 
 async def lifespan(app: FastAPI):
     try:
@@ -21,16 +21,15 @@ async def lifespan(app: FastAPI):
     except LookupError:
         nltk.download("punkt_tab")
     
-    try:
-        await asyncio.gather(
-            start_extract_consumer(),
-            process_chat_request()
-        )
-        print("모든 RabbitMQ consumer가 성공적으로 시작되었습니다")
-    except Exception as e:
-        print(f"consumer 시작 중 오류 발생: {e}")
+    extract_task = asyncio.create_task(start_extract_consumer())
+    chat_task   = asyncio.create_task(start_chat_consumer())
+    print("모든 RabbitMQ consumer가 성공적으로 시작되었습니다")
 
     yield 
+
+    extract_task.cancel()
+    chat_task.cancel()
+    print("모든 RabbitMQ consumer가 종료되었습니다")
 
 app = FastAPI(lifespan=lifespan)
 

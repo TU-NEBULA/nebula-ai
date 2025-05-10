@@ -14,7 +14,6 @@ log = logging.getLogger(__name__)
 class ChatRequestModel(BaseModel):
     user_id: int = Field(..., alias="userId")
     message: str
-    scope: str = Field("both", description="visit, bookmark, both")
 
     class Config:
         allow_population_by_field_name = True
@@ -38,8 +37,7 @@ async def on_chat_message(ch, message: IncomingMessage):
 
             resp_data = await process_chat_request(
                 user_id = req.user_id,
-                message = req.message,
-                scope = req.scope
+                message = req.message
             )
 
             chat_resp = ChatResponseModel.model_validate(resp_data)
@@ -52,7 +50,7 @@ async def on_chat_message(ch, message: IncomingMessage):
                 routing_key=message.reply_to
             )
 
-            log.info("Chat 처리 완료 userId=%s scope=%s", req.user_id, req.scope)
+            log.info("Chat 처리 완료 userId=%s", req.user_id)
 
         except Exception as e:
             log.error("Chat 처리 실패 error=%s body=%s", str(e), message.body)

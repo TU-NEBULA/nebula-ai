@@ -41,7 +41,7 @@ class DummyMessage:
 
 @pytest.fixture(autouse=True)
 def mock_process_chat(monkeypatch):
-    async def fake_process(user_id, message, scope):
+    async def fake_process(user_id, message):
         return {"items": [{"id": "x1", "title": "T1", "url": "U1", "snippet": "S1"}]}
 
     monkeypatch.setattr(
@@ -52,7 +52,7 @@ def mock_process_chat(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_on_chat_message_success():
-    payload = {"userId": 99, "message": "hello", "scope": "both"}
+    payload = {"userId": 99, "message": "hello"}
     body = json.dumps(payload).encode()
 
     ch = DummyChannel()

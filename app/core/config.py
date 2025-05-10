@@ -8,6 +8,12 @@ class Settings(BaseSettings):
     EMBEDDING_MODEL_NAME: str
     MODEL_NAME: str
     CACHE_DIR: str
+    OPENAI_API_KEY: str
+    OPENAI_EMBED_MODEL: str
+    LANGSMITH_TRACING: bool
+    LANGSMITH_ENDPOINT: str
+    LANGSMITH_API_KEY: str
+    LANGSMITH_PROJECT: str
     AWS_ACCESS_KEY_ID: str
     AWS_SECRET_KEY_ID: str
     REGION: str
