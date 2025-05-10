@@ -3,7 +3,7 @@ import asyncio
 from typing import List, Dict
 
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
-from langchain.vectorstores import Chroma
+from langchain_community.vectorstores import Chroma
 from langchain.prompts.chat import (
     ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate,
 )

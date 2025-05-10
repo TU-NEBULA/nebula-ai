@@ -4,7 +4,7 @@ from app.core.celery_worker import celery
 from bs4 import BeautifulSoup
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
+from langchain_community.vectorstores import Chroma
 
 from app.core.config import settings
 from app.external.s3_service import download_html_from_s3
