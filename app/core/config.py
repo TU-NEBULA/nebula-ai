@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     CACHE_DIR: str
     OPENAI_API_KEY: str
     OPENAI_EMBED_MODEL: str
+    OPENAI_MODEL: str
     LANGSMITH_TRACING: bool
     LANGSMITH_ENDPOINT: str
     LANGSMITH_API_KEY: str

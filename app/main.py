@@ -1,3 +1,4 @@
+import os
 import nltk
 import asyncio
 
@@ -10,10 +11,15 @@ from app.routers import embed_check
 from app.routers import keyword_sync
 from app.routers import task_status
 
+from app.core.config import settings
 from app.middlewares.headers_middleware import HeadersMiddleware
 
 from app.consumers.extract_data_rmq import start_extract_consumer
 from app.consumers.chat_request_rmq import start_chat_consumer
+
+os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+os.environ.setdefault("LANGCHAIN_API_KEY", getattr(settings, "LANGSMITH_API_KEY", ""))
+os.environ.setdefault("LANGCHAIN_PROJECT", getattr(settings, "LANGSMITH_PROJECT", "nebula-chatbot"))
 
 async def lifespan(app: FastAPI):
     try:

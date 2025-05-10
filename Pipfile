@@ -30,6 +30,7 @@ coverage = "*"
 aio-pika = "*"
 langchain-openai = "*"
 openai = "*"
+langchain-community = "*"
 
 [dev-packages]
 pytest-asyncio = "*"

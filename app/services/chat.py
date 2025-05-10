@@ -11,7 +11,7 @@ from langchain.prompts.chat import (
 from app.core.config import settings
 from app.core.chroma_db import ChromaDBClient
 
-TOP_K = 10 
+TOP_K = 10
 ANSWER_N = 5 
 
 embeddings = OpenAIEmbeddings(model=settings.OPENAI_EMBED_MODEL or "text-embedding-3-small")
@@ -21,6 +21,7 @@ async def process_chat_request(
     user_id: int,
     message: str,
 ) -> Dict[str, List[Dict]]:
+    
     chroma_client = ChromaDBClient()
     collection = chroma_client.get_or_create_collection(embedding_function=embeddings)
     vectorstore = Chroma(
@@ -65,7 +66,7 @@ async def process_chat_request(
 
     for i in range(len(nodes)):
         for j in range(i + 1, len(nodes)):
-            shared = set(nodes[i]["tags"]) & set(nodes[j]["tags"])
+            shared = set(nodes[i]["keywords"]) & set(nodes[j]["keywords"])
             if shared:
                 edges.append({
                     "source": nodes[i]["id"],
