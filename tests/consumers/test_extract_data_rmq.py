@@ -90,3 +90,45 @@ async def test_start_extract_consumer(monkeypatch):
     assert ("set_qos", 1) in calls
     assert ("declare_queue", "test.queue", True) in calls
     assert any(call[0] == "consume" for call in calls)
+
+
+@pytest.mark.asyncio
+async def test_on_extract_message_error(monkeypatch):
+    import app.consumers.extract_data_rmq as mod
+    
+    async def fake_extract_error(user_id, s3_key):
+        raise Exception("Simulated error")
+    
+    monkeypatch.setattr(mod, "extract_data_from_s3_async", fake_extract_error)
+    
+    from app.consumers.extract_data_rmq import on_extract_message
+    
+    class DummyMessage:
+        def __init__(self, body, corr_id=None, reply_to="resp.queue"):
+            self.body = body
+            self.correlation_id = corr_id or str(uuid4())
+            self.reply_to = reply_to
+            self.channel = self
+            self.default_exchange = self
+            self.published = []
+            self.exception_raised = False
+        
+        def process(self):
+            class Ctx:
+                async def __aenter__(inner):
+                    return self
+                async def __aexit__(inner, exc_type, exc, tb):
+                    if exc_type:
+                        self.exception_raised = True
+                    return False 
+            return Ctx()
+    
+    req_payload = {"userId": "user123", "s3Key": "path/to/file.html"}
+    body_bytes = json.dumps(req_payload).encode()
+    msg = DummyMessage(body_bytes)
+    
+    with pytest.raises(Exception):
+        await on_extract_message(msg)
+    
+    assert len(msg.published) == 0
+    assert msg.exception_raised == True
