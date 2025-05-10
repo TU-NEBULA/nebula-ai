@@ -9,8 +9,9 @@ from pydantic import BaseModel, Field
 from typing import List
 
 class BookmarkSaveRequest(BaseModel):
-    user_id:  str    = Field(..., alias="userId")
+    user_id:  int    = Field(..., alias="userId")
     s3_key:   str    = Field(..., alias="s3Key")
+    star_id: str    = Field(..., alias="starId")
     keywords: List[str]
     memo:     str
     summary:  str
@@ -31,6 +32,7 @@ async def on_bookmark_save(message: IncomingMessage):
 
         save_bookmark_task.delay(
             user_id=req.user_id,
+            star_id=req.star_id,
             s3_key=req.s3_key,
             keywords=req.keywords,
             memo=req.memo,

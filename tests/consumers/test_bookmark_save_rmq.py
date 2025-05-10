@@ -9,7 +9,6 @@ async def test_on_bookmark_save_success(monkeypatch):
     class DummyMessage:
         def __init__(self, body):
             self.body = body
-            self.published = []
         def process(self):
             class Ctx:
                 async def __aenter__(inner):
@@ -17,8 +16,11 @@ async def test_on_bookmark_save_success(monkeypatch):
                 async def __aexit__(inner, exc_type, exc, tb):
                     pass
             return Ctx()
+
+    test_star_id = str(uuid4())
     payload = {
-        "userId": "userX",
+        "userId": 5,
+        "starId": test_star_id,
         "s3Key": "path/to.html",
         "keywords": ["a", "b"],
         "memo": "mymemo",
@@ -34,7 +36,8 @@ async def test_on_bookmark_save_success(monkeypatch):
     await mod.on_bookmark_save(msg)
 
     assert called == {
-        "user_id": "userX",
+        "user_id": 5,
+        "star_id": test_star_id,
         "s3_key": "path/to.html",
         "keywords": ["a", "b"],
         "memo": "mymemo",
