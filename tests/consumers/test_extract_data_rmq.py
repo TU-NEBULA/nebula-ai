@@ -44,7 +44,7 @@ async def test_on_extract_message(monkeypatch):
     body_bytes = json.dumps(req_payload).encode()
     msg = DummyMessage(body_bytes)
 
-    await on_extract_message(msg)
+    await on_extract_message(msg.channel, msg)
 
     assert len(msg.published) == 1
     published_msg, routing_key = msg.published[0]
@@ -128,7 +128,7 @@ async def test_on_extract_message_error(monkeypatch):
     msg = DummyMessage(body_bytes)
     
     with pytest.raises(Exception):
-        await on_extract_message(msg)
+        await on_extract_message(msg.channel, msg)
     
     assert len(msg.published) == 0
     assert msg.exception_raised == True

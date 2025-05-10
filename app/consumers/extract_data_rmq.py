@@ -61,7 +61,6 @@ async def start_extract_consumer():
     await ch.set_qos(prefetch_count=1)
 
     q = await ch.declare_queue(settings.EXTRACT_REQ_QUEUE, durable=True)
-    # await q.consume(on_extract_message)
     async def handler(message: IncomingMessage):
         await on_extract_message(ch, message)
 
