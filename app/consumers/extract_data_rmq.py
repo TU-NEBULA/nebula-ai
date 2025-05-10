@@ -23,7 +23,7 @@ async def on_extract_message(message: IncomingMessage):
     async with message.process():
         req = ExtractDataRequest.model_validate_json(message.body)
 
-        data = await extract_data_from_s3_async(req.s3_key)
+        data = await extract_data_from_s3_async(req.user_id, req.s3_key)
 
         response = ExtractDataResponse(
             id = req.user_id,

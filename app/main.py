@@ -12,7 +12,7 @@ from app.routers import task_status
 
 from app.middlewares.headers_middleware import HeadersMiddleware
 
-from consumers.extract_data_rmq import start_extract_consumer
+from app.consumers.extract_data_rmq import start_extract_consumer
 
 async def lifespan(app: FastAPI):
     try:

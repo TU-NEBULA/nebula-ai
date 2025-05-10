@@ -31,6 +31,7 @@ coverage = "*"
 aio-pika = "*"
 
 [dev-packages]
+pytest-asyncio = "*"
 
 [requires]
 python_version = "3.12"
