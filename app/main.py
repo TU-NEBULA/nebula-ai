@@ -1,4 +1,5 @@
 import nltk
+import asyncio
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,11 +12,21 @@ from app.routers import task_status
 
 from app.middlewares.headers_middleware import HeadersMiddleware
 
+from consumers.extract_data_rmq import start_extract_consumer
+
 async def lifespan(app: FastAPI):
     try:
         nltk.data.find("tokenizers/punkt_tab")
     except LookupError:
         nltk.download("punkt_tab")
+    
+    await start_extract_consumer()
+    # await asyncio.gather(
+    #     start_extract_consumer(),
+    #     start_bookmark_consumer(),
+    #     start_summarize_consumer(),
+    # )
+
     yield 
 
 app = FastAPI(lifespan=lifespan)
@@ -23,13 +34,13 @@ app = FastAPI(lifespan=lifespan)
 # CORS 설정
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 모든 도메인 허용 (개발 환경에서만 사용)
+    allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"],  # 모든 HTTP 메서드 허용
-    allow_headers=["*"],  # 모든 헤더 허용
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# 커스텀 미들웨어 추가
+# 커스텀 미들웨어
 app.add_middleware(HeadersMiddleware)
 
 # 라우터 등록

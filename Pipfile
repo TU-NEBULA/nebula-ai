@@ -28,6 +28,7 @@ pytest = "*"
 huggingface-hub = "*"
 pytest-cov = "*"
 coverage = "*"
+aio-pika = "*"
 
 [dev-packages]
 
