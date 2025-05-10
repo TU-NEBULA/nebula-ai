@@ -83,7 +83,7 @@ def remove_stopwords(tokens, language='en'):
 
 
 
-def extract_keywords_tfidf(user_id: str, text: str, s3_key:str, top_n=3) -> list:
+def extract_keywords_tfidf(user_id: int, text: str, s3_key:str, top_n=3) -> list:
     """
     문서를 RecursiveCharacterTextSplitter를 활용해 분할 후, TF-IDF 기반 키워드를 추출.
     또한 사용자의 ChromaDB 키워드 정보를 반영하여 가중치를 적용함.

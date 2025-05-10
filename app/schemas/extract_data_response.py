@@ -1,7 +1,7 @@
 from pydantic import BaseModel
 
 class ExtractDataResponse(BaseModel):
-    id: str
+    id: int
     image_url: str
     keywords: list
     
