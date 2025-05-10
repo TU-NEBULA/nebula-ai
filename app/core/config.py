@@ -13,14 +13,24 @@ class Settings(BaseSettings):
     REGION: str
     BUCKET_NAME: str
     CHROMA_DB_URI: str
-    RABBITMQ_HOST: str
-    RABBITMQ_QUEUE: str
     REDIS_HOST: str
     REDIS_PORT: int
     REDIS_DB: int
     NEO4J_URI: str
     NEO4J_USER: str
     NEO4J_PASSWORD: str
+    RABBITMQ_HOST: str
+    RABBITMQ_PORT: int
+    RABBITMQ_USERNAME: str
+    RABBITMQ_PASSWORD: str
+    EXTRACT_REQ_QUEUE: str
+    BASE_THUMBNAIL: str
+
+    @property
+    def RABBITMQ_URL(self) -> str:
+        return f"amqp://{self.RABBITMQ_USERNAME}:{self.RABBITMQ_PASSWORD}" \
+               f"@{self.RABBITMQ_HOST}:{self.RABBITMQ_PORT}/"
+
 
     class Config:
         env_file = ".env"

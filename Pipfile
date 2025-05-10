@@ -26,8 +26,12 @@ celery = "*"
 redis = "*"
 pytest = "*"
 huggingface-hub = "*"
+pytest-cov = "*"
+coverage = "*"
+aio-pika = "*"
 
 [dev-packages]
+pytest-asyncio = "*"
 
 [requires]
 python_version = "3.12"
