@@ -2,7 +2,7 @@ import json, uuid, logging
 from aio_pika import IncomingMessage, Message
 from pydantic import ValidationError
 from app.core.rabbit import get_rabbit_connection
-from app.core.config import get_settings
+from app.core.config import settings
 from app.tasks.bookmark_save_task import save_bookmark_task
 
 from pydantic import BaseModel, Field
@@ -20,7 +20,6 @@ class BookmarkSaveRequest(BaseModel):
 
 
 log = logging.getLogger(__name__)
-settings = get_settings()
 
 async def on_bookmark_save(message: IncomingMessage):
     async with message.process():

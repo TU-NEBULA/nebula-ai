@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     RABBITMQ_PASSWORD: str
     EXTRACT_REQ_QUEUE: str
     CHAT_REQ_QUEUE: str
+    BOOKMARK_SAVE_QUEUE: str
     BASE_THUMBNAIL: str
 
     @property
