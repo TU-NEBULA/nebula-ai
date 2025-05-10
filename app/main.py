@@ -20,7 +20,12 @@ async def lifespan(app: FastAPI):
     except LookupError:
         nltk.download("punkt_tab")
     
-    await start_extract_consumer()
+    try:
+        await start_extract_consumer()
+        print("RabbitMQ consumer started successfully")
+    except Exception as e:
+        print(f"Failed to start RabbitMQ consumer: {e}")
+
     # await asyncio.gather(
     #     start_extract_consumer(),
     #     start_bookmark_consumer(),

@@ -21,25 +21,30 @@ class ExtractDataRequest(BaseModel):
 
 async def on_extract_message(message: IncomingMessage):
     async with message.process():
-        req = ExtractDataRequest.model_validate_json(message.body)
+        try:
+            req = ExtractDataRequest.model_validate_json(message.body)
 
-        data = await extract_data_from_s3_async(req.user_id, req.s3_key)
+            data = await extract_data_from_s3_async(req.user_id, req.s3_key)
 
-        response = ExtractDataResponse(
-            id = req.user_id,
-            image_url = data["image_url"],
-            keywords = data["keywords"],
-        )
+            response = ExtractDataResponse(
+                id = req.user_id,
+                image_url = data["image_url"],
+                keywords = data["keywords"],
+            )
 
-        await message.channel.default_exchange.publish(
-            Message(
-                body = response.model_dump_json().encode(),
-                correlation_id = message.correlation_id or str(uuid.uuid4())
-            ),
-            routing_key=message.reply_to
-        )
+            await message.channel.default_exchange.publish(
+                Message(
+                    body = response.model_dump_json().encode(),
+                    correlation_id = message.correlation_id or str(uuid.uuid4())
+                ),
+                routing_key=message.reply_to
+            )
 
-        log.info("ExtractData 완료 id=%s", req.user_id)
+            log.info("ExtractData 완료 id=%s", req.user_id)
+            
+        except Exception as e:
+            log.error("ExtractData 실패 error=%s body=%s", str(e), message.body)
+            raise
 
 
 async def start_extract_consumer():
