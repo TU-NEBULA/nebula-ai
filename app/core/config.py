@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     RABBITMQ_USERNAME: str
     RABBITMQ_PASSWORD: str
     EXTRACT_REQ_QUEUE: str
+    CHAT_REQ_QUEUE: str
     BASE_THUMBNAIL: str
 
     @property
