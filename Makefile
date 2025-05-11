@@ -9,6 +9,9 @@ install:
 .PHONY: local
 local: test stop build start
 
+.PHONY: local-no-test
+local-no-test: stop build start
+
 .PHONY: run
 run:
 	uvicorn app.main:app --host 0.0.0.0 --port 8001 --reload

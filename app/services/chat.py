@@ -9,25 +9,23 @@ from langchain.prompts.chat import (
 )
 
 from app.core.config import settings
-from app.core.chroma_db import ChromaDBClient
 
 TOP_K = 10
 ANSWER_N = 5 
 
-embeddings = OpenAIEmbeddings(model=settings.OPENAI_EMBED_MODEL or "text-embedding-3-small")
-
+embeddings = OpenAIEmbeddings(
+    model=settings.OPENAI_EMBED_MODEL or "text-embedding-3-small"
+)
 
 async def process_chat_request(
     user_id: int,
     message: str,
 ) -> Dict[str, List[Dict]]:
     
-    chroma_client = ChromaDBClient()
-    collection = chroma_client.get_or_create_collection(embedding_function=embeddings)
     vectorstore = Chroma(
-        collection_name=collection.name,
-        client=chroma_client.client,
+        persist_directory=settings.CHROMA_DB_URI,
         embedding_function=embeddings,
+        collection_name="nebula_html",
     )
 
     docs_and_scores = vectorstore.similarity_search_with_score(message, k=TOP_K)

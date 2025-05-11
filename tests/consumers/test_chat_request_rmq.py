@@ -42,7 +42,14 @@ class DummyMessage:
 @pytest.fixture(autouse=True)
 def mock_process_chat(monkeypatch):
     async def fake_process(user_id, message):
-        return {"items": [{"id": "x1", "title": "T1", "url": "U1", "snippet": "S1"}]}
+        return {
+            "answer": "This is a test response",
+            "graphPayload": {
+                "nodes": [{"id": "node1", "label": "Node 1"}],
+                "edges": [{"source": "node1", "target": "node2"}],
+                "layout": "force-directed"
+            }
+        }
 
     monkeypatch.setattr(
         mod,
@@ -65,7 +72,9 @@ async def test_on_chat_message_success():
 
     message_obj, rk = published[0]
     data = json.loads(message_obj.body.decode())
-    assert data == {"items": [{"id": "x1", "title": "T1", "url": "U1", "snippet": "S1"}]}
+    assert "answer" in data
+    assert "graphPayload" in data
+    assert data["graphPayload"]["layout"] == "force-directed"
     assert message_obj.correlation_id == "cid"
     assert rk == msg.reply_to
 

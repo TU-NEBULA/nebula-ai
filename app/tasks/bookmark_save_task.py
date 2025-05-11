@@ -1,5 +1,3 @@
-# app/tasks/bookmark_save_task.py
-
 from app.core.celery_worker import celery
 from bs4 import BeautifulSoup
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -24,7 +22,7 @@ def _save_bookmark_logic(user_id, star_id, s3_key, keywords, memo, summary):
 
     vectorstore = Chroma(
         persist_directory=settings.CHROMA_DB_URI,
-        embedding_function=embeddings.embed_query,
+        embedding_function=embeddings,
         collection_name="nebula_html",
     )
 
