@@ -1,4 +1,3 @@
-import json
 import asyncio
 from typing import List, Dict
 
@@ -10,8 +9,8 @@ from langchain.prompts.chat import (
 
 from app.core.config import settings
 
-TOP_K = 10
-ANSWER_N = 5 
+TOP_K=10
+ANSWER_N=5
 
 embeddings = OpenAIEmbeddings(
     model=settings.OPENAI_EMBED_MODEL or "text-embedding-3-small"
@@ -21,7 +20,7 @@ async def process_chat_request(
     user_id: int,
     message: str,
 ) -> Dict[str, List[Dict]]:
-    
+
     vectorstore = Chroma(
         persist_directory=settings.CHROMA_DB_URI,
         embedding_function=embeddings,

@@ -50,7 +50,7 @@ def _save_bookmark_logic(user_id, star_id, s3_key, keywords, memo, summary):
     ids = [f"{star_id}-{i}" for i in range(len(chunks))]
     metadatas = [
         dict(user_id=user_id, s3_key=s3_key,
-             keywords=keywords, memo=memo, summary=summary)
+                keywords=keywords, memo=memo, summary=summary)
         for _ in chunks
     ]
 

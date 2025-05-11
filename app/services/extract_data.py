@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import asdict, dataclass
-from typing import List
 from functools import partial
 
 from bs4 import BeautifulSoup
@@ -18,7 +16,7 @@ def extract_data_from_s3(user_id: int, s3_key: str):
 
     soup = BeautifulSoup(html_content, 'html.parser')
     og_image = soup.find('meta', property='og:image')
-    
+
     if og_image and og_image.get('content'):
         thumbnail = og_image['content']
     else:
@@ -26,7 +24,7 @@ def extract_data_from_s3(user_id: int, s3_key: str):
 
     main_text = extract_main_text(html_content)
     keywords = extract_keywords_tfidf(user_id, main_text, s3_key)
-    
+
     return {
         "image_url": thumbnail,
         "keywords": keywords

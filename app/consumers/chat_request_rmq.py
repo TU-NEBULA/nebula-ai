@@ -36,7 +36,7 @@ class GraphPayload(BaseModel):
 class ChatResponseModel(BaseModel):
     answer: str
     graphPayload: GraphPayload = Field(..., alias="graphPayload")
-    
+
     class Config:
         validate_by_name = True
         allow_population_by_field_name = True

@@ -1,5 +1,5 @@
-import json, uuid, logging
-from aio_pika import IncomingMessage, Message
+import logging
+from aio_pika import IncomingMessage
 from pydantic import ValidationError
 from app.core.rabbit import get_rabbit_connection
 from app.core.config import settings
@@ -9,12 +9,12 @@ from pydantic import BaseModel, Field
 from typing import List
 
 class BookmarkSaveRequest(BaseModel):
-    user_id:  int    = Field(..., alias="userId")
-    s3_key:   str    = Field(..., alias="s3Key")
-    star_id: str    = Field(..., alias="starId")
+    user_id: int = Field(..., alias="userId")
+    s3_key: str = Field(..., alias="s3Key")
+    star_id: str = Field(..., alias="starId")
     keywords: List[str]
-    memo:     str
-    summary:  str
+    memo: str
+    summary: str
 
     class Config:
         allow_population_by_field_name = True

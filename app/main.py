@@ -3,7 +3,6 @@ import nltk
 import asyncio
 
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
 
 from app.consumers.extract_data_rmq import start_extract_consumer
 from app.consumers.chat_request_rmq import start_chat_consumer
@@ -20,13 +19,13 @@ async def lifespan(app: FastAPI):
         nltk.data.find("tokenizers/punkt_tab")
     except LookupError:
         nltk.download("punkt_tab")
-    
+
     extract_task = asyncio.create_task(start_extract_consumer())
     chat_task = asyncio.create_task(start_chat_consumer())
     bookmark_save_task = asyncio.create_task(start_bookmark_save_consumer())
     print("모든 RabbitMQ consumer가 성공적으로 시작되었습니다")
 
-    yield 
+    yield
 
     extract_task.cancel()
     chat_task.cancel()

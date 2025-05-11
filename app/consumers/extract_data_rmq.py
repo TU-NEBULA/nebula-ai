@@ -1,4 +1,3 @@
-import json
 import uuid
 import logging
 from aio_pika import IncomingMessage, Message
@@ -13,7 +12,7 @@ log = logging.getLogger(__name__)
 class ExtractDataResponse(BaseModel):
     id: int
     image_url: str
-    keywords: list    
+    keywords: list
 
 class ExtractDataRequest(BaseModel):
     user_id: int = Field(..., alias="userId")
