@@ -57,3 +57,19 @@ cov-html: test-cov
 .PHONY: clean-cov
 clean-cov:
 	rm -rf .coverage htmlcov coverage.xml
+
+PYLINTRC := .pylintrc
+FASTAPI_SRC := app
+.PHONY: lint
+lint:
+	@echo "=== Pylint 검사 시작 ==="
+	@if [ -f $(PYLINTRC) ]; then \
+	  pylint $(FASTAPI_SRC) --rcfile=$(PYLINTRC); \
+	else \
+	  pylint $(FASTAPI_SRC); \
+	fi
+
+fix-whitespace:
+	@echo "=== Trailing whitespace 제거 ==="
+	@find $(FASTAPI_SRC) -type f -name '*.py' \
+	  -exec sed -i 's/[[:blank:]]\+$$//' {} +
