@@ -20,6 +20,15 @@ splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 # - 사용자 ID에 해당하는 북마크들 중에서 유사한 것들을 쿼리하여 결과를 반환
 # - 모든 북마크 노드간 유사도를 계산해야하므로 알고리즘 설계 필요
 
+# TODO
+# 북마크 저장시 사용자의 상위 키워드 정보를 반영
+# 키워드 useage_count을 증가시키고
+# 새로운 가중치 계산
+# 매월·매주 한 번씩 모든 키워드에 weight *= 0.9 처럼 점진 감쇠
+
+# TODO - ADV
+# 트랜드 키워드 반영
+
 def _save_bookmark_logic(user_id, star_id, s3_key, keywords, memo, summary):
     html = download_html_from_s3(s3_key)
     soup = BeautifulSoup(html, "html.parser")

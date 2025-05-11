@@ -5,12 +5,11 @@ import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.core.config import settings
-from app.middlewares.headers_middleware import HeadersMiddleware
-
 from app.consumers.extract_data_rmq import start_extract_consumer
 from app.consumers.chat_request_rmq import start_chat_consumer
 from app.consumers.bookmark_save_rmq import start_bookmark_save_consumer
+
+from app.core.config import settings
 
 os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
 os.environ.setdefault("LANGCHAIN_API_KEY", getattr(settings, "LANGSMITH_API_KEY", ""))
@@ -35,18 +34,6 @@ async def lifespan(app: FastAPI):
     print("모든 RabbitMQ consumer가 종료되었습니다")
 
 app = FastAPI(lifespan=lifespan)
-
-# CORS 설정
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# 커스텀 미들웨어
-app.add_middleware(HeadersMiddleware)
 
 @app.get("/")
 async def root():
