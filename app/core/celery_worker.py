@@ -9,12 +9,10 @@ celery = Celery(
 )
 
 celery.conf.task_routes = {
-    "app.tasks.embedding_task.*": {"queue": "embedding"},
     "app.tasks.similarity_task.*": {"queue": "embedding"},
     "tasks.save_bookmark.*": {"queue": "bookmark_save"},
 }
 
 celery.autodiscover_tasks(['app.tasks'])
-from app.tasks import embedding_task
 from app.tasks import similarity_task
 from app.tasks import bookmark_save_task

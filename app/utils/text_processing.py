@@ -4,11 +4,17 @@ import numpy as np
 from bs4 import BeautifulSoup
 from sklearn.feature_extraction.text import TfidfVectorizer
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import Chroma
+from langchain_openai import OpenAIEmbeddings
 from konlpy.tag import Okt
 from nltk.tokenize import word_tokenize
 from nltk.corpus import stopwords
 
-from app.core.chroma_db import ChromaDBClient
+from app.core.config import settings
+
+embeddings = OpenAIEmbeddings(
+    model=settings.OPENAI_EMBED_MODEL or "text-embedding-3-small"
+)
 
 def extract_main_text(html: str) -> str:
     """
@@ -94,10 +100,13 @@ def extract_keywords_tfidf(user_id: int, text: str, s3_key:str, top_n=3) -> list
         print("입력 텍스트가 비어있습니다.")
         print(f"s3_key: {s3_key}")
         return []
-
-    chroma_db = ChromaDBClient()
-    collection = chroma_db.get_or_create_collection("user_keyword_embeddings")
-
+    
+    collection = Chroma(
+        persist_directory=settings.CHROMA_DB_URI,
+        embedding_function=embeddings,
+        collection_name="nebula_html",
+    )
+    
     # 2) 사용자 기존 키워드/가중치 조회
     user_data = collection.get(
         where={"user_id": user_id},

@@ -7,17 +7,13 @@ from pydantic import BaseModel, Field, ConfigDict
 
 from app.core.rabbit import get_rabbit_connection
 from app.services.extract_data import extract_data_from_s3_async
-from app.schemas.extract_data_response import ExtractDataResponse
 from app.core.config import settings
 
 log = logging.getLogger(__name__)
-
-# class ExtractDataRequest(BaseModel):
-#     user_id: str = Field(..., alias="userId")
-#     s3_key:  str = Field(..., alias="s3Key")
-
-#     class Config:
-#         allow_population_by_field_name = True
+class ExtractDataResponse(BaseModel):
+    id: int
+    image_url: str
+    keywords: list    
 
 class ExtractDataRequest(BaseModel):
     user_id: int = Field(..., alias="userId")

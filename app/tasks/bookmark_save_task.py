@@ -13,6 +13,13 @@ embeddings = OpenAIEmbeddings(
 splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
 
 
+# TODO
+# 각 북마크간 유사도 계산을 위한 로직 필요
+# - 새로 저장된 북마크를 기준으로
+# - 해당 문서들을 임베딩하여 쿼리로 사용
+# - 사용자 ID에 해당하는 북마크들 중에서 유사한 것들을 쿼리하여 결과를 반환
+# - 모든 북마크 노드간 유사도를 계산해야하므로 알고리즘 설계 필요
+
 def _save_bookmark_logic(user_id, star_id, s3_key, keywords, memo, summary):
     html = download_html_from_s3(s3_key)
     soup = BeautifulSoup(html, "html.parser")
