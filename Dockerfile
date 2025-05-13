@@ -1,8 +1,13 @@
-FROM python:slim
+FROM python:3.12-bullseye
 
 WORKDIR /app
 
-RUN apt-get update && apt-get install -y \
+# Setup apt properly with GPG keys
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends gnupg2 dirmngr apt-transport-https ca-certificates && \
+    apt-key update && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
     build-essential \
     python3-dev \
     libffi-dev \
@@ -14,7 +19,7 @@ ENV PATH="$JAVA_HOME/bin:$PATH"
 
 RUN pip install --no-cache-dir --upgrade pip pipenv
 
-RUN pipenv --python /usr/local/bin/python3.13
+RUN pipenv --python /usr/local/bin/python3.12
 
 COPY Pipfile Pipfile.lock ./
 

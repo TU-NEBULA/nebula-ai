@@ -1,64 +1,82 @@
-import nltk
+"""
+Nebula AI 애플리케이션의 메인 진입점 모듈
+
+이 모듈은 FastAPI 애플리케이션을 초기화하고 RabbitMQ 컨슈머를 시작하는 역할을 담당합니다.
+애플리케이션 시작 시 NLTK 데이터를 확인하고, 필요한 경우 다운로드합니다.
+또한 RabbitMQ 메시지를 비동기적으로 처리하기 위한 소비자 태스크를 생성하고 관리합니다.
+"""
+
 import asyncio
 
+import nltk
 from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
-from app.routers import embedding
-from app.routers import extract_data
-from app.routers import embed_check
-from app.routers import keyword_sync
-from app.routers import task_status
-
-from app.middlewares.headers_middleware import HeadersMiddleware
 
 from app.consumers.extract_data_rmq import start_extract_consumer
+from app.consumers.chat_request_rmq import start_chat_consumer
 
-async def lifespan(app: FastAPI):
+async def lifespan(_app: FastAPI):
+    """
+    FastAPI 애플리케이션의 수명 주기를 관리하는 함수
+
+    애플리케이션이 시작될 때 필요한 리소스(NLTK 데이터, RabbitMQ 컨슈머)를 초기화하고,
+    종료될 때 리소스를 정리합니다.
+
+    Args:
+        _app (FastAPI): FastAPI 애플리케이션 인스턴스
+
+    Yields:
+        None: FastAPI 애플리케이션이 실행되는 동안 yield를 통해 제어를 반환합니다.
+    """
+    # NLTK 데이터 확인 및 다운로드
     try:
         nltk.data.find("tokenizers/punkt_tab")
     except LookupError:
         nltk.download("punkt_tab")
-    
+
+    # 컨슈머 태스크 목록 초기화
+    consumer_tasks = []
+
     try:
-        await start_extract_consumer()
-        print("RabbitMQ consumer started successfully")
-    except Exception as e:
-        print(f"Failed to start RabbitMQ consumer: {e}")
+        # 추출 컨슈머 태스크 생성
+        extract_task = asyncio.create_task(start_extract_consumer())
+        consumer_tasks.append(extract_task)
+        print("추출 컨슈머 태스크 생성됨")
 
-    # await asyncio.gather(
-    #     start_extract_consumer(),
-    #     start_bookmark_consumer(),
-    #     start_summarize_consumer(),
-    # )
+        # 채팅 컨슈머 태스크 생성
+        chat_task = asyncio.create_task(start_chat_consumer())
+        consumer_tasks.append(chat_task)
+        print("채팅 컨슈머 태스크 생성됨")
 
-    yield 
+        print(f"총 {len(consumer_tasks)}개의 RabbitMQ 컨슈머 태스크가 생성됨")
+    except Exception as e: # pylint: disable=broad-exception-caught
+        print(f"컨슈머 태스크 생성 실패: {e}")
 
-app = FastAPI(lifespan=lifespan)
+    # FastAPI 애플리케이션 실행
+    yield
 
-# CORS 설정
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # 애플리케이션 종료 시 태스크 정리
+    for task in consumer_tasks:
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+
+# FastAPI 애플리케이션 초기화
+app = FastAPI(
+    title="Nebula AI",
+    description="NLP 기반 북마크 메모 서비스 인공지능 서버",
+    version="1.0.0",
+    lifespan=lifespan
 )
-
-# 커스텀 미들웨어
-app.add_middleware(HeadersMiddleware)
-
-# 라우터 등록
-app.include_router(extract_data.router, prefix="/api", tags=["extract_data"])
-
-app.include_router(embedding.router, prefix="/api", tags=["embedding"])
-app.include_router(embed_check.router, prefix="/api", tags=["embedding"])
-
-app.include_router(keyword_sync.router, prefix="/api", tags=["keyword"])
-
-app.include_router(task_status.router, prefix="/api", tags=["task"])
-
 
 @app.get("/")
 async def root():
+    """
+    루트 엔드포인트 - 서버 상태 확인
+
+    Returns:
+        dict: 서버 상태 메시지
+    """
     return {"message": "Hello World"}
