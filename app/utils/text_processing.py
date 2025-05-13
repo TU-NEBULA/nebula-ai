@@ -83,7 +83,7 @@ def tokenize(text: str) -> list:
 
     korean_tokens = remove_stopwords(korean_tokens, language='ko')
     english_tokens = remove_stopwords(english_tokens, language='en')
-    
+
     return korean_tokens + english_tokens
 
 
@@ -102,7 +102,7 @@ def load_korean_stopwords(file_name: str ='ko_stopwords.txt', tokenizer=None):
 
     with open(file_path, 'r', encoding='utf-8') as f:
         stop_words = f.read().splitlines()
-    
+
     if tokenizer is not None:
         processed = set()
         for sw in stop_words:
@@ -155,13 +155,13 @@ def extract_keywords_tfidf(user_id: int, text: str, s3_key:str, top_n=3) -> list
         print("입력 텍스트가 비어있습니다.")
         print(f"s3_key: {s3_key}")
         return []
-    
+
     collection = Chroma(
         persist_directory=settings.CHROMA_DB_URI,
         embedding_function=embeddings,
         collection_name="nebula_html",
     )
-    
+
     # 2) 사용자 기존 키워드/가중치 조회
     user_data = collection.get(
         where={"user_id": user_id},

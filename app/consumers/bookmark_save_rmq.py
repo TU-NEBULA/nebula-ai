@@ -5,14 +5,16 @@
 요청을 검증한 후 Celery 태스크로 북마크 저장 작업을 위임합니다.
 """
 import logging
+from typing import List
+
 from aio_pika import IncomingMessage
 from pydantic import ValidationError
+from pydantic import BaseModel, Field
+
 from app.core.rabbit import get_rabbit_connection
 from app.core.config import settings
 from app.tasks.bookmark_save_task import save_bookmark_task
 
-from pydantic import BaseModel, Field
-from typing import List
 
 class BookmarkSaveRequest(BaseModel):
     """
@@ -28,6 +30,10 @@ class BookmarkSaveRequest(BaseModel):
     summary: str
 
     class Config:
+        """
+        Pydantic 설정 클래스
+        Pydantic 모델의 필드 이름을 JSON 키와 일치시키기 위한 설정입니다.
+        """
         allow_population_by_field_name = True
 
 
@@ -47,7 +53,7 @@ async def on_bookmark_save(message: IncomingMessage):
             req = BookmarkSaveRequest.model_validate_json(message.body)
         except ValidationError as e:
             log.error("Invalid payload: %s", e)
-            return 
+            return
 
         save_bookmark_task.delay(
             user_id=req.user_id,
@@ -66,7 +72,7 @@ async def start_bookmark_save_consumer():
     
     RabbitMQ에 연결하고 북마크 저장 큐를 선언한 후 메시지 소비를 시작합니다.
     """
-    
+
     conn    = await get_rabbit_connection()
     channel = await conn.channel()
     await channel.set_qos(prefetch_count=1)

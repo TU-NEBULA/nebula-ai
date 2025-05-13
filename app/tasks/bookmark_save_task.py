@@ -5,13 +5,14 @@
 S3에서 HTML 콘텐츠를 가져오고, 텍스트를 추출하여 청크로 나눈 다음, 임베딩하여 ChromaDB에 저장합니다.
 """
 
-from app.core.celery_worker import celery
 from bs4 import BeautifulSoup
+
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
 
 from app.core.config import settings
+from app.core.celery_worker import celery
 from app.external.s3_service import download_html_from_s3
 
 # OpenAI 임베딩 모델 초기화
@@ -97,7 +98,7 @@ def _save_bookmark_logic(user_id: int , star_id: str, s3_key: str, keywords:list
     retry_backoff=True,
     retry_jitter=True,
 )
-def save_bookmark_task(self, user_id: int, star_id: str, s3_key: str, keywords:list, memo:str, summary:str) -> dict:
+def save_bookmark_task(_self, user_id: int, star_id: str, s3_key: str, keywords:list, memo:str, summary:str) -> dict:
     """
     북마크를 벡터 데이터베이스에 저장하는 Celery 태스크
 

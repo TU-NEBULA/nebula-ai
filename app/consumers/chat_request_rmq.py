@@ -13,7 +13,6 @@ import asyncio
 import traceback
 from aio_pika import IncomingMessage, Message
 from pydantic import BaseModel, Field
-from typing import Any, Dict, List
 from openai import AsyncOpenAI
 from langchain_openai import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
@@ -59,6 +58,10 @@ class ChatRequestModel(BaseModel):
     message: str
 
     class Config:
+        """
+        Pydantic 설정 클래스
+        allow_population_by_field_name (bool): 필드 이름으로 인스턴스를 생성할 수 있도록 설정합니다.
+        """
         allow_population_by_field_name = True
 
 async def on_chat_message(ch, message: IncomingMessage):
@@ -162,7 +165,7 @@ async def on_chat_message(ch, message: IncomingMessage):
                 ),
                 timeout=60  # 60초 타임아웃 설정
             )
-            
+
             # 스트림 처리
             async for chunk in completion:
                 delta = chunk.choices[0].delta.content
@@ -176,7 +179,7 @@ async def on_chat_message(ch, message: IncomingMessage):
                         routing_key=message.reply_to
                     )
                 await asyncio.sleep(0)  # 이벤트 루프에게 제어권 양보
-                
+
         except asyncio.TimeoutError:
             log.error("OpenAI streaming timed out after 60 seconds")
             await ch.default_exchange.publish(
@@ -199,7 +202,7 @@ async def on_chat_message(ch, message: IncomingMessage):
             routing_key=message.reply_to
         )
         log.info("[ChatDone] user_id=%s", req.user_id)
-        
+
         # 메시지 처리 완료 표시
         await message.ack()
 
@@ -218,7 +221,7 @@ async def on_chat_message(ch, message: IncomingMessage):
                 )
             except Exception as pub_err:
                 log.error("에러 메시지 발행 실패: %s", pub_err)
-        
+
         # 에러 발생해도 메시지 처리 완료로 표시
         try:
             await message.ack()
@@ -236,7 +239,7 @@ async def start_chat_consumer():
     """
     retry_count = 0
     max_retries = 5
-    
+
     while retry_count < max_retries:
         try:
             log.info("RabbitMQ 연결 시도 중...")
@@ -244,21 +247,21 @@ async def start_chat_consumer():
             ch = await conn.channel()
             await ch.set_qos(prefetch_count=1)
             q = await ch.declare_queue(settings.CHAT_REQ_QUEUE, durable=True)
-            
+
             # 연결 성공 로깅
             log.info("Chat consumer listening on queue %s", settings.CHAT_REQ_QUEUE)
-            
+
             # 메시지 소비 시작
             await q.consume(on_chat_message)
-            
+
             # 연결 유지 (이벤트 루프에서 대기)
             while True:
                 await asyncio.sleep(3600)  # 1시간마다 확인
-                
+
         except Exception as e:
             retry_count += 1
             log.error("RabbitMQ 연결 실패 (%d/%d): %s", retry_count, max_retries, e)
-            
+
             if retry_count < max_retries:
                 wait_time = 2 ** retry_count  # 지수 백오프
                 log.info("재연결 대기 중... %d초", wait_time)

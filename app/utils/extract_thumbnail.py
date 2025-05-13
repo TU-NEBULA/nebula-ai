@@ -15,11 +15,11 @@ def extract_thumbnail(html_content: str) -> str:
         str: 추출된 썸네일 URL, 없을 경우 기본 썸네일 이미지 경로 반환
     """
     soup = BeautifulSoup(html_content, 'html.parser')
-    
+
     og_image = soup.find('meta', property='og:image')
-    
+
     if og_image and og_image.get('content'):
         return og_image['content']
     else:
-        return "basetumbnail.jpg" 
+        return "basetumbnail.jpg"
     
