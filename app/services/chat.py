@@ -1,3 +1,9 @@
+"""
+사용자 채팅 요청 처리 모듈
+
+이 모듈은 사용자의 채팅 요청을 처리하고, 벡터 데이터베이스에서 관련 문서를 검색하여
+사용자의 질문에 대한 응답을 생성합니다. 또한 시각화를 위한 그래프 데이터도 함께 반환합니다.
+"""
 import asyncio
 from typing import List, Dict
 
@@ -9,17 +15,32 @@ from langchain.prompts.chat import (
 
 from app.core.config import settings
 
+# 검색할 최대 문서 수
 TOP_K=10
+# 응답에 포함할 문서 수
 ANSWER_N=5
 
+# OpenAI 임베딩 모델 초기화
 embeddings = OpenAIEmbeddings(
     model=settings.OPENAI_EMBED_MODEL or "text-embedding-3-small"
 )
 
-async def process_chat_request(
-    user_id: int,
-    message: str,
-) -> Dict[str, List[Dict]]:
+async def process_chat_request(user_id: int, message: str,) -> Dict[str, List[Dict]]:
+    """
+    사용자의 채팅 요청을 처리하고 관련 문서와 응답을 생성합니다.
+    
+    사용자 ID와 메시지를 받아 다음과 같은 작업을 수행합니다:
+    1. 벡터 데이터베이스에서 사용자의 북마크 중 메시지와 관련된 문서를 검색합니다.
+    2. 검색된 문서를 사용하여 LLM으로 응답을 생성합니다.
+    3. 문서들의 관계를 시각화하기 위한 그래프 데이터를 구성합니다.
+    
+    Args:
+        user_id (int): 사용자 ID
+        message (str): 사용자의 메시지/질문
+        
+    Returns:
+        Dict[str, List[Dict]]: 응답 텍스트와 그래프 데이터를 포함한 딕셔너리
+    """
 
     vectorstore = Chroma(
         persist_directory=settings.CHROMA_DB_URI,

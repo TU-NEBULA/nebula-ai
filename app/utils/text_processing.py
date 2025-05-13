@@ -1,3 +1,10 @@
+"""
+텍스트 처리 유틸리티 모듈
+
+이 모듈은 HTML 콘텐츠에서 본문 텍스트를 추출하고, 문장을 분리하며, 
+한국어와 영어 토큰을 생성하는 기능을 제공합니다.
+TF-IDF 기반으로 키워드를 추출하는 기능도 포함되어 있습니다.
+"""
 import re
 import os
 import numpy as np
@@ -18,8 +25,13 @@ embeddings = OpenAIEmbeddings(
 
 def extract_main_text(html: str) -> str:
     """
-    BeautifulSoup으로 HTML을 파싱하여 본문 텍스트를 최대한 깔끔하게 추출.
-    <div>, <article>, <section> 태그 기준으로 텍스트를 모음.
+    BeautifulSoup으로 HTML을 파싱하여 본문 텍스트를 최대한 깔끔하게 추출합니다.
+    <div>, <article>, <section> 태그 기준으로 텍스트를 모아서 반환합니다.
+
+    Args:
+        html (str): HTML 콘텐츠
+    Returns:
+        str: 추출된 본문 텍스트
     """
     soup = BeautifulSoup(html, "html.parser")
 
@@ -41,13 +53,28 @@ def extract_main_text(html: str) -> str:
 
 def split_sentences(text: str) -> list:
     """
-    간단히 정규식으로 마침표, 느낌표, 물음표 뒤에서 분리.
+    텍스트를 문장 단위로 분리합니다.
+    정규식을 사용하여 마침표, 느낌표, 물음표 뒤에서 문장을 분리합니다.
+
+    Args:
+        text (str): 분석할 텍스트
+    Returns:
+        list: 분리된 문장 리스트
     """
     sentences = re.split(r'(?<=[.!?])\s+', text.strip())
     return [s.strip() for s in sentences if s.strip()]
 
 
-def tokenize(text):
+def tokenize(text: str) -> list:
+    """
+    텍스트를 한국어와 영어 토큰으로 분리합니다.
+    한국어는 Okt를 사용하여 명사를 추출하고, 영어는 NLTK word_tokenize를 사용합니다.
+    두 언어 모두 불용어를 제거한 결과를 반환합니다.
+    Args:
+        text (str): 분석할 텍스트
+    Returns:
+        list: 한국어와 영어 토큰 리스트
+    """
     okt = Okt()
     korean_tokens = okt.nouns(text)
 
@@ -60,9 +87,15 @@ def tokenize(text):
     return korean_tokens + english_tokens
 
 
-def load_korean_stopwords(file_name='ko_stopwords.txt', tokenizer=None):
+def load_korean_stopwords(file_name: str ='ko_stopwords.txt', tokenizer=None):
     """
-    한국어 불용어 리스트를 파일에서 불러오는 함수.
+    한국어 불용어 리스트를 파일에서 불러옵니다.
+    선택적으로 토크나이저를 적용하여 불용어를 추가 처리할 수 있습니다.
+    Args:
+        file_name (str): 불용어 파일 이름
+        tokenizer (callable): 선택적 토크나이저 함수
+    Returns:
+        list: 불용어 리스트
     """
     current_dir = os.path.dirname(os.path.abspath(__file__))
     file_path = os.path.join(current_dir, file_name)
@@ -80,7 +113,17 @@ def load_korean_stopwords(file_name='ko_stopwords.txt', tokenizer=None):
         return stop_words
 
 
-def remove_stopwords(tokens, language='en'):
+def remove_stopwords(tokens: list, language:str ='en'):
+    """
+    토큰 리스트에서 불용어를 제거합니다.
+    언어(영어 또는 한국어)에 따라 적절한 불용어 세트를 적용합니다.
+
+    Args:
+        tokens (list): 토큰 리스트
+        language (str): 언어 ('en' 또는 'ko')
+    Returns:
+        list: 불용어가 제거된 토큰 리스트
+    """
     if language == 'en':
         stop_words = set(stopwords.words('english'))
     else:
@@ -91,9 +134,21 @@ def remove_stopwords(tokens, language='en'):
 
 def extract_keywords_tfidf(user_id: int, text: str, s3_key:str, top_n=3) -> list:
     """
-    문서를 RecursiveCharacterTextSplitter를 활용해 분할 후, TF-IDF 기반 키워드를 추출.
-    또한 사용자의 ChromaDB 키워드 정보를 반영하여 가중치를 적용함.
-    빈 입력이나 에러 발생 시 빈 리스트 반환.
+    문서에서 TF-IDF 기반 키워드를 추출합니다.
+    
+    1. RecursiveCharacterTextSplitter로 문서를 분할합니다.
+    2. 사용자의 ChromaDB 키워드 정보를 반영하여 가중치를 적용합니다.
+    3. 상위 키워드를 반환합니다.
+    
+    빈 입력이나 에러 발생 시 빈 리스트를 반환합니다.
+
+    Args:
+        user_id (int): 사용자 ID
+        text (str): 분석할 텍스트
+        s3_key (str): S3에서 다운로드한 HTML 콘텐츠의 키
+        top_n (int): 반환할 상위 키워드 개수
+    Returns:
+        list: 추출된 키워드 리스트
     """
     # 1) 빈 입력 예외 처리
     if not text or not text.strip():

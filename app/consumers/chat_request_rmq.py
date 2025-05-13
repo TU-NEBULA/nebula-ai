@@ -1,3 +1,10 @@
+"""
+채팅 요청 메시지 소비자 모듈
+
+이 모듈은 RabbitMQ를 통해 사용자의 채팅 요청을 받아 처리합니다.
+벡터 데이터베이스에서 관련 데이터를 찾아 OpenAI API를 통한 비동기 스트리밍 응답을 제공합니다.
+시각화를 위한 그래프 데이터도 함께 생성합니다.
+"""
 import os
 import json
 import uuid
@@ -23,22 +30,31 @@ logging.basicConfig(
     force=True  # 기존 로거 설정을 덮어쓰기
 )
 log = logging.getLogger(__name__)
-# httpx 디버그 로깅
+# httpx 디버그 로깅 활성화
 logging.getLogger("httpx").setLevel(logging.DEBUG)
 
-# LangSmith 트레이싱 활성화
+# LangSmith 트레이싱 활성화 (랭체인 모니터링을 위한 설정)
 os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
 os.environ.setdefault("LANGCHAIN_API_KEY", settings.LANGSMITH_API_KEY)
 
-# 임베딩 및 OpenAI 비동기 클라이언트
+# 임베딩 및 OpenAI 비동기 클라이언트 초기화
 embeddings = OpenAIEmbeddings(model=settings.OPENAI_EMBED_MODEL)
 async_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# 파라미터
-TOP_K = 10
-ANSWER_N = 5
+# 검색 및 응답 관련 파라미터
+TOP_K = 10  # 검색할 최대 문서 수
+ANSWER_N = 5  # 응답에 포함할 문서 수
 
 class ChatRequestModel(BaseModel):
+    """
+    채팅 요청 모델
+    
+    RabbitMQ를 통해 수신된 채팅 요청을 검증하고 파싱하기 위한 모델입니다.
+    
+    Attributes:
+        user_id (int): 사용자 ID
+        message (str): 사용자의 채팅 메시지/질문
+    """
     user_id: int = Field(..., alias="userId")
     message: str
 
@@ -47,7 +63,18 @@ class ChatRequestModel(BaseModel):
 
 async def on_chat_message(ch, message: IncomingMessage):
     """
-    메시지 처리: 벡터 검색 후 AsyncOpenAI 스트리밍, 로그 추가
+    채팅 메시지 처리 핸들러
+    
+    RabbitMQ에서 받은 채팅 요청 메시지를 처리합니다. 다음 단계로 수행됩니다:
+    1. 사용자 요청 검증 및 파싱
+    2. 벡터 데이터베이스에서 관련 문서 검색
+    3. 그래프 데이터 생성
+    4. OpenAI API를 사용한 비동기 스트리밍 응답 생성
+    5. 응답 및 그래프 데이터 전송
+    
+    Args:
+        ch: RabbitMQ 채널 객체
+        message (IncomingMessage): RabbitMQ에서 받은 메시지 객체
     """
     try:
         log.debug("Received message body: %s", message.body)
@@ -200,7 +227,12 @@ async def on_chat_message(ch, message: IncomingMessage):
 
 async def start_chat_consumer():
     """
-    채팅 컨슈머 시작 - 재연결 로직 추가
+    채팅 콘슈머 시작 함수
+    
+    RabbitMQ에 연결하고 채팅 요청 큐를 선언한 후 메시지 소비를 시작합니다.
+    연결에 실패할 경우 지수 백오프를 사용한 재연결 로직을 적용합니다.
+    
+    최대 5회까지 재연결을 시도하고, 성공하면 새로운 콘슈머를 시작합니다.
     """
     retry_count = 0
     max_retries = 5
