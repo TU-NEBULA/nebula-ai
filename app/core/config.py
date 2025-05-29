@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str
     OPENAI_EMBED_MODEL: str
     OPENAI_MODEL: str
+    OPENAI_BASE_URL: str = "https://api.openai.com/v1"
+    OPENAI_TIMEOUT: float = 30.0
     LANGSMITH_TRACING: bool
     LANGSMITH_ENDPOINT: str
     LANGSMITH_API_KEY: str

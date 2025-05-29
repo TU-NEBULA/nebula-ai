@@ -1,271 +1,161 @@
 """
-채팅 요청 메시지 소비자 모듈
-
-이 모듈은 RabbitMQ를 통해 사용자의 채팅 요청을 받아 처리합니다.
-벡터 데이터베이스에서 관련 데이터를 찾아 OpenAI API를 통한 비동기 스트리밍 응답을 제공합니다.
-시각화를 위한 그래프 데이터도 함께 생성합니다.
+chat_request_rmq.py
+────────────────────────────────────────────────────────────────────────────
+1. chat.req(exchange) ⇒ userId(routing_key) 로 들어온 프롬프트 메시지를 소비
+2. Chroma 벡터DB에서 Top-K 문서를 검색해 RAG 컨텍스트 구성
+3. LangChain ChatOpenAI(streaming) 으로 토큰 생성
+4. 각 토큰·완료 이벤트를 amq.direct(exchange) ⇒ jobId(routing_key) 로 퍼블리시
+   (FastAPI /chat/stream/{jobId} 엔드포인트가 이걸 구독해 SSE로 내보냄)
 """
-import os
-import json
-import uuid
-import logging
-import asyncio
-import traceback
-from aio_pika import IncomingMessage, Message
-from pydantic import BaseModel, Field
-from openai import AsyncOpenAI
-from langchain_openai import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.prompts.chat import (
-    ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate,
-)
+
+from __future__ import annotations
+
+import os, json, logging, asyncio, traceback, uuid
+from typing import List, Tuple, Dict, Any
+
+import aio_pika
+from aio_pika import IncomingMessage, Message, DeliveryMode, ExchangeType
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain.callbacks.streaming_aiter import AsyncIteratorCallbackHandler
+from langchain.callbacks.tracers import ConsoleCallbackHandler
+import chromadb
+
 from app.core.config import settings
 from app.core.rabbit import get_rabbit_connection
+from app.models.chat import ChatRequestModel
 
-# 로깅 설정 (stdout에 즉시 출력)
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    force=True  # 기존 로거 설정을 덮어쓰기
-)
 log = logging.getLogger(__name__)
-# httpx 디버그 로깅 활성화
-logging.getLogger("httpx").setLevel(logging.DEBUG)
 
-# LangSmith 트레이싱 활성화 (랭체인 모니터링을 위한 설정)
-os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
-os.environ.setdefault("LANGCHAIN_API_KEY", settings.LANGSMITH_API_KEY)
+# 벡터 DB 싱글턴
+_embeddings: OpenAIEmbeddings | None = None
+_vectordb: Chroma | None = None
+TOP_K = 10  # 검색 문서 수
 
-# 임베딩 및 OpenAI 비동기 클라이언트 초기화
-embeddings = OpenAIEmbeddings(model=settings.OPENAI_EMBED_MODEL)
-async_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# 검색 및 응답 관련 파라미터
-TOP_K = 10  # 검색할 최대 문서 수
-ANSWER_N = 5  # 응답에 포함할 문서 수
+def _get_vectordb() -> Chroma:
+    global _embeddings, _vectordb
+    if _vectordb:
+        return _vectordb
+    _embeddings = OpenAIEmbeddings(model=settings.OPENAI_EMBED_MODEL)
+    _vectordb = Chroma(
+        persist_directory=settings.CHROMA_DB_URI,
+        embedding_function=_embeddings,
+        collection_name="nebula_html",
+        client_settings=chromadb.config.Settings(
+            is_persistent=True,
+            persist_directory=settings.CHROMA_DB_URI,
+            anonymized_telemetry=False
+        )
+    )
+    return _vectordb
 
-class ChatRequestModel(BaseModel):
-    """
-    채팅 요청 모델
-    
-    RabbitMQ를 통해 수신된 채팅 요청을 검증하고 파싱하기 위한 모델입니다.
-    
-    Attributes:
-        user_id (int): 사용자 ID
-        message (str): 사용자의 채팅 메시지/질문
-    """
-    user_id: int = Field(..., alias="userId")
-    message: str
 
-    class Config:
-        """
-        Pydantic 설정 클래스
-        allow_population_by_field_name (bool): 필드 이름으로 인스턴스를 생성할 수 있도록 설정합니다.
-        """
-        allow_population_by_field_name = True
+async def _retrieve_context(user_id: int, query: str) -> List[Tuple[str, Dict[str, Any]]]:
+    vectordb = _get_vectordb()
+    docs_scores = vectordb.similarity_search_with_score(query, k=TOP_K)
+    return [
+        (getattr(doc, "snippet", doc.page_content[:160]), doc.metadata)
+        for doc, _ in docs_scores
+        if doc.metadata.get("user_id") == user_id
+    ]
 
-async def on_chat_message(ch, message: IncomingMessage):
-    """
-    채팅 메시지 처리 핸들러
-    
-    RabbitMQ에서 받은 채팅 요청 메시지를 처리합니다. 다음 단계로 수행됩니다:
-    1. 사용자 요청 검증 및 파싱
-    2. 벡터 데이터베이스에서 관련 문서 검색
-    3. 그래프 데이터 생성
-    4. OpenAI API를 사용한 비동기 스트리밍 응답 생성
-    5. 응답 및 그래프 데이터 전송
-    
-    Args:
-        ch: RabbitMQ 채널 객체
-        message (IncomingMessage): RabbitMQ에서 받은 메시지 객체
-    """
-    try:
-        log.debug("Received message body: %s", message.body)
-        req = ChatRequestModel.model_validate_json(message.body)
-        log.info("[ChatReq] user_id=%s, message=%s", req.user_id, req.message)
 
-        # 1) VectorStore 생성 및 검색
+def _build_messages(prompt: str, ctx_blocks: List[Tuple[str, Dict[str, Any]]]):
+    if ctx_blocks:
+        joined = "\n".join(
+            f"{i+1}. {m.get('title','(제목없음)')} | {m.get('url','')}\n{snip}"
+            for i, (snip, m) in enumerate(ctx_blocks[:5])
+        )
+        ctx = f"[CONTEXT]\n{joined}\n"
+    else:
+        ctx = "[CONTEXT]\n(관련 문서를 찾지 못했습니다)\n"
+
+    system_prompt = (
+        "너는 NEBULA AI 비서야. CONTEXT 정보를 활용해 한국어로 간결하고 정확하게 답변해. "
+        "출처 문서는 괄호로 번호를 표시해."
+    )
+
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "system", "content": ctx},
+        {"role": "user", "content": prompt},
+    ]
+
+
+async def publish_chunk(
+    ch: aio_pika.abc.AbstractChannel,
+    routing_key: str,
+    corr_id: str,
+    payload: Dict[str, Any],
+):
+    await ch.default_exchange.publish(
+        Message(
+            body=json.dumps(payload).encode(),
+            correlation_id=corr_id,
+            delivery_mode=DeliveryMode.NOT_PERSISTENT,
+        ),
+        routing_key=routing_key,
+    )
+
+
+async def on_chat_message(message: IncomingMessage):
+    async with message.process():  # ack / reject 자동
+        ch = message.channel
         try:
-            log.debug("Building Chroma vectorstore...")
-            vectorstore = Chroma(
-                persist_directory=settings.CHROMA_DB_URI,
-                embedding_function=embeddings,
-                collection_name="nebula_html",
-            )
-            log.info("Querying vectorstore for top %d docs...", TOP_K)
-            docs_scores = vectorstore.similarity_search_with_score(req.message, k=TOP_K)
+            req = ChatRequestModel.model_validate_json(message.body)
         except Exception as e:
-            log.error("Chroma vectorstore init/search failed: %s", e)
-            docs_scores = []
-
-        # 필터링
-        filtered = [(d, s) for d, s in docs_scores if d.metadata.get("user_id") == req.user_id]
-        log.info("Filtered %d docs for user", len(filtered))
-
-        # 2) 결과 없을 때 종료
-        if not filtered:
-            log.warning("No documents found for query, sending fallback")
-            fallback = {"type": "end", "data": {"answer": "관련 자료가 없어요.", "graphPayload": {}}}
-            await ch.default_exchange.publish(
-                Message(
-                    body=json.dumps(fallback).encode(),
-                    correlation_id=message.correlation_id or str(uuid.uuid4())
-                ),
-                routing_key=message.reply_to
-            )
-            # 메시지 처리 완료 표시
-            await message.ack()
+            log.error("Invalid message JSON: %s", e)
             return
 
-        # 3) 컨텍스트 및 그래프 데이터 준비
-        context_lines, nodes, edges = [], [], []
-        for idx, (doc, _) in enumerate(filtered[:ANSWER_N]):
-            md = doc.metadata
-            snippet = getattr(doc, 'snippet', doc.page_content[:200])
-            line = f"{idx+1}. {md.get('title')} | {md.get('url')} | {snippet}"
-            context_lines.append(line)
-            nodes.append({
-                "id": md.get("id"),
-                "label": md.get("title"),
-                "url": md.get("url"),
-                "tags": md.get("tags", [])
-            })
-        for i in range(len(nodes)):
-            for j in range(i+1, len(nodes)):
-                shared = set(nodes[i]["tags"]) & set(nodes[j]["tags"])
-                if shared:
-                    edges.append({
-                        "source": nodes[i]["id"],
-                        "target": nodes[j]["id"],
-                        "weight": len(shared)
-                    })
-        graph_payload = {"nodes": nodes, "edges": edges, "layout": "force-3d"}
-        log.debug("Prepared graph payload: %d nodes, %d edges", len(nodes), len(edges))
+        log.info("[ChatReq] uid=%s prompt=%.60s…", req.user_id, req.message)
 
-        # 4) OpenAI 스트리밍 호출
-        system_tmpl = (
-            "너는 NEBULA 챗봇입니다. 상위 5개 북마크를 제목·URL·요약 형태로 간결히 응답하세요."
-        )
-        human_tmpl = (
-            "[CONTEXT]\n" + "\n".join(context_lines) + "\n\n[USER]\n{query}"
-        )
-        prompt_msgs = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(system_tmpl),
-            HumanMessagePromptTemplate.from_template(human_tmpl)
-        ]).format_prompt(query=req.message).to_messages()
-        log.info("Sending streaming request to OpenAI with %d messages", len(prompt_msgs))
+        # RAG 검색
+        ctx_blocks = await _retrieve_context(req.user_id, req.message)
 
-        # 5) 스트림 전송 - 타임아웃 설정 추가
+        # LLM 스트림 설정
+        llm = ChatOpenAI(
+            model=settings.OPENAI_MODEL,
+            streaming=True,
+            temperature=0.7,
+            timeout=60,
+        )
+        stream_cb = AsyncIteratorCallbackHandler()
+        job_id = message.correlation_id or str(uuid.uuid4())
+        routing_key = job_id  # publish 대상
+
         try:
-            completion = await asyncio.wait_for(
-                async_client.chat.completions.create(
-                    model=settings.OPENAI_MODEL,
-                    messages=[{"role": msg.type, "content": msg.content} for msg in prompt_msgs],
-                    stream=True
-                ),
-                timeout=60  # 60초 타임아웃 설정
+            # LLM 호출 태스크 실행
+            llm_task = asyncio.create_task(
+                llm.agenerate([_build_messages(req.message, ctx_blocks)], callbacks=[stream_cb, ConsoleCallbackHandler()])
             )
 
-            # 스트림 처리
-            async for chunk in completion:
-                delta = chunk.choices[0].delta.content
-                if delta is not None:  # None 체크 추가
-                    log.debug("Stream chunk: %s", delta)
-                    await ch.default_exchange.publish(
-                        Message(
-                            body=json.dumps({"type": "chunk", "data": delta}).encode(),
-                            correlation_id=message.correlation_id
-                        ),
-                        routing_key=message.reply_to
-                    )
-                await asyncio.sleep(0)  # 이벤트 루프에게 제어권 양보
+            # 토큰 소비 → publish_chunk
+            async for chunk in stream_cb.aiter():
+                if chunk.content:
+                    await publish_chunk(ch, routing_key, job_id, {"type": "chunk", "data": chunk.content})
 
-        except asyncio.TimeoutError:
-            log.error("OpenAI streaming timed out after 60 seconds")
-            await ch.default_exchange.publish(
-                Message(
-                    body=json.dumps({"type": "end", "data": {"answer": "응답 시간이 초과되었습니다.", "graphPayload": graph_payload}}).encode(),
-                    correlation_id=message.correlation_id
-                ),
-                routing_key=message.reply_to
-            )
-            await message.ack()
+            await llm_task  # 실패 시 예외 전파
+        except Exception:
+            tb = traceback.format_exc()
+            log.error("Worker error: %s", tb)
+            await publish_chunk(ch, routing_key, job_id, {"type": "end", "error": tb})
             return
 
-        # 6) 완료 이벤트 전송
-        log.info("Streaming complete, sending graph payload")
-        await ch.default_exchange.publish(
-            Message(
-                body=json.dumps({"type": "end", "data": graph_payload}).encode(),
-                correlation_id=message.correlation_id
-            ),
-            routing_key=message.reply_to
-        )
-        log.info("[ChatDone] user_id=%s", req.user_id)
+        # 그래프(또는 기타) 페이로드
+        graph_payload = {"nodes": [], "edges": [], "layout": "force-3d"}
+        await publish_chunk(ch, routing_key, job_id, {"type": "end", "data": graph_payload})
+        log.info("[ChatDone] uid=%s jobId=%s", req.user_id, job_id)
 
-        # 메시지 처리 완료 표시
-        await message.ack()
-
-    except Exception as e:
-        tb = traceback.format_exc()
-        log.error("Chat 처리 오류: %s", tb)
-        if message and hasattr(message, 'reply_to') and message.reply_to:
-            err = {"type": "end", "error": str(e), "detail": tb}
-            try:
-                await ch.default_exchange.publish(
-                    Message(
-                        body=json.dumps(err).encode(),
-                        correlation_id=message.correlation_id or str(uuid.uuid4())
-                    ),
-                    routing_key=message.reply_to
-                )
-            except Exception as pub_err:
-                log.error("에러 메시지 발행 실패: %s", pub_err)
-
-        # 에러 발생해도 메시지 처리 완료로 표시
-        try:
-            await message.ack()
-        except Exception as ack_err:
-            log.error("Message ack 실패: %s", ack_err)
 
 async def start_chat_consumer():
-    """
-    채팅 콘슈머 시작 함수
-    
-    RabbitMQ에 연결하고 채팅 요청 큐를 선언한 후 메시지 소비를 시작합니다.
-    연결에 실패할 경우 지수 백오프를 사용한 재연결 로직을 적용합니다.
-    
-    최대 5회까지 재연결을 시도하고, 성공하면 새로운 콘슈머를 시작합니다.
-    """
-    retry_count = 0
-    max_retries = 5
+    conn = await get_rabbit_connection()
+    ch = await conn.channel()
+    await ch.set_qos(prefetch_count=1)
 
-    while retry_count < max_retries:
-        try:
-            log.info("RabbitMQ 연결 시도 중...")
-            conn = await get_rabbit_connection()
-            ch = await conn.channel()
-            await ch.set_qos(prefetch_count=1)
-            q = await ch.declare_queue(settings.CHAT_REQ_QUEUE, durable=True)
+    # 모든 사용자 요청을 하나의 durable 큐에서 소비
+    q = await ch.declare_queue(settings.CHAT_REQ_QUEUE, durable=True)
+    await q.bind("chat.req", routing_key="#")  # wildcard → 모든 userId
 
-            # 연결 성공 로깅
-            log.info("Chat consumer listening on queue %s", settings.CHAT_REQ_QUEUE)
-
-            # 메시지 소비 시작
-            await q.consume(on_chat_message)
-
-            # 연결 유지 (이벤트 루프에서 대기)
-            while True:
-                await asyncio.sleep(3600)  # 1시간마다 확인
-
-        except Exception as e:
-            retry_count += 1
-            log.error("RabbitMQ 연결 실패 (%d/%d): %s", retry_count, max_retries, e)
-
-            if retry_count < max_retries:
-                wait_time = 2 ** retry_count  # 지수 백오프
-                log.info("재연결 대기 중... %d초", wait_time)
-                await asyncio.sleep(wait_time)
-            else:
-                log.critical("최대 재시도 횟수 초과. 채팅 컨슈머 시작 실패.")
-                raise
+    log.info("Chat consumer listening on %s", settings.CHAT_REQ_QUEUE)
+    await q.consume(on_chat_message)

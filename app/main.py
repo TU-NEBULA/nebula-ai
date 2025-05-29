@@ -10,9 +10,11 @@ import asyncio
 
 import nltk
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.consumers.extract_data_rmq import start_extract_consumer
 from app.consumers.chat_request_rmq import start_chat_consumer
+from app.routers import init_routers
 
 async def lifespan(_app: FastAPI):
     """
@@ -71,7 +73,16 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-@app.get("/")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+init_routers(app)
+
+@app.get("/", tags=["Health"])
 async def root():
     """
     루트 엔드포인트 - 서버 상태 확인
