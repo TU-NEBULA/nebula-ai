@@ -1,21 +1,23 @@
-from fastapi import APIRouter, Body, status, Response
-from app.models.chat import ChatRequestModel
-from app.services.chat_service import enqueue_prompt
+"""
+채팅 요청 라우터 (레거시)
+
+더 이상 사용되지 않습니다. POST /chat/stream을 사용하세요.
+"""
+
+from fastapi import APIRouter, HTTPException
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
 @router.post(
     "/request",
-    status_code=status.HTTP_202_ACCEPTED,
-    summary="채팅 프롬프트 접수",
+    summary="채팅 프롬프트 접수 (레거시)",
 )
-async def chat_request(prompt: ChatRequestModel = Body(...), response: Response = None):
+async def chat_request_legacy():
     """
-    1) 프롬프트를 MQ 큐에 넣고
-    2) jobId를 202 응답 + Location 헤더로 반환
+    레거시 RabbitMQ 기반 채팅 요청
+    더 이상 사용되지 않습니다.
     """
-    job_id = await enqueue_prompt(prompt)
-
-    response.headers["Location"] = f"/chat/stream/{job_id}"
-
-    return {"detail": "accepted", "jobId": job_id}
+    raise HTTPException(
+        status_code=501,
+        detail="RabbitMQ 기반 요청은 더 이상 사용되지 않습니다. POST /chat/stream을 사용하세요."
+    )

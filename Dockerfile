@@ -55,6 +55,9 @@ COPY . .
 
 COPY .env /app/.env
 
+# 로그 디렉토리 생성
+RUN mkdir -p /app/logs
+
 EXPOSE 8000
 
 CMD ["pipenv", "run", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

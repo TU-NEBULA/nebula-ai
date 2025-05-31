@@ -26,6 +26,7 @@ langchain-openai = "*"
 openai = "*"
 langchain-community = "*"
 pylint = "*"
+loguru = "*"
 
 [dev-packages]
 pytest-asyncio = "*"
