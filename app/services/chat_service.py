@@ -25,7 +25,7 @@ from langchain_openai import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
 
 from app.core.config import settings
-from app.models.chat import ChatPrompt
+from app.models.chat import ChatRequestModel
 
 logger = logging.getLogger(__name__)
 
@@ -49,14 +49,11 @@ async def _get_rmq_channel() -> aio_pika.abc.AbstractChannel:
     return _rmq_channel
 
 
-async def enqueue_prompt(prompt: ChatPrompt) -> str:
+async def enqueue_prompt(prompt: ChatRequestModel) -> str:
     """
     프롬프트를 MQ에 넣고, correlation_id(job_id)를 돌려준다.
     """
     channel = await _get_rmq_channel()
-    exchange = await channel.declare_exchange(
-        "chat.req", ExchangeType.DIRECT, durable=True
-    )
 
     job_id = str(uuid.uuid4())
     body_bytes = prompt.model_dump_json().encode()
@@ -70,9 +67,12 @@ async def enqueue_prompt(prompt: ChatPrompt) -> str:
         timestamp=datetime.now(timezone.utc),
     )
 
-    routing_key = str(prompt.user_id or "anonymous")
-    await exchange.publish(message, routing_key=routing_key)
-    logger.info("Prompt published: uid=%s jobId=%s", routing_key, job_id)
+    # default exchange를 사용하여 직접 queue에 발행
+    await channel.default_exchange.publish(
+        message,
+        routing_key=settings.CHAT_REQ_QUEUE  # queue 이름을 routing key로 사용
+    )
+    logger.info("Prompt published: uid=%s jobId=%s", prompt.user_id, job_id)
 
     return job_id
 

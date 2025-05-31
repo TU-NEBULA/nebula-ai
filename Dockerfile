@@ -12,10 +12,34 @@ RUN apt-get update && \
     python3-dev \
     libffi-dev \
     openjdk-17-jre-headless \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
+# Install SQLite 3.45.3 or higher
+RUN wget https://www.sqlite.org/2024/sqlite-autoconf-3450300.tar.gz && \
+    tar xvfz sqlite-autoconf-3450300.tar.gz && \
+    cd sqlite-autoconf-3450300 && \
+    ./configure && \
+    make && \
+    make install && \
+    cd .. && \
+    rm -rf sqlite-autoconf-3450300*
+
+# Python이 새로 설치한 SQLite를 사용하도록 설정
+ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
 ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
 ENV PATH="$JAVA_HOME/bin:$PATH"
+
+# Python 재설치 (새 SQLite를 사용하도록)
+RUN cd /tmp && \
+    wget https://www.python.org/ftp/python/3.12.0/Python-3.12.0.tgz && \
+    tar xzf Python-3.12.0.tgz && \
+    cd Python-3.12.0 && \
+    ./configure --enable-optimizations && \
+    make -j $(nproc) && \
+    make altinstall && \
+    cd .. && \
+    rm -rf Python-3.12.0*
 
 RUN pip install --no-cache-dir --upgrade pip pipenv
 

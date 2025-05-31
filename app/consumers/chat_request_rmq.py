@@ -153,9 +153,8 @@ async def start_chat_consumer():
     ch = await conn.channel()
     await ch.set_qos(prefetch_count=1)
 
-    # 모든 사용자 요청을 하나의 durable 큐에서 소비
+    # durable queue 선언
     q = await ch.declare_queue(settings.CHAT_REQ_QUEUE, durable=True)
-    await q.bind("chat.req", routing_key="#")  # wildcard → 모든 userId
 
     log.info("Chat consumer listening on %s", settings.CHAT_REQ_QUEUE)
     await q.consume(on_chat_message)
