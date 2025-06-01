@@ -22,46 +22,54 @@ from app.core.config import settings
 from app.core.database import get_async_session
 from app.schemas.chat import ChatRequestModel, ChatStreamRequest
 from app.repositories.chat_repository import ChatRepository
+from app.models.chat import ChatSession, ChatMessage
+from app.services.vector_service import vector_service
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
 # 벡터 DB 싱글턴
 _embeddings: OpenAIEmbeddings | None = None
-_vectordb: Chroma | None = None
+_vectordb: None = None
 TOP_K = 10  # 검색 문서 수
 
 
-def _get_vectordb() -> Chroma:
-    global _embeddings, _vectordb
-    if _vectordb:
-        logger.debug("🔄 기존 벡터DB 인스턴스 재사용")
-        return _vectordb
-
-    logger.info("🗄️ 벡터DB 초기화 중...")
-    _embeddings = OpenAIEmbeddings(model=settings.OPENAI_EMBED_MODEL)
-    _vectordb = Chroma(
-        persist_directory=settings.CHROMA_DB_URI,
-        embedding_function=_embeddings,
-        collection_name="nebula_html",
-        client_settings=chromadb.config.Settings(
-            is_persistent=True,
-            persist_directory=settings.CHROMA_DB_URI,
-            anonymized_telemetry=False
-        )
-    )
-    logger.info("✅ 벡터DB 초기화 완료")
-    return _vectordb
+def _get_vectordb():
+    """더 이상 ChromaDB를 사용하지 않으므로 None을 반환합니다."""
+    logger.info("🗄️ PostgreSQL 벡터 데이터베이스 사용 중...")
+    return None
 
 
-async def _retrieve_context(user_id: int, query: str) -> List[Tuple[str, Dict[str, Any]]]:
+async def _retrieve_context(user_id: int, query: str, session: AsyncSession = None) -> List[Tuple[str, Dict[str, Any]]]:
+    """PostgreSQL 벡터 데이터베이스에서 컨텍스트 검색"""
     logger.info(f"🔍 컨텍스트 검색 시작 - user_id: {user_id}, query: {query[:50]}...")
-    vectordb = _get_vectordb()
-    docs_scores = vectordb.similarity_search_with_score(query, k=TOP_K)
-    results = [
-        (getattr(doc, "snippet", doc.page_content[:160]), doc.metadata)
-        for doc, score in docs_scores
-        if doc.metadata.get("user_id") == user_id
-    ]
+    
+    if session is None:
+        async for db_session in get_async_session():
+            return await _retrieve_context(user_id, query, db_session)
+    
+    # PostgreSQL 벡터 검색 수행
+    search_results = await vector_service.similarity_search(
+        session=session,
+        query=query,
+        user_id=str(user_id),
+        limit=TOP_K,
+        similarity_threshold=0.7
+    )
+    
+    # 검색 결과를 기존 포맷으로 변환
+    results = []
+    for document, score in search_results:
+        snippet = document.content[:160].replace("\n", " ")
+        metadata = {
+            "title": document.title or "(제목없음)",
+            "url": document.url or "",
+            "source_id": document.source_id,
+            "source_type": document.source_type,
+            "keywords": document.keywords or [],
+            "score": score
+        }
+        results.append((snippet, metadata))
+    
     logger.info(f"📊 검색 결과: {len(results)}개 문서 발견")
     return results
 
@@ -118,7 +126,7 @@ async def _generate_chat_stream(
 
         # RAG 검색
         try:
-            ctx_blocks = await _retrieve_context(request.user_id, request.message)
+            ctx_blocks = await _retrieve_context(request.user_id, request.message, db_session)
         except Exception as e:
             logger.error(f"❌ 컨텍스트 검색 실패: {e}")
             ctx_blocks = []

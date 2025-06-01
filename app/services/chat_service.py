@@ -8,7 +8,6 @@
 - OPENAI_API_KEY
 - OPENAI_MODEL                (ex. gpt-4o-mini)
 - OPENAI_EMBED_MODEL          (ex. text-embedding-3-small)
-- CHROMA_DB_URI               (벡터 DB 경로)
 """
 from __future__ import annotations
 
@@ -22,13 +21,12 @@ from typing import Optional, AsyncGenerator, Dict, Any, List, Tuple
 import aio_pika
 from aio_pika import Message, DeliveryMode, ExchangeType
 from openai import AsyncOpenAI
-
-# LangChain – RAG
-from langchain_openai import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.database import get_async_session
 from app.schemas.chat import ChatRequestModel
+from app.services.vector_service import vector_service
 
 logger = logging.getLogger(__name__)
 
@@ -94,22 +92,7 @@ def _get_client() -> AsyncOpenAI:
     )
     return _client
 
-_embeddings: OpenAIEmbeddings | None = None
-_vectordb: Chroma | None = None
 TOP_K = 8  # 검색 최대 문서수
-
-
-def _get_vectorstore() -> Chroma:
-    global _embeddings, _vectordb
-    if _vectordb:
-        return _vectordb
-    _embeddings = OpenAIEmbeddings(model=settings.OPENAI_EMBED_MODEL)
-    _vectordb = Chroma(
-        persist_directory=settings.CHROMA_DB_URI,
-        embedding_function=_embeddings,
-        collection_name="nebula_html",
-    )
-    return _vectordb
 
 
 async def _openai_token_generator(
@@ -131,18 +114,39 @@ async def _openai_token_generator(
             await asyncio.sleep(0)
 
 
-async def _retrieve_context(query: str) -> List[Tuple[str, Dict[str, Any]]]:
+async def _retrieve_context(query: str, user_id: str = None, session: AsyncSession = None) -> List[Tuple[str, Dict[str, Any]]]:
     """
-    쿼리와 유사한 문서를 반환.
+    쿼리와 유사한 문서를 PostgreSQL 벡터 데이터베이스에서 검색하여 반환.
     Returns:
         List[ (snippet, metadata) ]
     """
-    vectorstore = _get_vectorstore()
-    docs_scores = vectorstore.similarity_search_with_score(query, k=TOP_K)
+    if session is None:
+        async for db_session in get_async_session():
+            return await _retrieve_context(query, user_id, db_session)
+    
+    # PostgreSQL 벡터 검색 수행
+    search_results = await vector_service.similarity_search(
+        session=session,
+        query=query,
+        user_id=user_id,
+        limit=TOP_K,
+        similarity_threshold=0.7
+    )
+    
+    # 검색 결과를 기존 포맷으로 변환
     results: List[Tuple[str, Dict[str, Any]]] = []
-    for doc, score in docs_scores:
-        snippet = getattr(doc, "snippet", doc.page_content[:160]).replace("\n", " ")
-        results.append((snippet, doc.metadata))
+    for document, score in search_results:
+        snippet = document.content[:160].replace("\n", " ")
+        metadata = {
+            "title": document.title or "(제목없음)",
+            "url": document.url or "",
+            "source_id": document.source_id,
+            "source_type": document.source_type,
+            "keywords": document.keywords or [],
+            "score": score
+        }
+        results.append((snippet, metadata))
+    
     return results
 
 
@@ -171,12 +175,12 @@ def _build_messages(prompt: str, context_blocks: List[Tuple[str, Dict[str, Any]]
     ]
 
 
-async def stream_tokens(prompt: str) -> AsyncGenerator[str, None]:
+async def stream_tokens(prompt: str, user_id: str = None) -> AsyncGenerator[str, None]:
     """
-    RAG 기반으로 OpenAI 토큰(str)을 비동기로 스트림.
+    PostgreSQL 벡터 데이터베이스 기반 RAG로 OpenAI 토큰(str)을 비동기로 스트림.
     """
     try:
-        context_blocks = await _retrieve_context(prompt)
+        context_blocks = await _retrieve_context(prompt, user_id)
         messages = _build_messages(prompt, context_blocks)
 
         async for token in _openai_token_generator(messages):

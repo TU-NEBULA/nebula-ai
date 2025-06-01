@@ -156,7 +156,7 @@ class ChatRepository:
         for idx, ref in enumerate(references):
             rag_ref = RAGReference(
                 message_id=message_id,
-                source_type="chroma",  # ChromaDB에서 가져온 문서
+                source_type="vector",  # PostgreSQL 벡터에서 가져온 문서
                 source_id=ref.get("source_id", ""),
                 title=ref.get("title", ""),
                 url=ref.get("url", ""),

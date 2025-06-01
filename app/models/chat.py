@@ -7,6 +7,7 @@
 - 채팅 세션 모델
 - 채팅 메시지 모델
 - 사용자 피드백 모델
+- 벡터 저장소 모델 (PostgreSQL pgvector)
 """
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -14,6 +15,14 @@ from uuid import UUID, uuid4
 from sqlmodel import Field as SQLField, Relationship, SQLModel
 from sqlalchemy import Column, Text, Index, DateTime, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
+
+# pgvector import 추가
+try:
+    from pgvector.sqlalchemy import Vector
+    PGVECTOR_AVAILABLE = True
+except ImportError:
+    PGVECTOR_AVAILABLE = False
+    print("⚠️ pgvector가 설치되지 않았습니다. 벡터 검색 기능이 비활성화됩니다.")
 
 # 채팅 세션 모델
 class ChatSessionBase(SQLModel):
@@ -183,7 +192,7 @@ class UserFeedbackRead(UserFeedbackBase):
 class RAGReferenceBase(SQLModel):
     """RAG 참조 기본 스키마"""
     message_id: UUID = SQLField(foreign_key="chat_messages.id")
-    source_type: str = SQLField(max_length=50)  # 'chroma', 'bookmark', 'web' 등
+    source_type: str = SQLField(max_length=50)  # 'vector', 'bookmark', 'web' 등
     source_id: str = SQLField(max_length=255)
     title: Optional[str] = SQLField(default=None, max_length=500)
     url: Optional[str] = SQLField(default=None, max_length=2000)
@@ -264,4 +273,135 @@ class UserProfileCreate(UserProfileBase):
 class UserProfileRead(UserProfileBase):
     """사용자 프로필 조회 스키마"""
     created_at: datetime
-    updated_at: Optional[datetime] 
+    updated_at: Optional[datetime]
+
+# 벡터 저장소 모델 (PostgreSQL pgvector 사용)
+if PGVECTOR_AVAILABLE:
+    class DocumentVectorBase(SQLModel):
+        """문서 벡터 기본 스키마"""
+        user_id: str = SQLField(index=True, max_length=255, description="사용자 ID")
+        source_id: str = SQLField(max_length=255, description="원본 문서 ID (star_id, bookmark_id 등)")
+        source_type: str = SQLField(max_length=50, description="소스 타입 (bookmark, web, document 등)")
+        
+        # 문서 내용
+        chunk_index: int = SQLField(default=0, description="문서 내 청크 순서")
+        content: str = SQLField(sa_column=Column(Text), description="텍스트 내용")
+        content_hash: Optional[str] = SQLField(max_length=64, description="내용 해시값 (중복 방지)")
+        
+        # 임베딩 벡터 (1536차원 - OpenAI text-embedding-3-small)
+        embedding: List[float] = SQLField(sa_column=Column(Vector(1536)), description="임베딩 벡터")
+        
+        # 메타데이터
+        title: Optional[str] = SQLField(default=None, max_length=500, description="문서 제목")
+        url: Optional[str] = SQLField(default=None, max_length=2000, description="원본 URL")
+        keywords: Optional[List[str]] = SQLField(
+            default=None,
+            sa_column=Column(JSONB),
+            description="추출된 키워드"
+        )
+        summary: Optional[str] = SQLField(default=None, sa_column=Column(Text), description="문서 요약")
+        
+        # 추가 메타데이터
+        extra_metadata: Optional[Dict[str, Any]] = SQLField(
+            default=None,
+            sa_column=Column(JSONB),
+            description="추가 메타데이터"
+        )
+        
+        # 성능 지표
+        embedding_model: str = SQLField(max_length=100, description="사용된 임베딩 모델")
+        chunk_size: int = SQLField(default=1000, description="청크 크기")
+        chunk_overlap: int = SQLField(default=200, description="청크 겹침")
+
+
+    class DocumentVector(DocumentVectorBase, table=True):
+        """문서 벡터 테이블"""
+        __tablename__ = "document_vectors"
+        
+        # 기본 필드들
+        id: UUID = SQLField(
+            default_factory=uuid4,
+            sa_column=Column(PG_UUID(as_uuid=True), primary_key=True)
+        )
+        created_at: datetime = SQLField(
+            default_factory=datetime.utcnow,
+            sa_column=Column(DateTime(timezone=True), server_default=func.now())
+        )
+        updated_at: Optional[datetime] = SQLField(
+            default=None,
+            sa_column=Column(DateTime(timezone=True), onupdate=func.now())
+        )
+        
+        # 인덱스 정의
+        __table_args__ = (
+            # 벡터 유사도 검색용 인덱스 (cosine distance)
+            Index("idx_document_vectors_embedding_cosine", "embedding", postgresql_using="ivfflat", postgresql_ops={"embedding": "vector_cosine_ops"}),
+            
+            # 일반 검색용 인덱스
+            Index("idx_document_vectors_user_source", "user_id", "source_type", "source_id"),
+            Index("idx_document_vectors_content_hash", "content_hash"),
+            Index("idx_document_vectors_keywords_gin", "keywords", postgresql_using="gin"),
+            Index("idx_document_vectors_user_created", "user_id", "created_at"),
+            
+            # 복합 인덱스
+            Index("idx_document_vectors_user_embedding", "user_id", "embedding", postgresql_using="ivfflat"),
+        )
+
+
+    class DocumentVectorCreate(DocumentVectorBase):
+        """문서 벡터 생성 스키마"""
+        pass
+
+
+    class DocumentVectorRead(DocumentVectorBase):
+        """문서 벡터 조회 스키마"""
+        id: UUID
+        created_at: datetime
+        updated_at: Optional[datetime]
+
+
+    class DocumentVectorUpdate(SQLModel):
+        """문서 벡터 업데이트 스키마"""
+        title: Optional[str] = None
+        keywords: Optional[List[str]] = None
+        summary: Optional[str] = None
+        extra_metadata: Optional[Dict[str, Any]] = None
+
+
+    # 벡터 검색 결과 스키마
+    class VectorSearchResult(SQLModel):
+        """벡터 검색 결과"""
+        document: DocumentVectorRead
+        similarity_score: float
+        distance: float
+
+
+    # 벡터 검색 요청 스키마  
+    class VectorSearchRequest(SQLModel):
+        """벡터 검색 요청"""
+        query_embedding: List[float]
+        user_id: Optional[str] = None
+        source_types: Optional[List[str]] = None
+        limit: int = SQLField(default=10, ge=1, le=100)
+        similarity_threshold: float = SQLField(default=0.7, ge=0.0, le=1.0)
+        include_metadata: bool = SQLField(default=True)
+
+else:
+    # pgvector가 없을 때는 더미 클래스들을 정의
+    class DocumentVector:
+        pass
+    
+    class DocumentVectorCreate:
+        pass
+    
+    class DocumentVectorRead:
+        pass
+    
+    class DocumentVectorUpdate:
+        pass
+    
+    class VectorSearchResult:
+        pass
+    
+    class VectorSearchRequest:
+        pass 

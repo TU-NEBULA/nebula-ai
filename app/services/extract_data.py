@@ -11,7 +11,7 @@ from functools import partial
 
 from bs4 import BeautifulSoup
 from app.external.s3_service import download_html_from_s3
-from app.utils.text_processing import extract_main_text, extract_keywords_tfidf
+from app.utils.text_processing import extract_main_text, extract_keywords
 from app.core.config import settings
 
 # 썸네일 이미지가 없을 때 사용할 기본 이미지 URL
@@ -49,8 +49,8 @@ def extract_data_from_s3(user_id: int, s3_key: str) -> dict:
 
     # HTML에서 본문 텍스트 추출
     main_text = extract_main_text(html_content)
-    # TF-IDF 기반 키워드 추출
-    keywords = extract_keywords_tfidf(user_id, main_text, s3_key)
+    # 새로운 키워드 추출 함수 사용
+    keywords = extract_keywords(main_text, max_keywords=10)
 
     # 결과 반환
     return {
