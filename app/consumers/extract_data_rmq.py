@@ -4,17 +4,24 @@
 이 모듈은 RabbitMQ를 통해 HTML 콘텐츠 데이터 추출 요청을 받아 처리합니다.
 S3에 저장된 HTML에서 이미지와 키워드를 추출하고 그 결과를 응답으로 반환합니다.
 """
+import asyncio
+import json
+import traceback
 import uuid
-import logging
+
+import aio_pika
 from aio_pika import IncomingMessage, Message
 from pydantic import BaseModel, Field, ConfigDict
-
+from loguru import logger
 
 from app.core.rabbit import get_rabbit_connection
 from app.services.extract_data import extract_data_from_s3_async
 from app.core.config import settings
+from app.models.extract_data import ExtractDataModel
+from app.tasks.data_extractor_nlp import NebulaNLPExtractor
 
-log = logging.getLogger(__name__)
+log = logger.bind(name=__name__)
+
 class ExtractDataResponse(BaseModel):
     """
     데이터 추출 응답 모델
@@ -37,64 +44,51 @@ class ExtractDataRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-async def on_extract_message(ch, message: IncomingMessage):
+async def on_extract_message(message: IncomingMessage):
     """
-    데이터 추출 메시지 처리 핸들러
-    
-    RabbitMQ에서 받은 데이터 추출 요청 메시지를 처리하고 추출한 데이터를 응답으로 반환합니다.
-    
-    Args:
-        ch: RabbitMQ 채널 객체
-        message (IncomingMessage): RabbitMQ에서 받은 메시지 객체
+    추출 메시지를 처리하는 함수
     """
     async with message.process():
+        logger.info(f"📨 추출 메시지 수신: correlation_id={message.correlation_id}")
+        
         try:
-            req = ExtractDataRequest.model_validate_json(message.body)
-
-            data = await extract_data_from_s3_async(req.user_id, req.s3_key)
-
-            response = ExtractDataResponse(
-                id = req.user_id,
-                image_url = data["image_url"],
-                keywords = data["keywords"],
-            )
-
-            await ch.default_exchange.publish(
-                Message(
-                    body = response.model_dump_json().encode(),
-                    correlation_id = message.correlation_id or str(uuid.uuid4())
-                ),
-                routing_key=message.reply_to
-            )
-
-            log.info("ExtractData 완료 id=%s", req.user_id)
-
+            request = ExtractDataModel.model_validate_json(message.body)
+            logger.info(f"✅ 메시지 파싱 성공: user_id={request.user_id}, url={request.url}")
         except Exception as e:
-            log.error("ExtractData 실패 error=%s body=%s", str(e), message.body)
-            raise
+            logger.error(f"❌ 메시지 파싱 실패: {e}")
+            return
+
+        logger.info(f"🚀 데이터 추출 시작 - uid={request.user_id}, url={request.url}")
+
+        try:
+            extractor = NebulaNLPExtractor()
+            result = await extractor.extract_and_process(request)
+            logger.info(f"✅ 데이터 추출 완료 - uid={request.user_id}, 처리된 문서 수: {len(result.get('documents', []))}")
+        except Exception:
+            tb = traceback.format_exc()
+            logger.error(f"❌ 데이터 추출 실패: {tb}")
 
 
 async def start_extract_consumer():
     """
-    데이터 추출 콘슈머 시작
-    
-    RabbitMQ에 연결하고 데이터 추출 큐를 선언한 후 메시지 소비를 시작합니다.
+    데이터 추출 컨슈머를 시작하는 함수
     """
-    conn = await get_rabbit_connection()
-    ch = await conn.channel()
-
-    await ch.set_qos(prefetch_count=1)
-
-    q = await ch.declare_queue(settings.EXTRACT_REQ_QUEUE, durable=True)
-    async def handler(message: IncomingMessage):
-        """
-        채널 객체를 포함한 메시지 처리 핸들러
+    logger.info("📊 Extract Data Consumer 시작 준비...")
+    
+    try:
+        connection = await get_rabbit_connection()
+        logger.info("✅ RabbitMQ 연결 성공")
         
-        Args:
-            message (IncomingMessage): RabbitMQ에서 받은 메시지 객체
-        """
-        await on_extract_message(ch, message)
+        channel = await connection.channel()
+        await channel.set_qos(prefetch_count=1)
+        logger.info("✅ 채널 설정 완료")
 
-    await q.consume(handler)
+        queue = await channel.declare_queue(settings.EXTRACT_REQ_QUEUE, durable=True)
+        logger.info(f"✅ 큐 선언 완료: {settings.EXTRACT_REQ_QUEUE}")
 
-    log.info(" [*] extract_data_rmq 리스너 시작, queue=%s", q.name)
+        logger.info(f"🎯 Extract consumer 대기 중: {settings.EXTRACT_REQ_QUEUE}")
+        await queue.consume(on_extract_message)
+        
+    except Exception as e:
+        logger.error(f"❌ Extract Data Consumer 시작 실패: {e}")
+        raise

@@ -10,9 +10,21 @@ import asyncio
 
 import nltk
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from loguru import logger
 
 from app.consumers.extract_data_rmq import start_extract_consumer
 from app.consumers.chat_request_rmq import start_chat_consumer
+from app.routers import init_routers
+
+# 로그 설정
+logger.add(
+    "logs/nebula_ai.log",
+    rotation="1 day",
+    retention="7 days",
+    level="INFO",
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
+)
 
 async def lifespan(_app: FastAPI):
     """
@@ -27,41 +39,61 @@ async def lifespan(_app: FastAPI):
     Yields:
         None: FastAPI 애플리케이션이 실행되는 동안 yield를 통해 제어를 반환합니다.
     """
+    logger.info("🚀 Nebula AI 애플리케이션 시작")
+    
     # NLTK 데이터 확인 및 다운로드
     try:
+        logger.info("📚 NLTK 데이터 확인 중...")
         nltk.data.find("tokenizers/punkt_tab")
+        logger.info("✅ NLTK 데이터 확인 완료")
     except LookupError:
+        logger.info("📥 NLTK 데이터 다운로드 중...")
         nltk.download("punkt_tab")
+        logger.info("✅ NLTK 데이터 다운로드 완료")
 
     # 컨슈머 태스크 목록 초기화
     consumer_tasks = []
 
     try:
-        # 추출 컨슈머 태스크 생성
-        extract_task = asyncio.create_task(start_extract_consumer())
-        consumer_tasks.append(extract_task)
-        print("추출 컨슈머 태스크 생성됨")
+        logger.info("🔄 직접 스트리밍 모드로 시작 중...")
+        logger.info("📝 RabbitMQ Consumer는 비활성화되었습니다")
+        logger.info("✅ POST /chat/stream 엔드포인트를 사용하세요")
+        
+        # RabbitMQ Consumer 비활성화
+        # # Extract Data Consumer 시작
+        # logger.info("📊 Extract Data Consumer 시작...")
+        # extract_task = asyncio.create_task(start_extract_consumer())
+        # consumer_tasks.append(extract_task)
+        # logger.info("✅ Extract Data Consumer 시작 완료")
 
-        # 채팅 컨슈머 태스크 생성
-        chat_task = asyncio.create_task(start_chat_consumer())
-        consumer_tasks.append(chat_task)
-        print("채팅 컨슈머 태스크 생성됨")
+        # # Chat Consumer 시작
+        # logger.info("💬 Chat Consumer 시작...")
+        # chat_task = asyncio.create_task(start_chat_consumer())
+        # consumer_tasks.append(chat_task)
+        # logger.info("✅ Chat Consumer 시작 완료")
 
-        print(f"총 {len(consumer_tasks)}개의 RabbitMQ 컨슈머 태스크가 생성됨")
-    except Exception as e: # pylint: disable=broad-exception-caught
-        print(f"컨슈머 태스크 생성 실패: {e}")
+        logger.info(f"🎯 직접 스트리밍 모드로 실행 중")
+        
+        yield
+        
+    except Exception as e:
+        logger.error(f"❌ 애플리케이션 시작 중 오류 발생: {e}")
+        raise
+    finally:
+        logger.info("🛑 애플리케이션 종료 중...")
+        # 모든 컨슈머 태스크 취소
+        for task in consumer_tasks:
+            if not task.done():
+                logger.info(f"⏹️ 태스크 취소 중: {task.get_name()}")
+                task.cancel()
+        
+        # 취소된 태스크들이 완료될 때까지 대기
+        if consumer_tasks:
+            logger.info("⏳ 태스크 종료 대기 중...")
+            await asyncio.gather(*consumer_tasks, return_exceptions=True)
+        
+        logger.info("✅ 애플리케이션 종료 완료")
 
-    # FastAPI 애플리케이션 실행
-    yield
-
-    # 애플리케이션 종료 시 태스크 정리
-    for task in consumer_tasks:
-        if not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
 
 # FastAPI 애플리케이션 초기화
 app = FastAPI(
@@ -71,7 +103,16 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-@app.get("/")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+init_routers(app)
+
+@app.get("/", tags=["Health"])
 async def root():
     """
     루트 엔드포인트 - 서버 상태 확인
@@ -79,4 +120,5 @@ async def root():
     Returns:
         dict: 서버 상태 메시지
     """
+    logger.info("🏠 루트 엔드포인트 호출")
     return {"message": "Hello World"}

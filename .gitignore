@@ -186,6 +186,9 @@ models/*
 chroma/*
 chroma_db/*
 
+# Logs
+logs/*
+
 # Mac
 .DS_Store
 
