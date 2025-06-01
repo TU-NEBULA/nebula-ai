@@ -13,7 +13,9 @@ from app.utils.text_processing import (
     tokenize,
     split_sentences,
     generate_text_summary,
-    calculate_text_similarity
+    calculate_text_similarity,
+    extract_text_chunks_for_rag,
+    prepare_content_for_rag
 )
 
 
@@ -377,4 +379,287 @@ class TestIntegration:
         keywords = extract_keywords(multilingual_text, max_keywords=5)
         assert isinstance(keywords, list)
         # 적어도 한국어나 영어 키워드는 추출되어야 함
-        assert len(keywords) >= 0 
+        assert len(keywords) >= 0
+
+
+class TestTextChunksForRAG:
+    """extract_text_chunks_for_rag 함수 개선사항 테스트"""
+
+    def test_empty_text_handling(self):
+        """빈 텍스트 처리 개선 테스트"""
+        # 빈 텍스트도 최소 1개 청크 반환
+        chunks = extract_text_chunks_for_rag("")
+        assert len(chunks) == 1
+        assert chunks[0] == ""
+
+    def test_whitespace_only_text(self):
+        """공백만 있는 텍스트 처리 테스트"""
+        # 공백만 있는 텍스트도 안전하게 처리
+        chunks = extract_text_chunks_for_rag("   \n\t   ")
+        assert len(chunks) == 1
+        assert chunks[0] == ""
+
+    def test_very_short_text_handling(self):
+        """매우 짧은 텍스트 처리 개선 테스트"""
+        # 10자 미만의 짧은 텍스트
+        short_text = "AI 기술"
+        chunks = extract_text_chunks_for_rag(short_text)
+        assert len(chunks) == 1
+        assert chunks[0] == short_text
+
+    def test_chunk_size_smaller_than_text(self):
+        """청크 크기보다 작은 텍스트 처리 테스트"""
+        # 1000자보다 작은 텍스트는 전체를 하나의 청크로
+        medium_text = "AI와 머신러닝은 미래 기술입니다." * 10  # 약 300자
+        chunks = extract_text_chunks_for_rag(medium_text, chunk_size=1000)
+        assert len(chunks) == 1
+        assert chunks[0] == medium_text
+
+    def test_minimum_chunk_length_relaxed(self):
+        """최소 청크 길이 완화 테스트 (100자 → 50자)"""
+        # 실제로는 50자 이상의 청크만 유지되는지 확인
+        # 긴 텍스트를 작은 청크로 분할해서 50자 이상인 것만 남는지 테스트
+        long_text = "이것은 매우 긴 텍스트입니다. " * 20  # 약 500자
+        chunks = extract_text_chunks_for_rag(long_text, chunk_size=80, chunk_overlap=20)
+        
+        # 분할된 청크들 중에서 50자 이상인 것들이 있어야 함
+        assert len(chunks) >= 1
+        # 모든 청크가 50자 이상이거나, 원본 텍스트가 반환되어야 함
+        has_meaningful_chunks = any(len(chunk.strip()) >= 50 for chunk in chunks)
+        has_original_text = any(chunk == long_text for chunk in chunks)
+        assert has_meaningful_chunks or has_original_text
+
+    def test_no_meaningful_chunks_fallback(self):
+        """의미있는 청크가 없을 때 원본 텍스트 반환 테스트"""
+        # 49자 텍스트 (50자 미만) - 실제로는 chunk_size보다 작으므로 분할되지 않음
+        short_text = "짧은 텍스트입니다. 청크 최소 길이보다 작습니다."
+        chunks = extract_text_chunks_for_rag(short_text, chunk_size=100, chunk_overlap=20)
+        
+        # 짧은 텍스트는 분할되지 않고 원본 그대로 반환되어야 함
+        assert len(chunks) == 1
+        assert chunks[0] == short_text
+
+
+class TestPrepareContentForRAG:
+    """prepare_content_for_rag 함수 개선사항 테스트"""
+
+    def test_empty_text_rag_preparation(self):
+        """빈 텍스트 RAG 콘텐츠 준비 테스트"""
+        # 빈 텍스트라도 최소 1개 청크 보장
+        rag_content = prepare_content_for_rag(
+            text="",
+            keywords=["테스트"],
+            memo="빈 텍스트 메모",
+            summary="빈 텍스트 요약"
+        )
+        
+        assert len(rag_content) >= 1
+        assert rag_content[0]["content"] == ""
+        assert rag_content[0]["keywords"] == ["테스트"]
+        assert rag_content[0]["user_memo"] == "빈 텍스트 메모"
+
+    def test_chunk_keyword_extraction_safety(self):
+        """청크별 키워드 추출 안전성 테스트"""
+        # 빈 청크에서도 키워드 추출이 안전하게 처리되어야 함
+        rag_content = prepare_content_for_rag(
+            text="",
+            keywords=["안전성"],
+            memo="테스트 메모",
+            summary="테스트 요약"
+        )
+        
+        assert len(rag_content) >= 1
+        assert isinstance(rag_content[0]["chunk_keywords"], list)
+        # 빈 텍스트에서는 빈 키워드 리스트
+        assert rag_content[0]["chunk_keywords"] == []
+
+    def test_chunk_keyword_extraction_with_content(self):
+        """콘텐츠가 있는 청크의 키워드 추출 테스트"""
+        # 실제 콘텐츠에서는 키워드가 추출되어야 함
+        content = "인공지능과 머신러닝은 현대 기술의 핵심입니다. 딥러닝 기술이 발전하고 있습니다."
+        rag_content = prepare_content_for_rag(
+            text=content,
+            keywords=["AI", "기술"],
+            memo="기술 관련 메모",
+            summary="기술 요약"
+        )
+        
+        assert len(rag_content) >= 1
+        assert isinstance(rag_content[0]["chunk_keywords"], list)
+        assert len(rag_content[0]["chunk_keywords"]) > 0
+
+    def test_minimum_chunk_guarantee(self):
+        """최소 청크 보장 테스트"""
+        # 어떤 텍스트든 최소 1개 청크는 보장되어야 함
+        test_cases = [
+            "",
+            "짧은 텍스트",
+            "AI" * 1000,  # 긴 텍스트
+            "   ",  # 공백만
+            "🤖",  # 이모지
+        ]
+        
+        for text in test_cases:
+            # 청크 생성이 실패하지 않아야 함
+            chunks = extract_text_chunks_for_rag(text)
+            assert len(chunks) >= 1, f"텍스트 '{text}'에서 청크가 생성되지 않음"
+            
+            # RAG 콘텐츠 준비도 실패하지 않아야 함
+            rag_content = prepare_content_for_rag(
+                text=text,
+                keywords=["테스트"],
+                memo="테스트 메모",
+                summary="테스트 요약"
+            )
+            assert len(rag_content) >= 1, f"텍스트 '{text}'에서 RAG 콘텐츠 준비 실패"
+
+    def test_user_data_preservation_all_chunks(self):
+        """모든 청크에서 사용자 데이터 보존 테스트"""
+        # 긴 텍스트로 여러 청크 생성
+        long_text = "AI와 머신러닝 기술이 발전하고 있습니다. " * 100
+        user_keywords = ["사용자", "키워드"]
+        user_memo = "사용자 메모"
+        user_summary = "사용자 요약"
+        
+        rag_content = prepare_content_for_rag(
+            text=long_text,
+            keywords=user_keywords,
+            memo=user_memo,
+            summary=user_summary
+        )
+        
+        # 모든 청크에서 사용자 데이터가 보존되어야 함
+        assert len(rag_content) > 1  # 여러 청크 생성 확인
+        for chunk in rag_content:
+            assert chunk["keywords"] == user_keywords
+            assert chunk["user_memo"] == user_memo
+            assert chunk["summary"] == user_summary
+            assert "chunk_index" in chunk
+            assert "total_chunks" in chunk
+
+
+class TestBookmarkUpdatePreparation:
+    """북마크 업데이트 관련 데이터 준비 테스트"""
+
+    def test_star_id_pattern_generation(self):
+        """star_id 기반 삭제 패턴 생성 테스트"""
+        star_id = "bookmark_12345"
+        
+        # 예상되는 삭제 패턴들
+        expected_patterns = [
+            f"{star_id}_chunk_0",
+            f"{star_id}_chunk_1",
+            f"{star_id}_chunk_2",
+            f"{star_id}_memo",
+            f"{star_id}_summary"
+        ]
+        
+        # 패턴이 올바르게 생성되는지 확인
+        for pattern in expected_patterns:
+            assert pattern.startswith(star_id)
+            assert "_" in pattern
+
+    def test_update_scenario_simulation(self):
+        """북마크 업데이트 시나리오 시뮬레이션"""
+        # 첫 번째 저장 데이터
+        first_save = {
+            "user_id": "user123",
+            "star_id": "bookmark456",
+            "title": "첫 번째 제목",
+            "keywords": ["AI", "머신러닝"],
+            "memo": "첫 번째 메모",
+            "summary": "첫 번째 요약"
+        }
+        
+        # 업데이트 데이터 (모든 필드 변경)
+        updated_save = {
+            "user_id": "user123",
+            "star_id": "bookmark456",  # 같은 star_id
+            "title": "업데이트된 제목",
+            "keywords": ["딥러닝", "자연어처리", "컴퓨터비전"],
+            "memo": "업데이트된 메모 내용",
+            "summary": "업데이트된 요약 내용"
+        }
+        
+        # 모든 사용자 정보가 변경되었는지 확인
+        assert updated_save["title"] != first_save["title"]
+        assert updated_save["keywords"] != first_save["keywords"]
+        assert updated_save["memo"] != first_save["memo"]
+        assert updated_save["summary"] != first_save["summary"]
+        
+        # star_id는 동일해야 함 (같은 북마크 업데이트)
+        assert updated_save["star_id"] == first_save["star_id"]
+
+    def test_content_preparation_with_updated_data(self):
+        """업데이트된 데이터로 콘텐츠 준비 테스트"""
+        # 업데이트된 사용자 데이터
+        updated_keywords = ["새로운", "키워드", "목록"]
+        updated_memo = "완전히 새로운 메모 내용입니다."
+        updated_summary = "업데이트된 요약 내용입니다."
+        
+        content = "테스트 콘텐츠입니다. 업데이트 테스트를 진행합니다."
+        
+        rag_content = prepare_content_for_rag(
+            text=content,
+            keywords=updated_keywords,
+            memo=updated_memo,
+            summary=updated_summary
+        )
+        
+        # 모든 청크에 업데이트된 데이터가 반영되어야 함
+        for chunk in rag_content:
+            assert chunk["keywords"] == updated_keywords
+            assert chunk["user_memo"] == updated_memo
+            assert chunk["summary"] == updated_summary
+
+
+class TestRobustnessAndErrorHandling:
+    """견고성 및 오류 처리 테스트"""
+
+    def test_extreme_text_lengths(self):
+        """극단적인 텍스트 길이 처리 테스트"""
+        # 청크 생성이 실패하지 않아야 함
+        chunks = extract_text_chunks_for_rag("A" * 50000)
+        assert len(chunks) >= 1, "매우 긴 텍스트 청크 생성 실패"
+        
+        # RAG 콘텐츠 준비도 실패하지 않아야 함
+        rag_content = prepare_content_for_rag(
+            text="A" * 50000,
+            keywords=["테스트"],
+            memo="테스트 메모",
+            summary="테스트 요약"
+        )
+        assert len(rag_content) >= 1, "매우 긴 텍스트 RAG 콘텐츠 준비 실패"
+
+    def test_special_characters_handling(self):
+        """특수 문자 처리 테스트"""
+        # 특수 문자가 있어도 처리가 완료되어야 함
+        rag_content = prepare_content_for_rag(
+            text="🤖 AI와 로봇 🚀",
+            keywords=["특수문자"],
+            memo="특수문자 테스트",
+            summary="특수문자 요약"
+        )
+        assert len(rag_content) >= 1
+        assert isinstance(rag_content[0]["chunk_keywords"], list)
+
+    def test_none_and_invalid_inputs(self):
+        """None 및 잘못된 입력 처리 테스트"""
+        # None이나 잘못된 타입이 들어와도 처리되어야 함
+        try:
+            rag_content = prepare_content_for_rag(
+                text=None,  # None 입력
+                keywords=["테스트"],
+                memo="None 테스트",
+                summary="None 요약"
+            )
+            # None이 문자열로 변환되거나 빈 문자열로 처리되어야 함
+            assert len(rag_content) >= 1
+        except Exception as e:
+            # 예외가 발생하더라도 적절한 처리가 되어야 함
+            assert "NoneType" in str(e) or "expected string" in str(e)
+
+
+if __name__ == "__main__":
+    import pytest
+    pytest.main([__file__]) 

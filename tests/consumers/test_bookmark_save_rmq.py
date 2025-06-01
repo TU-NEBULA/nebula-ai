@@ -22,6 +22,8 @@ async def test_on_bookmark_save_success(monkeypatch):
         "userId": 5,
         "starId": test_star_id,
         "s3Key": "path/to.html",
+        "title": "사용자가 설정한 북마크 제목",
+        "url": "https://example.com/test-bookmark",
         "keywords": ["a", "b"],
         "memo": "mymemo",
         "summary": "mysummary"
@@ -39,6 +41,8 @@ async def test_on_bookmark_save_success(monkeypatch):
         "user_id": 5,
         "star_id": test_star_id,
         "s3_key": "path/to.html",
+        "title": "사용자가 설정한 북마크 제목",
+        "url": "https://example.com/test-bookmark",
         "keywords": ["a", "b"],
         "memo": "mymemo",
         "summary": "mysummary"
@@ -57,6 +61,37 @@ async def test_on_bookmark_save_invalid(monkeypatch):
                     pass
             return Ctx()
     msg = DummyMessage(b'{"bad": "data"}')
+
+    def should_not_call(**kwargs):
+        pytest.fail("delay should not be called on invalid payload")
+    monkeypatch.setattr(mod.save_bookmark_task, "delay", should_not_call)
+
+    await mod.on_bookmark_save(msg)
+
+@pytest.mark.asyncio
+async def test_on_bookmark_save_missing_required_fields(monkeypatch):
+    """필수 필드 누락 시 처리 테스트"""
+    class DummyMessage:
+        def __init__(self, body):
+            self.body = body
+        def process(self):
+            class Ctx:
+                async def __aenter__(inner):
+                    return self
+                async def __aexit__(inner, exc_type, exc, tb):
+                    pass
+            return Ctx()
+    
+    # title과 url이 누락된 페이로드
+    payload = {
+        "userId": 5,
+        "starId": str(uuid4()),
+        "s3Key": "path/to.html",
+        "keywords": ["a", "b"],
+        "memo": "mymemo",
+        "summary": "mysummary"
+    }
+    msg = DummyMessage(json.dumps(payload).encode())
 
     def should_not_call(**kwargs):
         pytest.fail("delay should not be called on invalid payload")

@@ -21,13 +21,16 @@ class BookmarkSaveRequest(BaseModel):
     북마크 저장 요청 모델
     
     RabbitMQ를 통해 수신된 북마크 저장 요청을 검증하고 파싱하기 위한 모델입니다.
+    사용자가 직접 설정한 정보만 포함됩니다.
     """
     user_id: int = Field(..., alias="userId")
     s3_key: str = Field(..., alias="s3Key")
     star_id: str = Field(..., alias="starId")
-    keywords: List[str]
-    memo: str
-    summary: str
+    title: str  # 사용자가 설정한 북마크 제목
+    url: str    # 원본 URL
+    keywords: List[str]  # 사용자가 최종 선택한 키워드
+    memo: str           # 사용자 메모
+    summary: str        # 사용자가 확인한 요약
 
     class Config:
         """
@@ -59,6 +62,8 @@ async def on_bookmark_save(message: IncomingMessage):
             user_id=req.user_id,
             star_id=req.star_id,
             s3_key=req.s3_key,
+            title=req.title,
+            url=req.url,
             keywords=req.keywords,
             memo=req.memo,
             summary=req.summary
