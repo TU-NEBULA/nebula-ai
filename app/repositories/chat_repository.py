@@ -8,7 +8,7 @@ import uuid
 from datetime import datetime
 from typing import List, Optional, Dict, Any
 from sqlmodel import select, and_
-from sqlmodel.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import (
     ChatSession, ChatMessage, RAGReference, UserFeedback
@@ -89,7 +89,7 @@ class ChatRepository:
             content=content,
             role=role,
             user_id=str(user_id),
-            metadata=metadata or {}
+            rag_metadata=metadata or {}
         )
         session.add(message)
         await session.commit()
@@ -138,7 +138,7 @@ class ChatRepository:
                 snippet=ref.get("snippet", ""),
                 score=ref.get("score", 0.0),
                 rank=idx + 1,
-                metadata=ref
+                extra_metadata=ref
             )
             rag_refs.append(rag_ref)
             session.add(rag_ref)
@@ -190,12 +190,16 @@ class ChatRepository:
         comment: Optional[str] = None
     ) -> UserFeedback:
         """사용자 피드백을 저장합니다."""
+        feedback_detail = None
+        if comment:
+            feedback_detail = {"comment": comment}
+            
         feedback = UserFeedback(
             message_id=message_id,
             user_id=str(user_id),
             feedback_type=feedback_type,
-            rating=rating,
-            comment=comment
+            feedback_score=rating or 3,  # 기본값 3
+            feedback_detail=feedback_detail
         )
         session.add(feedback)
         await session.commit()

@@ -39,6 +39,9 @@ async_engine = create_async_engine(
     },
 )
 
+# 별칭 (다른 모듈에서 engine으로 접근 가능)
+engine = async_engine
+
 # 세션 팩토리 생성
 AsyncSessionLocal = async_sessionmaker(
     async_engine,

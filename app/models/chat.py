@@ -176,4 +176,91 @@ class UserFeedbackCreate(UserFeedbackBase):
 class UserFeedbackRead(UserFeedbackBase):
     """사용자 피드백 조회 스키마"""
     id: UUID
-    created_at: datetime 
+    created_at: datetime
+
+# RAG 참조 모델
+class RAGReferenceBase(SQLModel):
+    """RAG 참조 기본 스키마"""
+    message_id: UUID = SQLField(foreign_key="chat_messages.id")
+    source_type: str = SQLField(max_length=50)  # 'chroma', 'bookmark', 'web' 등
+    source_id: str = SQLField(max_length=255)
+    title: Optional[str] = SQLField(default=None, max_length=500)
+    url: Optional[str] = SQLField(default=None, max_length=2000)
+    snippet: Optional[str] = SQLField(default=None, sa_column=Column(Text))
+    score: float = SQLField(default=0.0)  # 유사도 점수
+    rank: int = SQLField(default=0)  # 검색 결과에서의 순위
+    extra_metadata: Optional[Dict[str, Any]] = SQLField(
+        default=None,
+        sa_column=Column(JSONB)
+    )
+
+class RAGReference(RAGReferenceBase, table=True):
+    """RAG 참조 테이블"""
+    __tablename__ = "rag_references"
+    
+    # 기본 필드들 (직접 정의)
+    id: UUID = SQLField(
+        default_factory=uuid4,
+        sa_column=Column(PG_UUID(as_uuid=True), primary_key=True)
+    )
+    created_at: datetime = SQLField(
+        default_factory=datetime.utcnow,
+        sa_column=Column(DateTime(timezone=True), server_default=func.now())
+    )
+    
+    # 인덱스 정의
+    __table_args__ = (
+        Index("idx_rag_references_message", "message_id"),
+        Index("idx_rag_references_source", "source_type", "source_id"),
+        Index("idx_rag_references_score", "score"),
+        Index("idx_rag_references_rank", "message_id", "rank"),
+    )
+
+class RAGReferenceCreate(RAGReferenceBase):
+    """RAG 참조 생성 스키마"""
+
+class RAGReferenceRead(RAGReferenceBase):
+    """RAG 참조 조회 스키마"""
+    id: UUID
+    created_at: datetime
+
+# 사용자 프로필 모델 (옵션)
+class UserProfileBase(SQLModel):
+    """사용자 프로필 기본 스키마"""
+    user_id: str = SQLField(primary_key=True, max_length=255)
+    display_name: Optional[str] = SQLField(default=None, max_length=100)
+    preferences: Optional[Dict[str, Any]] = SQLField(
+        default=None,
+        sa_column=Column(JSONB)
+    )
+    chat_statistics: Optional[Dict[str, Any]] = SQLField(
+        default=None,
+        sa_column=Column(JSONB)
+    )
+
+class UserProfile(UserProfileBase, table=True):
+    """사용자 프로필 테이블"""
+    __tablename__ = "user_profiles"
+    
+    # 기본 필드들 (직접 정의)
+    created_at: datetime = SQLField(
+        default_factory=datetime.utcnow,
+        sa_column=Column(DateTime(timezone=True), server_default=func.now())
+    )
+    updated_at: Optional[datetime] = SQLField(
+        default=None,
+        sa_column=Column(DateTime(timezone=True), onupdate=func.now())
+    )
+    
+    # 인덱스 정의
+    __table_args__ = (
+        Index("idx_user_profiles_preferences_gin", "preferences", postgresql_using="gin"),
+    )
+
+class UserProfileCreate(UserProfileBase):
+    """사용자 프로필 생성 스키마"""
+
+class UserProfileRead(UserProfileBase):
+    """사용자 프로필 조회 스키마"""
+    created_at: datetime
+    updated_at: Optional[datetime] 
