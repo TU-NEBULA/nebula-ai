@@ -32,6 +32,7 @@ psycopg2-binary = "*"
 asyncpg = "*"
 alembic = "*"
 greenlet = "*"
+aiohttp = "*"
 
 [dev-packages]
 pytest-asyncio = "*"

@@ -2,20 +2,26 @@
 직접 스트리밍 채팅 API
 
 RabbitMQ 없이 OpenAI API를 직접 호출하여 SSE로 스트리밍합니다.
+PostgreSQL에 채팅 세션과 메시지를 저장합니다.
 """
 
 import json
+import uuid
+from datetime import datetime
 from typing import Dict, Any, List, Tuple
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from fastapi.responses import StreamingResponse
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
+from sqlmodel.ext.asyncio import AsyncSession
 import chromadb
 from loguru import logger
 
 from app.core.config import settings
-from app.schemas.chat import ChatRequestModel
+from app.core.database import get_async_session
+from app.schemas.chat import ChatRequestModel, ChatStreamRequest
+from app.repositories.chat_repository import ChatRepository
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -53,7 +59,7 @@ async def _retrieve_context(user_id: int, query: str) -> List[Tuple[str, Dict[st
     docs_scores = vectordb.similarity_search_with_score(query, k=TOP_K)
     results = [
         (getattr(doc, "snippet", doc.page_content[:160]), doc.metadata)
-        for doc, _ in docs_scores
+        for doc, score in docs_scores
         if doc.metadata.get("user_id") == user_id
     ]
     logger.info(f"📊 검색 결과: {len(results)}개 문서 발견")
@@ -84,10 +90,15 @@ def _build_messages(prompt: str, ctx_blocks: List[Tuple[str, Dict[str, Any]]]):
     ]
 
 
-async def _generate_chat_stream(request: ChatRequestModel):
-    """OpenAI 스트림을 SSE 형식으로 변환"""
+async def _generate_chat_stream(
+    request: ChatRequestModel, 
+    db_session: AsyncSession,
+    session_id: uuid.UUID,
+    user_message_id: uuid.UUID
+):
+    """OpenAI 스트림을 SSE 형식으로 변환하면서 PostgreSQL에 저장"""
     try:
-        logger.info(f"🚀 채팅 스트림 시작 - user_id: {request.user_id}")
+        logger.info(f"🚀 채팅 스트림 시작 - user_id: {request.user_id}, session_id: {session_id}")
 
         # API 키 확인
         if not settings.OPENAI_API_KEY or settings.OPENAI_API_KEY == "your-openai-api-key":
@@ -116,19 +127,64 @@ async def _generate_chat_stream(request: ChatRequestModel):
         messages = _build_messages(request.message, ctx_blocks)
         logger.info("📨 OpenAI 스트림 호출 시작...")
 
-        # 스트림 응답
+        # AI 응답 수집 및 스트림
+        ai_response = ""
         token_count = 0
+        start_time = datetime.utcnow()
+
         for chunk in llm.stream(messages):
             if chunk.content:
                 token_count += 1
+                ai_response += chunk.content
                 logger.debug(f"📝 토큰 {token_count}: {chunk.content[:20]}...")
                 yield f"data: {json.dumps({'type': 'chunk', 'data': chunk.content})}\n\n"
 
-        logger.info(f"✅ 스트림 완료 - {token_count}개 토큰 생성")
+        end_time = datetime.utcnow()
+        response_time_ms = int((end_time - start_time).total_seconds() * 1000)
 
-        # 완료 메시지
+        logger.info(f"✅ 스트림 완료 - {token_count}개 토큰 생성, 응답시간: {response_time_ms}ms")
+
+        # AI 응답 메시지 저장
+        ai_message = await ChatRepository.save_message(
+            session=db_session,
+            session_id=session_id,
+            content=ai_response,
+            role="assistant",
+            user_id=request.user_id,
+            metadata={
+                "response_time_ms": response_time_ms,
+                "token_count": token_count,
+                "model": settings.OPENAI_MODEL
+            }
+        )
+
+        # RAG 참조 저장
+        if ctx_blocks:
+            rag_references = []
+            for snippet, metadata in ctx_blocks:
+                rag_references.append({
+                    "snippet": snippet,
+                    "title": metadata.get("title", ""),
+                    "url": metadata.get("url", ""),
+                    "source_id": metadata.get("source_id", ""),
+                    "score": 0.0  # similarity_search_with_score에서 점수 추출 필요
+                })
+            
+            await ChatRepository.save_rag_references(
+                session=db_session,
+                message_id=ai_message.id,
+                references=rag_references
+            )
+
+        # 완료 메시지 (그래프 데이터 포함)
         graph_payload = {"nodes": [], "edges": [], "layout": "force-3d"}
-        yield f"data: {json.dumps({'type': 'end', 'data': graph_payload})}\n\n"
+        completion_data = {
+            "type": "end", 
+            "data": graph_payload,
+            "session_id": str(session_id),
+            "message_id": str(ai_message.id)
+        }
+        yield f"data: {json.dumps(completion_data)}\n\n"
 
     except Exception as e:
         logger.error(f"❌ 스트림 생성 실패: {e}")
@@ -138,26 +194,134 @@ async def _generate_chat_stream(request: ChatRequestModel):
 @router.post(
     "/stream",
     response_class=StreamingResponse,
-    summary="채팅 스트림 (직접 방식)",
+    summary="채팅 스트림 (PostgreSQL 연동)",
 )
-async def chat_stream_direct(request: ChatRequestModel):
+async def chat_stream_direct(
+    request: ChatRequestModel,
+    db_session: AsyncSession = Depends(get_async_session)
+):
     """
-    직접 스트리밍 방식의 채팅 API
-    RabbitMQ 없이 OpenAI를 직접 호출하여 SSE로 스트리밍
+    직접 스트리밍 방식의 채팅 API with PostgreSQL 연동
+    - 채팅 세션 관리
+    - 메시지 저장
+    - RAG 메타데이터 저장
     """
-    logger.info(f"📨 직접 스트림 요청 수신 - user_id: {request.user_id}")
+    logger.info(f"📨 채팅 스트림 요청 수신 - user_id: {request.user_id}")
 
-    headers = {
-        "Cache-Control": "no-cache",
-        "Connection": "keep-alive",
-        "Access-Control-Allow-Origin": "*",
-    }
+    try:
+        # 새로운 채팅 세션 생성 (매번 새로운 세션)
+        # TODO: session_id가 제공되면 기존 세션 사용하도록 개선
+        chat_session = await ChatRepository.create_session(
+            session=db_session,
+            user_id=request.user_id,
+            title=f"대화 {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
+        )
+        
+        # 사용자 메시지 저장
+        user_message = await ChatRepository.save_message(
+            session=db_session,
+            session_id=chat_session.id,
+            content=request.message,
+            role="user",
+            user_id=request.user_id
+        )
 
-    return StreamingResponse(
-        _generate_chat_stream(request),
-        media_type="text/event-stream",
-        headers=headers
-    )
+        logger.info(f"💾 세션 및 사용자 메시지 저장 완료 - session_id: {chat_session.id}")
+
+        headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+        }
+
+        return StreamingResponse(
+            _generate_chat_stream(request, db_session, chat_session.id, user_message.id),
+            media_type="text/event-stream",
+            headers=headers
+        )
+
+    except Exception as e:
+        logger.error(f"❌ 채팅 스트림 초기화 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"채팅 스트림 초기화 실패: {str(e)}")
+
+
+# 채팅 세션 관리 API 추가
+@router.get(
+    "/sessions",
+    summary="사용자 채팅 세션 목록 조회"
+)
+async def get_user_sessions(
+    user_id: int,
+    limit: int = 20,
+    offset: int = 0,
+    db_session: AsyncSession = Depends(get_async_session)
+):
+    """사용자의 채팅 세션 목록을 조회합니다."""
+    try:
+        sessions = await ChatRepository.get_user_sessions(
+            session=db_session,
+            user_id=user_id,
+            limit=limit,
+            offset=offset
+        )
+        
+        return {
+            "sessions": [
+                {
+                    "id": str(session.id),
+                    "title": session.title,
+                    "session_type": session.session_type,
+                    "created_at": session.created_at,
+                    "updated_at": session.updated_at,
+                    "is_active": session.is_active
+                }
+                for session in sessions
+            ],
+            "total": len(sessions)
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ 세션 목록 조회 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"세션 목록 조회 실패: {str(e)}")
+
+
+@router.get(
+    "/sessions/{session_id}/messages",
+    summary="채팅 세션 메시지 조회"
+)
+async def get_session_messages(
+    session_id: str,
+    user_id: int,
+    db_session: AsyncSession = Depends(get_async_session)
+):
+    """특정 채팅 세션의 메시지 목록을 조회합니다."""
+    try:
+        session_uuid = uuid.UUID(session_id)
+        messages = await ChatRepository.get_session_messages(
+            session=db_session,
+            session_id=session_uuid,
+            user_id=user_id
+        )
+        
+        return {
+            "session_id": session_id,
+            "messages": [
+                {
+                    "id": str(message.id),
+                    "content": message.content,
+                    "role": message.role,
+                    "created_at": message.created_at,
+                    "metadata": message.metadata
+                }
+                for message in messages
+            ]
+        }
+        
+    except ValueError:
+        raise HTTPException(status_code=400, detail="올바르지 않은 세션 ID 형식입니다")
+    except Exception as e:
+        logger.error(f"❌ 세션 메시지 조회 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"세션 메시지 조회 실패: {str(e)}")
 
 
 # 기존 RabbitMQ 기반 라우터도 유지 (호환성)
