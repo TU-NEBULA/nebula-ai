@@ -35,4 +35,4 @@ class TimestampModel(SQLModel):
     )
 
 class BaseModel(UUIDModel, TimestampModel):
-    """모든 모델의 기본 클래스"""
+    """모든 모델의 기본 클래스""" 

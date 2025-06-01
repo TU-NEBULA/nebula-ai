@@ -8,8 +8,8 @@
 - 에러 응답 스키마
 """
 from typing import Any, Generic, List, Optional, TypeVar
-from uuid import UUID
 from pydantic import BaseModel, Field
+from uuid import UUID
 
 DataT = TypeVar("DataT")
 

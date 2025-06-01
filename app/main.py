@@ -40,7 +40,7 @@ async def lifespan(_app: FastAPI):
         None: FastAPI 애플리케이션이 실행되는 동안 yield를 통해 제어를 반환합니다.
     """
     logger.info("🚀 Nebula AI 애플리케이션 시작")
-    logger.info(f"🌍 환경: {settings.ENVIRONMENT}")
+    logger.info("🌍 환경: {}", settings.ENVIRONMENT)
 
     # PostgreSQL 연결 테스트
     logger.info("🗃️ PostgreSQL 연결 테스트 중...")
@@ -77,7 +77,7 @@ async def lifespan(_app: FastAPI):
         yield
 
     except Exception as e:
-        logger.error(f"❌ 애플리케이션 시작 중 오류 발생: {e}")
+        logger.error("❌ 애플리케이션 시작 중 오류 발생: {}", e)
         raise
     finally:
         logger.info("🛑 애플리케이션 종료 중...")
@@ -88,7 +88,7 @@ async def lifespan(_app: FastAPI):
         # 모든 컨슈머 태스크 취소
         for task in consumer_tasks:
             if not task.done():
-                logger.info(f"⏹️ 태스크 취소 중: {task.get_name()}")
+                logger.info("⏹️ 태스크 취소 중: {}", task.get_name())
                 task.cancel()
 
         # 취소된 태스크들이 완료될 때까지 대기
@@ -125,10 +125,10 @@ async def root():
         dict: 서버 상태 메시지
     """
     logger.info("🏠 루트 엔드포인트 호출")
+    postgres_host = getattr(settings, 'POSTGRES_HOST', "Not configured")
     return {
         "message": "Nebula AI Server",
         "environment": settings.ENVIRONMENT,
         "debug": settings.DEBUG,
-        "postgres_host": settings.POSTGRES_HOST \
-            if hasattr(settings, 'POSTGRES_HOST') else "Not configured"
+        "postgres_host": postgres_host
     }

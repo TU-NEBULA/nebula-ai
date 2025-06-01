@@ -21,31 +21,36 @@ class Settings(BaseSettings):
     # 환경 설정
     ENVIRONMENT: str = Field(default="development")
     DEBUG: bool = Field(default=True)
-    HUGGINGFACEHUB_API_TOKEN: str
-    EMBEDDING_MODEL_NAME: str
-    MODEL_NAME: str
-    CACHE_DIR: str
+
+    # OpenAI 설정
     OPENAI_API_KEY: str
     OPENAI_EMBED_MODEL: str
     OPENAI_MODEL: str
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_TIMEOUT: float = 30.0
+
+    # LangSmith 설정
     LANGSMITH_TRACING: bool
     LANGSMITH_ENDPOINT: str
     LANGSMITH_API_KEY: str
     LANGSMITH_PROJECT: str
+
+    # AWS 설정
     AWS_ACCESS_KEY_ID: str
     AWS_SECRET_KEY_ID: str
     REGION: str
     BUCKET_NAME: str
+
+    # Chroma 설정
     CHROMA_DB_URI: str
+
+    # Redis 설정
     REDIS_HOST: str
     REDIS_PORT: int
     REDIS_DB: int
     REDIS_URL: str
-    NEO4J_URI: str
-    NEO4J_USER: str
-    NEO4J_PASSWORD: str
+
+    # RabbitMQ 설정
     RABBITMQ_HOST: str
     RABBITMQ_PORT: int
     RABBITMQ_USERNAME: str
@@ -53,6 +58,8 @@ class Settings(BaseSettings):
     EXTRACT_REQ_QUEUE: str
     CHAT_REQ_QUEUE: str
     BOOKMARK_SAVE_QUEUE: str
+
+    # 기본 썸네일 설정
     BASE_THUMBNAIL: str
     
     # PostgreSQL RDS 설정
