@@ -14,6 +14,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_openai import OpenAIEmbeddings
 from konlpy.tag import Okt
 from nltk.tokenize import word_tokenize
+from nltk.tag import pos_tag
 from nltk.corpus import stopwords
 from typing import List, Dict, Any, Optional
 from collections import Counter, defaultdict
@@ -162,8 +163,8 @@ def extract_keywords(text: str, max_keywords: int = 20) -> List[str]:
     텍스트에서 키워드를 추출합니다.
     
     이 함수는 다음과 같은 방법으로 키워드를 추출합니다:
-    1. 텍스트 정제 및 토큰화
-    2. 불용어 제거
+    1. 형태소 분석을 통한 명사 추출 (한국어: Okt, 영어: NLTK pos_tag)
+    2. 불용어 제거 (한국어: ko_stopwords.txt, 영어: NLTK stopwords)
     3. 빈도 분석
     4. 길이 기반 필터링
     5. 상위 키워드 선택
@@ -178,37 +179,71 @@ def extract_keywords(text: str, max_keywords: int = 20) -> List[str]:
     if not text:
         return []
     
-    # 텍스트 정제
-    text = re.sub(r'[^\w\s가-힣]', ' ', text)
-    text = re.sub(r'\s+', ' ', text).strip().lower()
+    # 불용어 로드
+    try:
+        korean_stopwords = set(load_korean_stopwords())
+    except:
+        korean_stopwords = set()
+        
+    try:
+        english_stopwords = set(stopwords.words('english'))
+    except:
+        english_stopwords = set()
     
-    # 간단한 토큰화 (공백 기준)
-    tokens = text.split()
+    all_stopwords = korean_stopwords | english_stopwords
     
-    # 불용어 리스트 (한국어 + 영어)
-    stopwords = {
-        '이', '그', '저', '것', '들', '는', '은', '을', '를', '에', '의', '가', '와', '과', 
-        '도', '만', '까지', '부터', '로', '으로', '에서', '에게', '한테', '하고', '이다', 
-        '있다', '없다', '되다', '하다', '수', '있', '없', '때', '곳', '분', '등', '및',
-        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 
-        'with', 'by', 'from', 'up', 'about', 'into', 'through', 'during', 'before', 
-        'after', 'above', 'below', 'between', 'among', 'is', 'are', 'was', 'were', 
-        'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 
-        'would', 'could', 'should', 'may', 'might', 'must', 'can', 'this', 'that', 
-        'these', 'those', 'what', 'which', 'who', 'when', 'where', 'why', 'how'
-    }
+    # 한국어 명사 추출
+    korean_nouns = []
+    try:
+        okt = Okt()
+        korean_nouns = okt.nouns(text)
+        # 한국어 불용어 제거 및 길이 필터링
+        korean_nouns = [
+            noun for noun in korean_nouns 
+            if noun not in korean_stopwords and len(noun) >= 2
+        ]
+    except Exception as e:
+        pass  # Okt 사용 실패 시 빈 리스트
     
-    # 불용어 제거 및 길이 필터링 (2자 이상)
-    filtered_tokens = [
-        token for token in tokens 
-        if token not in stopwords and len(token) >= 2
-    ]
+    # 영어 명사 추출
+    english_nouns = []
+    try:
+        # 영어 텍스트만 추출 (알파벳과 공백만)
+        english_text = re.sub(r'[^a-zA-Z\s]', ' ', text.lower())
+        english_text = re.sub(r'\s+', ' ', english_text).strip()
+        
+        if english_text:
+            # 토큰화
+            tokens = word_tokenize(english_text)
+            
+            # 빈 토큰 제거
+            tokens = [token for token in tokens if token.strip()]
+            
+            if tokens:
+                # 품사 태깅
+                pos_tags = pos_tag(tokens)
+                
+                # 명사만 추출 (NN, NNS, NNP, NNPS)
+                english_nouns = [
+                    word for word, pos in pos_tags 
+                    if pos in ['NN', 'NNS', 'NNP', 'NNPS'] 
+                    and word not in english_stopwords 
+                    and len(word) >= 2
+                ]
+    except Exception as e:
+        pass  # NLTK 사용 실패 시 빈 리스트
+    
+    # 모든 명사 합치기
+    all_nouns = korean_nouns + english_nouns
+    
+    if not all_nouns:
+        return []
     
     # 빈도 계산
-    token_counts = Counter(filtered_tokens)
+    noun_counts = Counter(all_nouns)
     
     # 상위 키워드 선택
-    top_keywords = [word for word, count in token_counts.most_common(max_keywords)]
+    top_keywords = [word for word, count in noun_counts.most_common(max_keywords)]
     
     return top_keywords
 

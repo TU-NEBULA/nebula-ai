@@ -103,6 +103,7 @@ orjson==3.10.18; python_version >= '3.9'
 overrides==7.7.0; python_version >= '3.6'
 packaging==24.2; python_version >= '3.8'
 pamqp==3.3.0; python_version >= '3.7'
+pillow==11.0.0; python_version >= '3.9'
 platformdirs==4.3.8; python_version >= '3.9'
 posthog==4.2.0
 prompt-toolkit==3.0.51; python_version >= '3.8'
