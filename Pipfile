@@ -38,6 +38,7 @@ aiohttp = "*"
 pytest-asyncio = "*"
 pytest = "*"
 pytest-cov = "*"
+aiosqlite = "*"
 
 [requires]
 python_version = "3.12"
