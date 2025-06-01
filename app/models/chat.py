@@ -21,6 +21,7 @@ class ChatSessionBase(SQLModel):
     user_id: str = SQLField(index=True, max_length=255)
     title: Optional[str] = SQLField(default=None, max_length=500)
     session_type: str = SQLField(default="general", max_length=50)
+    is_active: bool = SQLField(default=True)  # 세션 활성화 상태
     
     # JSONB 필드들
     primary_topic: Optional[Dict[str, Any]] = SQLField(

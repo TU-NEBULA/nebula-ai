@@ -5,7 +5,7 @@
 Repository 패턴을 통해 데이터베이스 로직을 캡슐화합니다.
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from sqlmodel import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -53,8 +53,8 @@ class ChatRepository:
                 ChatSession.user_id == str(user_id)
             )
         )
-        result = await session.exec(stmt)
-        return result.first()
+        result = await session.execute(stmt)
+        return result.scalar_one_or_none()
     
     @staticmethod
     async def get_user_sessions(
@@ -71,8 +71,8 @@ class ChatRepository:
             .offset(offset)
             .limit(limit)
         )
-        result = await session.exec(stmt)
-        return list(result.all())
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
     
     @staticmethod
     async def save_message(
@@ -84,19 +84,44 @@ class ChatRepository:
         metadata: Optional[Dict[str, Any]] = None
     ) -> ChatMessage:
         """채팅 메시지를 저장합니다."""
-        message = ChatMessage(
-            session_id=session_id,
-            content=content,
-            role=role,
-            user_id=str(user_id),
-            rag_metadata=metadata or {}
-        )
-        session.add(message)
-        await session.commit()
-        await session.refresh(message)
-        
-        logger.debug(f"💾 메시지 저장 - session_id: {session_id}, role: {role}")
-        return message
+        try:
+            # 중복 메시지 방지를 위한 검증 (같은 세션, 같은 사용자, 같은 내용의 메시지가 최근 1분 내에 있는지 확인)
+            recent_time = datetime.utcnow() - timedelta(minutes=1)
+            
+            existing_message_stmt = select(ChatMessage).where(
+                and_(
+                    ChatMessage.session_id == session_id,
+                    ChatMessage.user_id == str(user_id),
+                    ChatMessage.content == content,
+                    ChatMessage.role == role,
+                    ChatMessage.created_at >= recent_time
+                )
+            )
+            existing_result = await session.execute(existing_message_stmt)
+            existing_message = existing_result.scalar_one_or_none()
+            
+            if existing_message:
+                logger.warning(f"⚠️ 중복 메시지 감지 - 기존 메시지 반환: {existing_message.id}")
+                return existing_message
+            
+            message = ChatMessage(
+                session_id=session_id,
+                content=content,
+                role=role,
+                user_id=str(user_id),
+                rag_metadata=metadata or {}
+            )
+            session.add(message)
+            await session.commit()
+            await session.refresh(message)
+            
+            logger.debug(f"💾 메시지 저장 - session_id: {session_id}, role: {role}")
+            return message
+            
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"❌ 메시지 저장 실패: {e}")
+            raise
     
     @staticmethod
     async def get_session_messages(
@@ -117,8 +142,8 @@ class ChatRepository:
             .order_by(ChatMessage.created_at.asc())
             .limit(limit)
         )
-        result = await session.exec(stmt)
-        return list(result.all())
+        result = await session.execute(stmt)
+        return list(result.scalars().all())
     
     @staticmethod
     async def save_rag_references(

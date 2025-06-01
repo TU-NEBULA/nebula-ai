@@ -8,9 +8,9 @@ PostgreSQL에 채팅 세션과 메시지를 저장합니다.
 import json
 import uuid
 from datetime import datetime
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Header
 from fastapi.responses import StreamingResponse
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import Chroma
@@ -100,6 +100,16 @@ async def _generate_chat_stream(
     try:
         logger.info(f"🚀 채팅 스트림 시작 - user_id: {request.user_id}, session_id: {session_id}")
 
+        # 🆕 스트림 시작: 세션 정보 먼저 전송
+        session_info = {
+            "type": "session_start",
+            "data": {
+                "session_id": str(session_id),
+                "user_message_id": str(user_message_id)
+            }
+        }
+        yield f"data: {json.dumps(session_info)}\n\n"
+
         # API 키 확인
         if not settings.OPENAI_API_KEY or settings.OPENAI_API_KEY == "your-openai-api-key":
             logger.error("❌ OpenAI API 키가 설정되지 않았습니다")
@@ -176,13 +186,14 @@ async def _generate_chat_stream(
                 references=rag_references
             )
 
-        # 완료 메시지 (그래프 데이터 포함)
+        # 완료 메시지 (그래프 데이터 + 메시지 ID 포함)
         graph_payload = {"nodes": [], "edges": [], "layout": "force-3d"}
         completion_data = {
-            "type": "end", 
+            "type": "session_end", 
             "data": graph_payload,
             "session_id": str(session_id),
-            "message_id": str(ai_message.id)
+            "ai_message_id": str(ai_message.id),
+            "user_message_id": str(user_message_id)
         }
         yield f"data: {json.dumps(completion_data)}\n\n"
 
@@ -198,6 +209,7 @@ async def _generate_chat_stream(
 )
 async def chat_stream_direct(
     request: ChatRequestModel,
+    idempotency_key: Optional[str] = Header(None),
     db_session: AsyncSession = Depends(get_async_session)
 ):
     """
@@ -205,17 +217,33 @@ async def chat_stream_direct(
     - 채팅 세션 관리
     - 메시지 저장
     - RAG 메타데이터 저장
+    - 중복 요청 방지
     """
-    logger.info(f"📨 채팅 스트림 요청 수신 - user_id: {request.user_id}")
+    logger.info(f"📨 채팅 스트림 요청 수신 - user_id: {request.user_id}, idempotency_key: {idempotency_key}")
 
     try:
-        # 새로운 채팅 세션 생성 (매번 새로운 세션)
-        # TODO: session_id가 제공되면 기존 세션 사용하도록 개선
-        chat_session = await ChatRepository.create_session(
-            session=db_session,
-            user_id=request.user_id,
-            title=f"대화 {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
-        )
+        # Idempotency key를 사용한 중복 요청 방지
+        if idempotency_key:
+            # Redis 또는 임시 저장소에서 중복 체크 (여기서는 간단히 로그만)
+            logger.info(f"🔄 중복 방지 키 확인: {idempotency_key}")
+
+        # 기존 세션 확인 또는 새 세션 생성
+        chat_session = None
+        if hasattr(request, 'session_id') and request.session_id:
+            # 기존 세션 사용
+            chat_session = await ChatRepository.get_session(
+                session=db_session,
+                session_id=uuid.UUID(request.session_id),
+                user_id=request.user_id
+            )
+        
+        if not chat_session:
+            # 새로운 세션 생성
+            chat_session = await ChatRepository.create_session(
+                session=db_session,
+                user_id=request.user_id,
+                title=f"대화 {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
+            )
         
         # 사용자 메시지 저장
         user_message = await ChatRepository.save_message(
@@ -243,6 +271,36 @@ async def chat_stream_direct(
     except Exception as e:
         logger.error(f"❌ 채팅 스트림 초기화 실패: {e}")
         raise HTTPException(status_code=500, detail=f"채팅 스트림 초기화 실패: {str(e)}")
+
+
+# 🆕 세션 생성 API 추가
+@router.post(
+    "/sessions",
+    summary="새 채팅 세션 생성"
+)
+async def create_chat_session(
+    user_id: int,
+    title: Optional[str] = None,
+    db_session: AsyncSession = Depends(get_async_session)
+):
+    """새로운 채팅 세션을 생성합니다."""
+    try:
+        chat_session = await ChatRepository.create_session(
+            session=db_session,
+            user_id=user_id,
+            title=title or f"새 대화 {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}"
+        )
+        
+        return {
+            "session_id": str(chat_session.id),
+            "title": chat_session.title,
+            "created_at": chat_session.created_at,
+            "is_active": chat_session.is_active
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ 세션 생성 실패: {e}")
+        raise HTTPException(status_code=500, detail=f"세션 생성 실패: {str(e)}")
 
 
 # 채팅 세션 관리 API 추가
@@ -311,7 +369,7 @@ async def get_session_messages(
                     "content": message.content,
                     "role": message.role,
                     "created_at": message.created_at,
-                    "metadata": message.metadata
+                    "metadata": message.rag_metadata or {}  # rag_metadata를 metadata로 매핑
                 }
                 for message in messages
             ]
@@ -322,17 +380,3 @@ async def get_session_messages(
     except Exception as e:
         logger.error(f"❌ 세션 메시지 조회 실패: {e}")
         raise HTTPException(status_code=500, detail=f"세션 메시지 조회 실패: {str(e)}")
-
-
-# 기존 RabbitMQ 기반 라우터도 유지 (호환성)
-@router.get(
-    "/stream/{job_id}",
-    response_class=StreamingResponse,
-    summary="채팅 결과 SSE 스트림 (레거시)",
-)
-async def chat_stream_legacy(job_id: str):
-    """레거시 RabbitMQ 기반 스트림 (호환성 유지용)"""
-    raise HTTPException(
-        status_code=501,
-        detail="RabbitMQ 기반 스트림은 더 이상 사용되지 않습니다. POST /chat/stream을 사용하세요."
-    )

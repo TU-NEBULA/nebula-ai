@@ -29,6 +29,7 @@ class ChatRequestModel(BaseModel):
     """
     user_id: int = Field(..., alias="userId", description="사용자 ID")
     message: str = Field(description="채팅 메시지")
+    session_id: Optional[str] = Field(default=None, description="기존 세션 ID (옵션)")
 
     model_config = {
         "populate_by_name": True,
