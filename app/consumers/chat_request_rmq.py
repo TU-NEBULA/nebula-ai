@@ -10,7 +10,11 @@ chat_request_rmq.py
 
 from __future__ import annotations
 
-import os, json, asyncio, traceback, uuid
+import json
+import asyncio
+import traceback
+import uuid
+
 from typing import List, Tuple, Dict, Any
 
 import aio_pika
@@ -24,7 +28,7 @@ from loguru import logger
 
 from app.core.config import settings
 from app.core.rabbit import get_rabbit_connection
-from app.models.chat import ChatRequestModel
+from app.schemas.chat import ChatRequestModel
 
 # 벡터 DB 싱글턴
 _embeddings: OpenAIEmbeddings | None = None
@@ -37,7 +41,7 @@ def _get_vectordb() -> Chroma:
     if _vectordb:
         logger.debug("🔄 기존 벡터DB 인스턴스 재사용")
         return _vectordb
-    
+
     logger.info("🗄️ 벡터DB 초기화 중...")
     _embeddings = OpenAIEmbeddings(model=settings.OPENAI_EMBED_MODEL)
     _vectordb = Chroma(
@@ -99,7 +103,7 @@ async def publish_chunk(
 ):
     # amq.direct exchange 사용 (SSE 엔드포인트가 이걸 구독함)
     exchange = await ch.declare_exchange("amq.direct", ExchangeType.DIRECT)
-    
+
     await exchange.publish(
         Message(
             body=json.dumps(payload).encode(),
@@ -115,7 +119,7 @@ async def on_chat_message(message: IncomingMessage):
     async with message.process():  # ack / reject 자동
         ch = message.channel
         logger.info(f"📨 채팅 메시지 수신: correlation_id={message.correlation_id}")
-        
+
         try:
             req = ChatRequestModel.model_validate_json(message.body)
             logger.info(f"✅ 메시지 파싱 성공: user_id={req.user_id}")
@@ -134,16 +138,16 @@ async def on_chat_message(message: IncomingMessage):
 
         # LLM 스트림 설정
         logger.info("🤖 OpenAI LLM 호출 준비 중...")
-        
+
         # API 키 확인
         if not settings.OPENAI_API_KEY or settings.OPENAI_API_KEY == "your-openai-api-key":
             logger.error("❌ OpenAI API 키가 설정되지 않았습니다")
             await publish_chunk(ch, routing_key, job_id, {"type": "end", "error": "OpenAI API 키가 설정되지 않았습니다"})
             return
-            
+
         logger.info(f"🔑 API 키 확인됨: {settings.OPENAI_API_KEY[:10]}...")
         logger.info(f"🤖 모델: {settings.OPENAI_MODEL}")
-        
+
         llm = ChatOpenAI(
             model=settings.OPENAI_MODEL,
             streaming=True,
@@ -156,14 +160,14 @@ async def on_chat_message(message: IncomingMessage):
 
         try:
             logger.info(f"🔄 LLM 작업 시작 - job_id={job_id}")
-            
+
             # 스트림 방식 변경 - agenerate 대신 stream 사용
             messages = _build_messages(req.message, ctx_blocks)
             logger.info("📨 메시지 구성 완료, OpenAI 스트림 호출...")
-            
+
             token_count = 0
             full_response = ""
-            
+
             # 직접 스트림 호출 방식
             for chunk in llm.stream(messages):
                 if chunk.content:
@@ -173,7 +177,7 @@ async def on_chat_message(message: IncomingMessage):
                     await publish_chunk(ch, routing_key, job_id, {"type": "chunk", "data": chunk.content})
 
             logger.info(f"✅ LLM 작업 완료 - {token_count}개 토큰 생성")
-            
+
         except asyncio.TimeoutError:
             logger.error("⏰ LLM 작업 타임아웃")
             await publish_chunk(ch, routing_key, job_id, {"type": "end", "error": "작업 시간 초과"})
@@ -193,11 +197,11 @@ async def on_chat_message(message: IncomingMessage):
 
 async def start_chat_consumer():
     logger.info("💬 Chat Consumer 시작 준비...")
-    
+
     try:
         conn = await get_rabbit_connection()
         logger.info("✅ RabbitMQ 연결 성공")
-        
+
         ch = await conn.channel()
         await ch.set_qos(prefetch_count=1)
         logger.info("✅ 채널 설정 완료")
@@ -208,7 +212,7 @@ async def start_chat_consumer():
 
         logger.info(f"🎯 Chat consumer 대기 중: {settings.CHAT_REQ_QUEUE}")
         await q.consume(on_chat_message)
-        
+
     except Exception as e:
         logger.error(f"❌ Chat Consumer 시작 실패: {e}")
         raise

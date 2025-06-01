@@ -5,7 +5,6 @@ RabbitMQ 없이 OpenAI API를 직접 호출하여 SSE로 스트리밍합니다.
 """
 
 import json
-import traceback
 from typing import Dict, Any, List, Tuple
 
 from fastapi import APIRouter, HTTPException
@@ -16,7 +15,7 @@ import chromadb
 from loguru import logger
 
 from app.core.config import settings
-from app.models.chat import ChatRequestModel
+from app.schemas.chat import ChatRequestModel
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -31,7 +30,7 @@ def _get_vectordb() -> Chroma:
     if _vectordb:
         logger.debug("🔄 기존 벡터DB 인스턴스 재사용")
         return _vectordb
-    
+
     logger.info("🗄️ 벡터DB 초기화 중...")
     _embeddings = OpenAIEmbeddings(model=settings.OPENAI_EMBED_MODEL)
     _vectordb = Chroma(
@@ -89,13 +88,13 @@ async def _generate_chat_stream(request: ChatRequestModel):
     """OpenAI 스트림을 SSE 형식으로 변환"""
     try:
         logger.info(f"🚀 채팅 스트림 시작 - user_id: {request.user_id}")
-        
+
         # API 키 확인
         if not settings.OPENAI_API_KEY or settings.OPENAI_API_KEY == "your-openai-api-key":
             logger.error("❌ OpenAI API 키가 설정되지 않았습니다")
             yield f"data: {json.dumps({'type': 'error', 'data': 'OpenAI API 키가 설정되지 않았습니다'})}\n\n"
             return
-            
+
         # RAG 검색
         try:
             ctx_blocks = await _retrieve_context(request.user_id, request.message)
@@ -112,11 +111,11 @@ async def _generate_chat_stream(request: ChatRequestModel):
             timeout=30,
             max_retries=1,
         )
-        
+
         # 메시지 구성
         messages = _build_messages(request.message, ctx_blocks)
         logger.info("📨 OpenAI 스트림 호출 시작...")
-        
+
         # 스트림 응답
         token_count = 0
         for chunk in llm.stream(messages):
@@ -126,11 +125,11 @@ async def _generate_chat_stream(request: ChatRequestModel):
                 yield f"data: {json.dumps({'type': 'chunk', 'data': chunk.content})}\n\n"
 
         logger.info(f"✅ 스트림 완료 - {token_count}개 토큰 생성")
-        
+
         # 완료 메시지
         graph_payload = {"nodes": [], "edges": [], "layout": "force-3d"}
         yield f"data: {json.dumps({'type': 'end', 'data': graph_payload})}\n\n"
-        
+
     except Exception as e:
         logger.error(f"❌ 스트림 생성 실패: {e}")
         yield f"data: {json.dumps({'type': 'error', 'data': str(e)})}\n\n"
@@ -147,13 +146,13 @@ async def chat_stream_direct(request: ChatRequestModel):
     RabbitMQ 없이 OpenAI를 직접 호출하여 SSE로 스트리밍
     """
     logger.info(f"📨 직접 스트림 요청 수신 - user_id: {request.user_id}")
-    
+
     headers = {
         "Cache-Control": "no-cache",
         "Connection": "keep-alive",
         "Access-Control-Allow-Origin": "*",
     }
-    
+
     return StreamingResponse(
         _generate_chat_stream(request),
         media_type="text/event-stream",
@@ -170,6 +169,6 @@ async def chat_stream_direct(request: ChatRequestModel):
 async def chat_stream_legacy(job_id: str):
     """레거시 RabbitMQ 기반 스트림 (호환성 유지용)"""
     raise HTTPException(
-        status_code=501, 
+        status_code=501,
         detail="RabbitMQ 기반 스트림은 더 이상 사용되지 않습니다. POST /chat/stream을 사용하세요."
     )

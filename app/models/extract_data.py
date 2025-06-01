@@ -12,4 +12,4 @@ class ExtractDataModel(BaseModel):
     user_id: int = Field(..., alias="userId")
     url: str
 
-    model_config = ConfigDict(populate_by_name=True) 
+    model_config = ConfigDict(populate_by_name=True)

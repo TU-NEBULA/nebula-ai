@@ -13,9 +13,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from app.consumers.extract_data_rmq import start_extract_consumer
-from app.consumers.chat_request_rmq import start_chat_consumer
 from app.routers import init_routers
+from app.core.database import test_connection, init_db, close_db
+from app.core.config import settings
 
 # 로그 설정
 logger.add(
@@ -30,7 +30,7 @@ async def lifespan(_app: FastAPI):
     """
     FastAPI 애플리케이션의 수명 주기를 관리하는 함수
 
-    애플리케이션이 시작될 때 필요한 리소스(NLTK 데이터, RabbitMQ 컨슈머)를 초기화하고,
+    애플리케이션이 시작될 때 필요한 리소스(NLTK 데이터, RabbitMQ 컨슈머, PostgreSQL)를 초기화하고,
     종료될 때 리소스를 정리합니다.
 
     Args:
@@ -40,7 +40,20 @@ async def lifespan(_app: FastAPI):
         None: FastAPI 애플리케이션이 실행되는 동안 yield를 통해 제어를 반환합니다.
     """
     logger.info("🚀 Nebula AI 애플리케이션 시작")
-    
+    logger.info(f"🌍 환경: {settings.ENVIRONMENT}")
+
+    # PostgreSQL 연결 테스트
+    logger.info("🗃️ PostgreSQL 연결 테스트 중...")
+    if await test_connection():
+        logger.info("✅ PostgreSQL 연결 성공")
+
+        # 개발 환경에서만 테이블 자동 생성
+        if settings.ENVIRONMENT == "development":
+            await init_db()
+            logger.info("✅ 데이터베이스 테이블 초기화 완료")
+    else:
+        logger.error("❌ PostgreSQL 연결 실패 - 애플리케이션을 계속 실행합니다")
+
     # NLTK 데이터 확인 및 다운로드
     try:
         logger.info("📚 NLTK 데이터 확인 중...")
@@ -58,40 +71,31 @@ async def lifespan(_app: FastAPI):
         logger.info("🔄 직접 스트리밍 모드로 시작 중...")
         logger.info("📝 RabbitMQ Consumer는 비활성화되었습니다")
         logger.info("✅ POST /chat/stream 엔드포인트를 사용하세요")
-        
-        # RabbitMQ Consumer 비활성화
-        # # Extract Data Consumer 시작
-        # logger.info("📊 Extract Data Consumer 시작...")
-        # extract_task = asyncio.create_task(start_extract_consumer())
-        # consumer_tasks.append(extract_task)
-        # logger.info("✅ Extract Data Consumer 시작 완료")
 
-        # # Chat Consumer 시작
-        # logger.info("💬 Chat Consumer 시작...")
-        # chat_task = asyncio.create_task(start_chat_consumer())
-        # consumer_tasks.append(chat_task)
-        # logger.info("✅ Chat Consumer 시작 완료")
+        logger.info("🎯 직접 스트리밍 모드로 실행 중")
 
-        logger.info(f"🎯 직접 스트리밍 모드로 실행 중")
-        
         yield
-        
+
     except Exception as e:
         logger.error(f"❌ 애플리케이션 시작 중 오류 발생: {e}")
         raise
     finally:
         logger.info("🛑 애플리케이션 종료 중...")
+
+        # PostgreSQL 연결 종료
+        await close_db()
+
         # 모든 컨슈머 태스크 취소
         for task in consumer_tasks:
             if not task.done():
                 logger.info(f"⏹️ 태스크 취소 중: {task.get_name()}")
                 task.cancel()
-        
+
         # 취소된 태스크들이 완료될 때까지 대기
         if consumer_tasks:
             logger.info("⏳ 태스크 종료 대기 중...")
             await asyncio.gather(*consumer_tasks, return_exceptions=True)
-        
+
         logger.info("✅ 애플리케이션 종료 완료")
 
 
@@ -121,4 +125,10 @@ async def root():
         dict: 서버 상태 메시지
     """
     logger.info("🏠 루트 엔드포인트 호출")
-    return {"message": "Hello World"}
+    return {
+        "message": "Nebula AI Server",
+        "environment": settings.ENVIRONMENT,
+        "debug": settings.DEBUG,
+        "postgres_host": settings.POSTGRES_HOST \
+            if hasattr(settings, 'POSTGRES_HOST') else "Not configured"
+    }

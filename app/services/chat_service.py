@@ -12,7 +12,10 @@
 """
 from __future__ import annotations
 
-import os, json, uuid, logging, asyncio
+import uuid
+import logging
+import asyncio
+
 from datetime import datetime, timezone
 from typing import Optional, AsyncGenerator, Dict, Any, List, Tuple
 
@@ -25,7 +28,7 @@ from langchain_openai import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
 
 from app.core.config import settings
-from app.models.chat import ChatRequestModel
+from app.schemas.chat import ChatRequestModel
 
 logger = logging.getLogger(__name__)
 

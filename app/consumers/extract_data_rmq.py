@@ -4,12 +4,8 @@
 이 모듈은 RabbitMQ를 통해 HTML 콘텐츠 데이터 추출 요청을 받아 처리합니다.
 S3에 저장된 HTML에서 이미지와 키워드를 추출하고 그 결과를 응답으로 반환합니다.
 """
-import asyncio
-import json
 import traceback
-import uuid
 
-import aio_pika
 from aio_pika import IncomingMessage, Message
 from pydantic import BaseModel, Field, ConfigDict
 from loguru import logger
@@ -50,7 +46,7 @@ async def on_extract_message(message: IncomingMessage):
     """
     async with message.process():
         logger.info(f"📨 추출 메시지 수신: correlation_id={message.correlation_id}")
-        
+
         try:
             request = ExtractDataModel.model_validate_json(message.body)
             logger.info(f"✅ 메시지 파싱 성공: user_id={request.user_id}, url={request.url}")
@@ -74,11 +70,11 @@ async def start_extract_consumer():
     데이터 추출 컨슈머를 시작하는 함수
     """
     logger.info("📊 Extract Data Consumer 시작 준비...")
-    
+
     try:
         connection = await get_rabbit_connection()
         logger.info("✅ RabbitMQ 연결 성공")
-        
+
         channel = await connection.channel()
         await channel.set_qos(prefetch_count=1)
         logger.info("✅ 채널 설정 완료")
@@ -88,7 +84,7 @@ async def start_extract_consumer():
 
         logger.info(f"🎯 Extract consumer 대기 중: {settings.EXTRACT_REQ_QUEUE}")
         await queue.consume(on_extract_message)
-        
+
     except Exception as e:
         logger.error(f"❌ Extract Data Consumer 시작 실패: {e}")
         raise

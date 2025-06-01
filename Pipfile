@@ -27,6 +27,11 @@ openai = "*"
 langchain-community = "*"
 pylint = "*"
 loguru = "*"
+sqlmodel = "*"
+psycopg2-binary = "*"
+asyncpg = "*"
+alembic = "*"
+greenlet = "*"
 
 [dev-packages]
 pytest-asyncio = "*"
