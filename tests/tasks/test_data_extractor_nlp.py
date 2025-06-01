@@ -162,28 +162,6 @@ class TestNebulaNLPExtractor:
                 assert 'width' in thumbnail
                 assert 'height' in thumbnail
 
-    def test_extract_title(self):
-        """페이지 제목 추출 테스트"""
-        from bs4 import BeautifulSoup
-        
-        # title 태그가 있는 경우
-        html_with_title = "<html><head><title>인공지능 기술</title></head></html>"
-        soup = BeautifulSoup(html_with_title, 'html.parser')
-        title = self.extractor._extract_title(soup)
-        assert title == "인공지능 기술"
-        
-        # title 태그가 없고 h1 태그가 있는 경우
-        html_with_h1 = "<html><body><h1>머신러닝 가이드</h1></body></html>"
-        soup = BeautifulSoup(html_with_h1, 'html.parser')
-        title = self.extractor._extract_title(soup)
-        assert title == "머신러닝 가이드"
-        
-        # 둘 다 없는 경우
-        html_empty = "<html><body><p>내용</p></body></html>"
-        soup = BeautifulSoup(html_empty, 'html.parser')
-        title = self.extractor._extract_title(soup)
-        assert title == "제목 없음"
-
     def test_extract_meta_description(self):
         """메타 설명 추출 테스트"""
         from bs4 import BeautifulSoup
@@ -237,7 +215,6 @@ class TestNebulaNLPExtractor:
             mock_soup_class.return_value = mock_soup
             
             with patch.object(self.extractor, '_extract_text_content', return_value="추출된 텍스트"), \
-                 patch.object(self.extractor, '_extract_title', return_value="테스트 제목"), \
                  patch.object(self.extractor, '_extract_meta_description', return_value="테스트 설명"):
                 
                 result = await self.extractor.extract_and_process(request)
@@ -249,7 +226,6 @@ class TestNebulaNLPExtractor:
                 assert len(result['documents']) == 1
                 
                 doc = result['documents'][0]
-                assert doc['title'] == '테스트 제목'
                 assert doc['keywords'] == mock_keywords
                 assert doc['thumbnails'] == mock_thumbnails
                 assert doc['meta_description'] == '테스트 설명'
@@ -310,8 +286,7 @@ class TestIntegrationNLPExtractor:
             
             doc = result['documents'][0]
             
-            # 제목과 메타 설명이 정확히 추출되었는지 확인
-            assert doc['title'] == '인공지능과 머신러닝'
+            # 메타 설명이 정확히 추출되었는지 확인
             assert doc['meta_description'] == 'AI와 ML에 대한 종합 가이드'
             
             # 형태소 분석기를 통한 키워드 추출 확인

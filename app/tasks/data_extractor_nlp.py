@@ -64,7 +64,6 @@ class NebulaNLPExtractor:
                 "user_id": request.user_id,
                 "url": request.url,
                 "documents": [{
-                    "title": self._extract_title(soup),
                     "content": text_content[:1000] if text_content else "",  # 첫 1000자만
                     "keywords": keywords,
                     "thumbnails": thumbnails,
@@ -176,18 +175,6 @@ class NebulaNLPExtractor:
             logger.error(f"키워드 추출 실패: {str(e)}")
             return []
 
-    def _extract_title(self, soup: BeautifulSoup) -> str:
-        """페이지 제목 추출"""
-        title_tag = soup.find('title')
-        if title_tag:
-            return title_tag.get_text().strip()
-        
-        # title 태그가 없으면 h1 태그 시도
-        h1_tag = soup.find('h1')
-        if h1_tag:
-            return h1_tag.get_text().strip()
-        
-        return "제목 없음"
 
     def _extract_meta_description(self, soup: BeautifulSoup) -> str:
         """메타 설명 추출"""
