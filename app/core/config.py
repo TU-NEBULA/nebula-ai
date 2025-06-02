@@ -6,9 +6,11 @@ Pydantic을 사용하여 환경 변수를 검증하고 타입을 보장합니다
 """
 import os
 from dotenv import load_dotenv
+from pydantic import computed_field, Field
 from pydantic_settings import BaseSettings
 
 load_dotenv(override=True)
+
 class Settings(BaseSettings):
     """
     애플리케이션 설정 클래스
@@ -16,31 +18,39 @@ class Settings(BaseSettings):
     환경 변수를 통해 설정되는 모든 구성 요소를 정의합니다.
     .env 파일 또는 환경 변수에서 값을 로드합니다.
     """
-    HUGGINGFACEHUB_API_TOKEN: str
-    EMBEDDING_MODEL_NAME: str
-    MODEL_NAME: str
-    CACHE_DIR: str
+    # 환경 설정
+    ENVIRONMENT: str = Field(default="development")
+    DEBUG: bool = Field(default=True)
+
+    # OpenAI 설정
     OPENAI_API_KEY: str
     OPENAI_EMBED_MODEL: str
     OPENAI_MODEL: str
     OPENAI_BASE_URL: str = "https://api.openai.com/v1"
     OPENAI_TIMEOUT: float = 30.0
+
+    # LangSmith 설정
     LANGSMITH_TRACING: bool
     LANGSMITH_ENDPOINT: str
     LANGSMITH_API_KEY: str
     LANGSMITH_PROJECT: str
+
+    # AWS 설정
     AWS_ACCESS_KEY_ID: str
     AWS_SECRET_KEY_ID: str
     REGION: str
     BUCKET_NAME: str
+
+    # Chroma 설정
     CHROMA_DB_URI: str
+
+    # Redis 설정
     REDIS_HOST: str
     REDIS_PORT: int
     REDIS_DB: int
     REDIS_URL: str
-    NEO4J_URI: str
-    NEO4J_USER: str
-    NEO4J_PASSWORD: str
+
+    # RabbitMQ 설정
     RABBITMQ_HOST: str
     RABBITMQ_PORT: int
     RABBITMQ_USERNAME: str
@@ -48,7 +58,25 @@ class Settings(BaseSettings):
     EXTRACT_REQ_QUEUE: str
     CHAT_REQ_QUEUE: str
     BOOKMARK_SAVE_QUEUE: str
+
+    # 기본 썸네일 설정
     BASE_THUMBNAIL: str
+    
+    # PostgreSQL RDS 설정
+    POSTGRES_HOST: str = Field(..., description="PostgreSQL host")
+    POSTGRES_PORT: int = Field(default=5432)
+    POSTGRES_USER: str = Field(..., description="PostgreSQL user")
+    POSTGRES_PASSWORD: str = Field(..., description="PostgreSQL password")
+    POSTGRES_DB: str = Field(..., description="PostgreSQL database name")
+    
+    # 데이터베이스 연결 풀 설정
+    DB_POOL_SIZE: int = Field(default=20)
+    DB_MAX_OVERFLOW: int = Field(default=0)
+    DB_POOL_TIMEOUT: int = Field(default=30)
+    DB_POOL_RECYCLE: int = Field(default=3600)
+    
+    # SSL 설정 (RDS에서 권장)
+    DB_SSL_MODE: str = Field(default="require")
 
     @property
     def RABBITMQ_URL(self) -> str:
@@ -61,6 +89,25 @@ class Settings(BaseSettings):
         return f"amqp://{self.RABBITMQ_USERNAME}:{self.RABBITMQ_PASSWORD}" \
                f"@{self.RABBITMQ_HOST}:{self.RABBITMQ_PORT}/"
 
+    @computed_field
+    @property
+    def DATABASE_URL(self) -> str:
+        """동기 데이터베이스 URL (Alembic용)"""
+        return (
+            f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+            f"?sslmode={self.DB_SSL_MODE}"
+        )
+    
+    @computed_field
+    @property
+    def ASYNC_DATABASE_URL(self) -> str:
+        """비동기 데이터베이스 URL (SQLModel용)"""
+        return (
+            f"postgresql+asyncpg://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+            f"?ssl={self.DB_SSL_MODE}"
+        )
 
     class Config:
         """

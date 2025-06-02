@@ -27,11 +27,18 @@ openai = "*"
 langchain-community = "*"
 pylint = "*"
 loguru = "*"
+sqlmodel = "*"
+psycopg2-binary = "*"
+asyncpg = "*"
+alembic = "*"
+greenlet = "*"
+aiohttp = "*"
 
 [dev-packages]
 pytest-asyncio = "*"
 pytest = "*"
 pytest-cov = "*"
+aiosqlite = "*"
 
 [requires]
 python_version = "3.12"
