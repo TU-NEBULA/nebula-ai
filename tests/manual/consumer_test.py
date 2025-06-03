@@ -33,7 +33,7 @@ class MockIncomingMessage:
         return MockContext()
 
 
-async def test_consumer_with_case(test_case: dict):
+async def run_consumer_test_case(test_case: dict):
     """개별 테스트 케이스를 실행"""
     
     print(f"\n🧪 테스트: {test_case['name']}")
@@ -60,7 +60,7 @@ async def test_consumer_with_case(test_case: dict):
             return False
 
 
-async def test_json_parsing():
+async def run_json_parsing_test():
     """JSON 파싱 오류 테스트"""
     
     print("\n🧪 테스트: JSON 파싱 오류")
@@ -102,11 +102,11 @@ async def main():
     
     # 개별 테스트 케이스들 실행
     for test_case in test_cases:
-        result = await test_consumer_with_case(test_case)
+        result = await run_consumer_test_case(test_case)
         results.append((test_case['name'], result))
     
     # JSON 파싱 테스트
-    json_result = await test_json_parsing()
+    json_result = await run_json_parsing_test()
     results.append(("JSON 파싱 오류", json_result))
     
     # 결과 요약

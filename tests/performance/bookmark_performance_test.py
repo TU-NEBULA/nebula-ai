@@ -75,11 +75,14 @@ class MockIncomingMessage:
         return MockContext()
 
 
-async def test_consumer_performance(test_data: list):
+async def test_consumer_performance():
     """Consumer 성능 테스트"""
     
     print("\n🚀 Consumer 성능 테스트")
     print("=" * 50)
+    
+    # 테스트 데이터 생성
+    test_data = generate_test_data(50)
     
     monitor = PerformanceMonitor()
     monitor.start()
@@ -134,11 +137,14 @@ async def test_consumer_performance(test_data: list):
     }
 
 
-async def test_rabbitmq_performance(test_data: list):
+async def test_rabbitmq_performance():
     """RabbitMQ 메시지 전송 성능 테스트"""
     
     print("\n📨 RabbitMQ 성능 테스트")
     print("=" * 50)
+    
+    # 테스트 데이터 생성
+    test_data = generate_test_data(30)
     
     monitor = PerformanceMonitor()
     
@@ -212,11 +218,14 @@ async def test_rabbitmq_performance(test_data: list):
         return None
 
 
-async def test_concurrent_processing(test_data: list, concurrency: int = 5):
+async def test_concurrent_processing(concurrency: int = 5):
     """동시 처리 성능 테스트"""
     
     print(f"\n⚡ 동시 처리 테스트 (동시성: {concurrency})")
     print("=" * 50)
+    
+    # 테스트 데이터 생성
+    test_data = generate_test_data(40)
     
     monitor = PerformanceMonitor()
     monitor.start()
@@ -322,12 +331,12 @@ async def main():
         test_data = generate_test_data(size)
         
         # 1. Consumer 성능 테스트
-        consumer_result = await test_consumer_performance(test_data)
+        consumer_result = await test_consumer_performance()
         all_results.append(consumer_result)
         
         # 2. RabbitMQ 성능 테스트 (연결 가능한 경우)
         try:
-            rabbitmq_result = await test_rabbitmq_performance(test_data)
+            rabbitmq_result = await test_rabbitmq_performance()
             if rabbitmq_result:
                 all_results.append(rabbitmq_result)
         except Exception as e:
@@ -335,7 +344,7 @@ async def main():
         
         # 3. 동시 처리 테스트 (큰 데이터셋에서만)
         if size >= 50:
-            concurrent_result = await test_concurrent_processing(test_data, concurrency=3)
+            concurrent_result = await test_concurrent_processing(concurrency=3)
             all_results.append(concurrent_result)
     
     # 4. 메모리 사용량 테스트
