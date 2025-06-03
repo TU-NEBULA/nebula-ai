@@ -14,11 +14,11 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import SQLModel
 from loguru import logger
-from .config import settings
+from app.core.config import settings
 
 # 비동기 엔진 생성
 async_engine = create_async_engine(
@@ -60,7 +60,7 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
-        except Exception:
+        except SQLAlchemyError:
             await session.rollback()
             raise
         finally:
@@ -77,7 +77,7 @@ async def init_db() -> None:
             # 모든 SQLModel 테이블 생성
             await conn.run_sync(SQLModel.metadata.create_all)
         logger.info("✅ 데이터베이스 테이블 초기화 완료")
-    except Exception as e:
+    except SQLAlchemyError as e:
         logger.error(f"❌ 데이터베이스 테이블 초기화 실패: {e}")
         raise
 
@@ -94,7 +94,7 @@ async def test_connection() -> bool:
             await conn.execute(text("SELECT 1"))
         logger.info(f"✅ PostgreSQL 연결 성공 - Host: {settings.POSTGRES_HOST}")
         return True
-    except Exception as e:
+    except SQLAlchemyError as e:
         logger.error(f"❌ PostgreSQL 연결 실패: {e}")
         return False
 
@@ -104,5 +104,5 @@ async def close_db() -> None:
     try:
         await async_engine.dispose()
         logger.info("✅ 데이터베이스 연결 종료 완료")
-    except Exception as e:
-        logger.error(f"❌ 데이터베이스 연결 종료 실패: {e}") 
+    except SQLAlchemyError as e:
+        logger.error(f"❌ 데이터베이스 연결 종료 실패: {e}")

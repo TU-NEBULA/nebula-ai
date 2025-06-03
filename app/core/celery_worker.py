@@ -22,4 +22,4 @@ celery.conf.task_routes = {
 # 자동으로 태스크 모듈 검색(발견)
 celery.autodiscover_tasks(['app.tasks'])
 # 필요한 태스크 모듈 가져오기
-from app.tasks import bookmark_save_task
+from app.tasks import bookmark_save_task # pylint: disable=unused-import
