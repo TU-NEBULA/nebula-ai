@@ -5,13 +5,14 @@
 S3에 저장된 HTML에서 이미지와 키워드를 추출하고 그 결과를 응답으로 반환합니다.
 """
 import traceback
+import json
 
-from aio_pika import IncomingMessage, Message
-from pydantic import BaseModel, Field, ConfigDict
+from aio_pika import IncomingMessage
+from aio_pika.exceptions import AMQPException
+from pydantic import BaseModel, Field, ConfigDict, ValidationError
 from loguru import logger
 
 from app.core.rabbit import get_rabbit_connection
-from app.services.extract_data import extract_data_from_s3_async
 from app.core.config import settings
 from app.models.extract_data import ExtractDataModel
 from app.tasks.data_extractor_nlp import NebulaNLPExtractor
@@ -50,7 +51,7 @@ async def on_extract_message(message: IncomingMessage):
         try:
             request = ExtractDataModel.model_validate_json(message.body)
             logger.info(f"✅ 메시지 파싱 성공: user_id={request.user_id}, url={request.url}")
-        except Exception as e:
+        except (ValidationError, json.JSONDecodeError, UnicodeDecodeError) as e:
             logger.error(f"❌ 메시지 파싱 실패: {e}")
             return
 
@@ -59,8 +60,12 @@ async def on_extract_message(message: IncomingMessage):
         try:
             extractor = NebulaNLPExtractor()
             result = await extractor.extract_and_process(request)
-            logger.info(f"✅ 데이터 추출 완료 - uid={request.user_id}, 처리된 문서 수: {len(result.get('documents', []))}")
-        except Exception:
+            document_count = len(result.get('documents', []))
+            logger.info(
+                f"✅ 데이터 추출 완료 - uid={request.user_id}, "
+                f"처리된 문서 수: {document_count}"
+            )
+        except Exception:  # pylint: disable=broad-exception-caught
             tb = traceback.format_exc()
             logger.error(f"❌ 데이터 추출 실패: {tb}")
 
@@ -85,6 +90,6 @@ async def start_extract_consumer():
         logger.info(f"🎯 Extract consumer 대기 중: {settings.EXTRACT_REQ_QUEUE}")
         await queue.consume(on_extract_message)
 
-    except Exception as e:
+    except AMQPException as e:
         logger.error(f"❌ Extract Data Consumer 시작 실패: {e}")
         raise
