@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  # RabbitMQ - 메시지 큐
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: test-rabbitmq
+    ports:
+      - "5672:5672"    # AMQP 포트
+      - "15672:15672"  # 관리 웹UI 포트
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Redis - 캐시 및 Celery 브로커
+  redis:
+    image: redis:7-alpine
+    container_name: test-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # PostgreSQL - 메인 데이터베이스
+  postgres:
+    image: postgres:15
+    container_name: test-postgres
+    ports:
+      - "5433:5432"  # 기본 포트와 충돌 방지
+    environment:
+      POSTGRES_USER: nebula_user
+      POSTGRES_PASSWORD: nebula_password
+      POSTGRES_DB: nebula_ai_test
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nebula_user -d nebula_ai_test"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Flower - Celery 모니터링 (선택적)
+  flower:
+    image: mher/flower
+    container_name: test-flower
+    ports:
+      - "5555:5555"
+    environment:
+      - FLOWER_PORT=5555
+      - CELERY_BROKER_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    profiles:
+      - monitoring
+
+volumes:
+  rabbitmq_data:
+  redis_data:
+  postgres_data: 
