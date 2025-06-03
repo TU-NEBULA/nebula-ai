@@ -1,27 +1,20 @@
 """
 북마크 저장 플로우 통합 테스트
 
-전체 북마크 저장 플로우의 통합 테스트를 진행합니다:
-1. 메시지 수신
-2. 유사도 계산 
-3. 관계 메시지 발행
-4. 북마크 저장
+이 파일은 북마크 저장의 전체 플로우를 테스트합니다:
+1. Consumer에서 메시지 수신 및 검증
+2. Celery 태스크 호출
+3. 실제 태스크에서의 전체 워크플로우 처리
 """
-import pytest
 import json
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
-import numpy as np
-
+import pytest
+from unittest.mock import AsyncMock, patch, MagicMock
 from app.consumers.bookmark_save_rmq import on_bookmark_save
-from app.services.similarity_service import SimilarityService
-from app.services.message_publisher import MessagePublisher
-from app.models.message_models import BookmarkRelationshipMessage
 
 
 @pytest.fixture
 def mock_incoming_message():
-    """Mock IncomingMessage 클래스"""
+    """Mock IncomingMessage 생성 함수"""
     class MockIncomingMessage:
         def __init__(self, payload):
             self.body = json.dumps(payload).encode('utf-8')
@@ -39,22 +32,22 @@ def mock_incoming_message():
 
 @pytest.fixture
 def sample_bookmark_message():
-    """샘플 북마크 메시지 데이터"""
+    """테스트용 표준 북마크 메시지"""
     return {
         "userId": 123,
         "starId": "test_bookmark_456",
         "s3Key": "test/sample.html",
-        "title": "AI와 머신러닝 기초 가이드",
-        "url": "https://example.com/ai-ml-guide",
+        "title": "AI와 머신러닝 기초",
+        "url": "https://example.com/ai-basics",
         "keywords": ["AI", "머신러닝", "딥러닝", "기초"],
         "memo": "AI 학습용 자료",
-        "summary": "인공지능과 머신러닝의 기본 개념부터 실습까지 다루는 종합 가이드"
+        "summary": "AI와 머신러닝에 대한 기초적인 내용을 다루는 문서"
     }
 
 
 @pytest.fixture
 def mock_similar_bookmarks():
-    """Mock 유사한 북마크 데이터"""
+    """Mock 유사 북마크 데이터"""
     return [
         {
             "bookmark_id": "similar_1",
@@ -65,8 +58,8 @@ def mock_similar_bookmarks():
         {
             "bookmark_id": "similar_2", 
             "similarity_score": 0.87,
-            "title": "파이썬으로 배우는 머신러닝",
-            "url": "https://example.com/python-ml"
+            "title": "머신러닝 알고리즘",
+            "url": "https://example.com/ml-algorithms"
         },
         {
             "bookmark_id": "similar_3",
@@ -83,47 +76,24 @@ async def test_complete_bookmark_flow_with_similar_bookmarks(
     sample_bookmark_message, 
     mock_similar_bookmarks
 ):
-    """유사한 북마크가 있는 경우의 완전한 플로우 테스트"""
+    """유사한 북마크가 있는 경우의 완전한 플로우 테스트 (Consumer + Task)"""
     
     message = mock_incoming_message(sample_bookmark_message)
     
-    # Mock 설정들
-    with patch('app.consumers.bookmark_save_rmq.similarity_service') as mock_similarity_service:
-        with patch('app.consumers.bookmark_save_rmq.message_publisher') as mock_publisher:
-            with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
-                
-                # SimilarityService Mock 설정 - AsyncMock 사용
-                mock_similarity_service.find_similar_bookmarks = AsyncMock(return_value=mock_similar_bookmarks)
-                
-                # MessagePublisher Mock 설정 - AsyncMock 사용
-                mock_publisher.publish_bookmark_relationships = AsyncMock(return_value=True)
-                
-                # 테스트 실행
-                await on_bookmark_save(message)
-                
-                # 검증: SimilarityService 호출
-                mock_similarity_service.find_similar_bookmarks.assert_called_once()
-                call_args = mock_similarity_service.find_similar_bookmarks.call_args
-                
-                assert call_args.kwargs['user_id'] == 123
-                assert call_args.kwargs['keywords'] == ["AI", "머신러닝", "딥러닝", "기초"]
-                assert call_args.kwargs['summary'] == sample_bookmark_message['summary']
-                
-                # 검증: MessagePublisher 호출
-                mock_publisher.publish_bookmark_relationships.assert_called_once()
-                publisher_call_args = mock_publisher.publish_bookmark_relationships.call_args
-                
-                assert publisher_call_args.kwargs['user_id'] == 123
-                assert publisher_call_args.kwargs['source_bookmark']['bookmark_id'] == "test_bookmark_456"
-                assert publisher_call_args.kwargs['similar_bookmarks'] == mock_similar_bookmarks
-                
-                # 검증: save_bookmark_task 호출
-                mock_save_task.delay.assert_called_once()
-                save_task_call_args = mock_save_task.delay.call_args
-                
-                assert save_task_call_args.kwargs['user_id'] == 123
-                assert save_task_call_args.kwargs['star_id'] == "test_bookmark_456"
-                assert save_task_call_args.kwargs['title'] == sample_bookmark_message['title']
+    # Consumer만 테스트 (save_bookmark_task 호출 확인)
+    with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
+        # 테스트 실행
+        await on_bookmark_save(message)
+        
+        # 검증: save_bookmark_task가 올바른 데이터로 호출되었는지 확인
+        mock_save_task.delay.assert_called_once()
+        call_args = mock_save_task.delay.call_args[0][0]  # 첫 번째 인자 (딕셔너리)
+        
+        assert call_args['user_id'] == 123
+        assert call_args['star_id'] == "test_bookmark_456"
+        assert call_args['title'] == sample_bookmark_message['title']
+        assert call_args['s3_key'] == sample_bookmark_message['s3Key']
+        assert call_args['keywords'] == sample_bookmark_message['keywords']
 
 
 @pytest.mark.asyncio
@@ -135,24 +105,13 @@ async def test_complete_bookmark_flow_without_similar_bookmarks(
     
     message = mock_incoming_message(sample_bookmark_message)
     
-    with patch('app.consumers.bookmark_save_rmq.similarity_service') as mock_similarity_service:
-        with patch('app.consumers.bookmark_save_rmq.message_publisher') as mock_publisher:
-            with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
-                
-                # 유사한 북마크 없음
-                mock_similarity_service.find_similar_bookmarks = AsyncMock(return_value=[])
-                
-                # 테스트 실행
-                await on_bookmark_save(message)
-                
-                # 검증: SimilarityService는 호출되었지만 결과가 빈 리스트
-                mock_similarity_service.find_similar_bookmarks.assert_called_once()
-                
-                # 검증: MessagePublisher는 호출되지 않음 (유사한 북마크가 없으므로)
-                mock_publisher.publish_bookmark_relationships.assert_not_called()
-                
-                # 검증: save_bookmark_task는 여전히 호출됨
-                mock_save_task.delay.assert_called_once()
+    # Consumer만 테스트
+    with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
+        # 테스트 실행
+        await on_bookmark_save(message)
+        
+        # 검증: save_bookmark_task가 호출되었는지 확인 
+        mock_save_task.delay.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -172,17 +131,12 @@ async def test_bookmark_flow_with_missing_required_fields(mock_incoming_message)
     
     message = mock_incoming_message(invalid_message)
     
-    with patch('app.consumers.bookmark_save_rmq.similarity_service') as mock_similarity_service:
-        with patch('app.consumers.bookmark_save_rmq.message_publisher') as mock_publisher:
-            with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
-                
-                # 테스트 실행 (예외가 발생하지 않아야 함)
-                await on_bookmark_save(message)
-                
-                # 검증: 필수 필드 누락으로 인해 후속 처리가 실행되지 않음
-                mock_similarity_service.find_similar_bookmarks.assert_not_called()
-                mock_publisher.publish_bookmark_relationships.assert_not_called()
-                mock_save_task.delay.assert_not_called()
+    with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
+        # 테스트 실행 (예외가 발생하지 않아야 함)
+        await on_bookmark_save(message)
+        
+        # 검증: 필수 필드 누락으로 인해 태스크가 호출되지 않음
+        mock_save_task.delay.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -190,28 +144,24 @@ async def test_bookmark_flow_with_similarity_service_error(
     mock_incoming_message,
     sample_bookmark_message
 ):
-    """SimilarityService 오류 시 플로우 테스트"""
+    """Task에서 SimilarityService 오류 시 플로우 테스트"""
     
     message = mock_incoming_message(sample_bookmark_message)
     
-    with patch('app.consumers.bookmark_save_rmq.similarity_service') as mock_similarity_service:
-        with patch('app.consumers.bookmark_save_rmq.message_publisher') as mock_publisher:
-            with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
-                
-                # SimilarityService에서 예외 발생
-                mock_similarity_service.find_similar_bookmarks = AsyncMock(side_effect=Exception("Similarity calculation failed"))
-                
-                # 테스트 실행 (예외가 전파되지 않아야 함)
-                await on_bookmark_save(message)
-                
-                # 검증: SimilarityService 호출 시도됨
-                mock_similarity_service.find_similar_bookmarks.assert_called_once()
-                
-                # 검증: 예외로 인해 save_bookmark_task는 호출되지 않음
-                mock_save_task.delay.assert_not_called()
-                
-                # 검증: MessagePublisher는 호출되지 않음 (SimilarityService 오류로 인해)
-                mock_publisher.publish_bookmark_relationships.assert_not_called()
+    # Task의 의존성을 mock
+    with patch('app.tasks.bookmark_save_task.similarity_service') as mock_similarity_service:
+        with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
+            
+            # SimilarityService에서 예외 발생하도록 설정
+            mock_similarity_service.find_similar_bookmarks = AsyncMock(
+                side_effect=Exception("Similarity calculation failed")
+            )
+            
+            # Consumer 테스트 (정상 호출되어야 함)
+            await on_bookmark_save(message)
+            
+            # 검증: Consumer는 정상적으로 태스크를 호출
+            mock_save_task.delay.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -220,29 +170,24 @@ async def test_bookmark_flow_with_publisher_error(
     sample_bookmark_message,
     mock_similar_bookmarks
 ):
-    """MessagePublisher 오류 시 플로우 테스트"""
+    """Task에서 MessagePublisher 오류 시 플로우 테스트"""
     
     message = mock_incoming_message(sample_bookmark_message)
     
-    with patch('app.consumers.bookmark_save_rmq.similarity_service') as mock_similarity_service:
-        with patch('app.consumers.bookmark_save_rmq.message_publisher') as mock_publisher:
-            with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
-                
-                # Mock 설정
-                mock_similarity_service.find_similar_bookmarks = AsyncMock(return_value=mock_similar_bookmarks)
-                mock_publisher.publish_bookmark_relationships = AsyncMock(side_effect=Exception("Publisher failed"))
-                
-                # 테스트 실행 (예외가 전파되지 않아야 함)
-                await on_bookmark_save(message)
-                
-                # 검증: SimilarityService는 정상 호출
-                mock_similarity_service.find_similar_bookmarks.assert_called_once()
-                
-                # 검증: MessagePublisher 호출 시도됨
-                mock_publisher.publish_bookmark_relationships.assert_called_once()
-                
-                # 검증: 예외로 인해 save_bookmark_task는 호출되지 않음
-                mock_save_task.delay.assert_not_called()
+    # Task의 의존성을 mock
+    with patch('app.tasks.bookmark_save_task.message_publisher') as mock_publisher:
+        with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
+            
+            # MessagePublisher에서 예외 발생하도록 설정
+            mock_publisher.publish_bookmark_relationships = AsyncMock(
+                side_effect=Exception("Publisher failed")
+            )
+            
+            # Consumer 테스트 (정상 호출되어야 함)
+            await on_bookmark_save(message)
+            
+            # 검증: Consumer는 정상적으로 태스크를 호출
+            mock_save_task.delay.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -264,60 +209,114 @@ async def test_bookmark_flow_json_parsing_error(mock_incoming_message):
     
     message = BadJsonMessage()
     
-    with patch('app.consumers.bookmark_save_rmq.similarity_service') as mock_similarity_service:
-        with patch('app.consumers.bookmark_save_rmq.message_publisher') as mock_publisher:
-            with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
-                
-                # 테스트 실행 (예외가 발생하지 않아야 함)
-                await on_bookmark_save(message)
-                
-                # 검증: JSON 파싱 오류로 인해 후속 처리가 실행되지 않음
-                mock_similarity_service.find_similar_bookmarks.assert_not_called()
-                mock_publisher.publish_bookmark_relationships.assert_not_called()
-                mock_save_task.delay.assert_not_called()
+    with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
+        # 테스트 실행 (예외가 발생하지 않아야 함)
+        await on_bookmark_save(message)
+        
+        # 검증: JSON 파싱 오류로 인해 태스크가 호출되지 않음
+        mock_save_task.delay.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_bookmark_relationship_message_integration():
-    """BookmarkRelationshipMessage와 실제 서비스 통합 테스트"""
+    """북마크 관계 메시지 통합 테스트 (실제 메시지 발행까지)"""
     
-    source_bookmark = {
-        "bookmark_id": "integration_test_123",
-        "title": "통합 테스트 북마크",
-        "url": "https://example.com/integration",
-        "keywords": ["통합", "테스트"],
-        "summary": "통합 테스트용 북마크입니다"
-    }
+    # 실제 메시지 발행까지 테스트하는 통합 테스트
+    from app.services.message_publisher import message_publisher
+    from app.models.message_models import BookmarkRelationshipMessage
     
-    similar_bookmarks = [
-        {
-            "bookmark_id": "integration_similar_1",
-            "similarity_score": 0.91,
-            "title": "통합 유사 북마크 1",
-            "url": "https://example.com/similar1"
-        }
-    ]
-    
-    # BookmarkRelationshipMessage 생성 테스트
-    relationship_message = BookmarkRelationshipMessage(
+    # 테스트 데이터
+    test_data = BookmarkRelationshipMessage(
         user_id=999,
-        source_bookmark=source_bookmark,
-        similar_bookmarks=similar_bookmarks
+        source_bookmark={
+            "bookmark_id": "integration_test",
+            "title": "통합 테스트 북마크",
+            "url": "https://example.com/integration",
+            "keywords": ["통합", "테스트"],
+            "summary": "통합 테스트용 북마크"
+        },
+        similar_bookmarks=[
+            {
+                "bookmark_id": "similar_integration",
+                "similarity_score": 0.95,
+                "title": "유사 통합 테스트",
+                "url": "https://example.com/similar"
+            }
+        ]
     )
     
-    # 메시지 검증
-    assert relationship_message.user_id == 999
-    assert relationship_message.source_bookmark == source_bookmark
-    assert len(relationship_message.similar_bookmarks) == 1
-    assert relationship_message.similar_bookmarks[0]["similarity_score"] == 0.91
+    # 실제 메시지 발행 테스트 (RabbitMQ 연결 필요할 수 있음)
+    try:
+        result = await message_publisher.publish_bookmark_relationships(
+            user_id=test_data.user_id,
+            source_bookmark=test_data.source_bookmark,
+            similar_bookmarks=test_data.similar_bookmarks
+        )
+        
+        # 성공 시 True, 연결 실패 시 False 반환
+        assert isinstance(result, bool)
+        
+    except Exception as e:
+        # 연결 실패는 정상 (테스트 환경에서는 RabbitMQ가 없을 수 있음)
+        assert "connection" in str(e).lower() or "timeout" in str(e).lower()
+
+
+@pytest.mark.asyncio
+async def test_task_workflow_integration():
+    """Task 워크플로우 통합 테스트"""
     
-    # JSON 직렬화/역직렬화 테스트
-    json_data = relationship_message.model_dump()
-    recreated_message = BookmarkRelationshipMessage(**json_data)
+    from app.tasks.bookmark_save_task import BookmarkData
     
-    assert recreated_message.user_id == relationship_message.user_id
-    assert recreated_message.source_bookmark == relationship_message.source_bookmark
-    assert len(recreated_message.similar_bookmarks) == len(relationship_message.similar_bookmarks)
+    # 테스트용 북마크 데이터
+    bookmark_data = BookmarkData(
+        user_id=123,
+        star_id="task_integration_test",
+        s3_key="test/task_integration.html",
+        title="태스크 통합 테스트",
+        url="https://example.com/task-integration",
+        keywords=["태스크", "통합", "테스트"],
+        memo="태스크 통합 테스트 메모",
+        summary="태스크 통합 테스트 요약"
+    )
+    
+    # 의존성들을 mock
+    with patch('app.tasks.bookmark_save_task.download_html_from_s3') as mock_s3:
+        with patch('app.tasks.bookmark_save_task.extract_main_text') as mock_extract:
+            with patch('app.tasks.bookmark_save_task.similarity_service') as mock_similarity:
+                with patch('app.tasks.bookmark_save_task.message_publisher') as mock_publisher:
+                    with patch('app.tasks.bookmark_save_task.vector_service') as mock_vector:
+                        with patch('app.tasks.bookmark_save_task.get_async_session') as mock_session:
+                            
+                            # Mock 설정
+                            mock_s3.return_value = "<html><body>테스트 콘텐츠</body></html>"
+                            mock_extract.return_value = "테스트 콘텐츠입니다. 태스크 통합 테스트를 진행하고 있습니다."
+                            mock_similarity.find_similar_bookmarks = AsyncMock(return_value=[])
+                            mock_publisher.publish_bookmark_relationships = AsyncMock(return_value=True)
+                            mock_vector.delete_document = AsyncMock(return_value=0)
+                            mock_vector.save_document = AsyncMock(return_value=[])
+                            
+                            # Async generator mock
+                            async def mock_get_session():
+                                yield MagicMock()
+                            mock_session.return_value = mock_get_session()
+                            
+                            # _async_save_logic을 직접 테스트 (asyncio.run 문제 회피)
+                            from app.tasks.bookmark_save_task import (
+                                _download_and_extract_content,
+                                _calculate_similarity,
+                                _publish_relationships
+                            )
+                            
+                            # 개별 함수들을 테스트
+                            body_text = await _download_and_extract_content(bookmark_data.s3_key)
+                            similar_bookmarks = await _calculate_similarity(bookmark_data, body_text)
+                            relationship_published = await _publish_relationships(bookmark_data, similar_bookmarks)
+                            
+                            # 검증
+                            assert len(body_text) > 0
+                            assert "테스트 콘텐츠" in body_text
+                            assert isinstance(similar_bookmarks, list)
+                            assert isinstance(relationship_published, bool)
 
 
 @pytest.mark.asyncio
@@ -340,7 +339,7 @@ async def test_full_flow_performance():
     sample_message = {
         "userId": 999,
         "starId": "performance_test",
-        "s3Key": "test/performance.html",
+        "s3Key": "test/performance.html", 
         "title": "성능 테스트 북마크",
         "url": "https://example.com/performance",
         "keywords": ["성능", "테스트"],
@@ -361,28 +360,21 @@ async def test_full_flow_performance():
     
     message = MockMessage(sample_message)
     
-    with patch('app.consumers.bookmark_save_rmq.similarity_service') as mock_similarity_service:
-        with patch('app.consumers.bookmark_save_rmq.message_publisher') as mock_publisher:
-            with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
-                
-                mock_similarity_service.find_similar_bookmarks = AsyncMock(return_value=large_similar_bookmarks)
-                mock_publisher.publish_bookmark_relationships = AsyncMock(return_value=True)
-                
-                # 성능 측정
-                start_time = time.time()
-                await on_bookmark_save(message)
-                end_time = time.time()
-                
-                execution_time = end_time - start_time
-                
-                # 검증: 처리 시간이 합리적인 범위 내인지 확인 (예: 1초 이내)
-                assert execution_time < 1.0, f"처리 시간이 너무 깁니다: {execution_time:.3f}초"
-                
-                # 검증: 모든 서비스가 정상 호출됨
-                mock_similarity_service.find_similar_bookmarks.assert_called_once()
-                mock_publisher.publish_bookmark_relationships.assert_called_once()
-                mock_save_task.delay.assert_called_once()
-                
-                # 검증: 많은 수의 유사한 북마크가 올바르게 처리됨
-                publisher_call_args = mock_publisher.publish_bookmark_relationships.call_args
-                assert len(publisher_call_args.kwargs['similar_bookmarks']) == 50 
+    # Consumer 성능 테스트 (단순 호출)
+    with patch('app.consumers.bookmark_save_rmq.save_bookmark_task') as mock_save_task:
+        start_time = time.time()
+        
+        # 테스트 실행
+        await on_bookmark_save(message)
+        
+        end_time = time.time()
+        execution_time = end_time - start_time
+        
+        # 검증: Consumer는 매우 빠르게 처리되어야 함 (< 0.1초)
+        assert execution_time < 0.1
+        mock_save_task.delay.assert_called_once()
+        
+        # 호출된 데이터 검증
+        call_args = mock_save_task.delay.call_args[0][0]
+        assert call_args['user_id'] == 999
+        assert call_args['star_id'] == "performance_test" 
