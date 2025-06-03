@@ -33,16 +33,17 @@ async def direct_save_test():
         
         # 테스트 데이터 구성
         test_data = {
-            "user_id": "test_user_123",
-            "source_id": "direct_test_bookmark_001", 
+            "user_id": "123",
+            "source_id": "direct_test_bookmark_002", 
             "source_type": "bookmark_chunk",
-            "title": "직접 저장 테스트 북마크",
+            "title": "정수 유저ID 테스트 북마크",
             "url": "https://test.example.com/ai-ml-guide",
             "keywords": ["AI", "머신러닝", "딥러닝", "테스트"],
             "summary": "AI와 머신러닝에 대한 기본 설명",
             "extra_metadata": {
                 "test_type": "direct_save",
-                "created_by": "direct_bookmark_save_test.py"
+                "created_by": "direct_bookmark_save_test.py",
+                "original_user_id": 123
             }
         }
         
@@ -79,9 +80,9 @@ async def direct_save_test():
                     
                     # 저장 확인
                     from sqlalchemy import text
-                    result = await session.execute(text("SELECT COUNT(*) FROM document_vectors WHERE user_id = 'test_user_123'"))
+                    result = await session.execute(text("SELECT COUNT(*) FROM document_vectors WHERE user_id = '123'"))
                     count = result.scalar()
-                    logger.info(f"📊 test_user_123의 북마크 개수: {count}개")
+                    logger.info(f"📊 user_id='123'의 북마크 개수: {count}개")
                     
                     if count > 0:
                         logger.info("🎉 북마크 저장 테스트 성공!")
@@ -97,7 +98,7 @@ async def direct_save_test():
                                 keywords,
                                 created_at
                             FROM document_vectors 
-                            WHERE user_id = 'test_user_123'
+                            WHERE user_id = '123'
                             ORDER BY created_at DESC, chunk_index ASC
                         """))
                         
