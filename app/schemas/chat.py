@@ -41,14 +41,13 @@ class ChatSessionCreateRequest(BaseModel):
     session_type: str = Field(default="general", max_length=50, description="세션 유형")
 
 class ChatSessionResponse(BaseModel):
-    """채팅 세션 응답"""
-    id: UUID = Field(description="세션 ID")
-    user_id: str = Field(description="사용자 ID")
-    title: Optional[str] = Field(description="세션 제목")
-    session_type: str = Field(description="세션 유형")
-    total_messages: int = Field(description="총 메시지 수")
-    last_activity_at: datetime = Field(description="마지막 활동 시간")
+    """채팅 세션 응답 스키마"""
+    id: str = Field(description="세션 ID")
+    title: str = Field(description="세션 제목")
+    session_type: str = Field(description="세션 타입")
     created_at: datetime = Field(description="생성 시간")
+    updated_at: Optional[datetime] = Field(default=None, description="수정 시간")
+    is_active: bool = Field(description="활성 상태")
 
 class ChatSessionListRequest(BaseModel):
     """채팅 세션 목록 조회 요청"""
@@ -67,14 +66,12 @@ class ChatMessageCreateRequest(BaseModel):
     role: str = Field(default="user", description="메시지 역할 (user/assistant)")
 
 class ChatMessageResponse(BaseModel):
-    """채팅 메시지 응답"""
-    id: UUID = Field(description="메시지 ID")
-    session_id: UUID = Field(description="세션 ID")
-    user_id: str = Field(description="사용자 ID")
-    role: str = Field(description="메시지 역할")
+    """채팅 메시지 응답 스키마"""
+    id: str = Field(description="메시지 ID")
     content: str = Field(description="메시지 내용")
-    response_time_ms: Optional[int] = Field(description="응답 시간(ms)")
+    role: str = Field(description="메시지 역할 (user/assistant)")
     created_at: datetime = Field(description="생성 시간")
+    metadata: Optional[Dict[str, Any]] = Field(default=None, description="메타데이터")
 
 class ChatStreamRequest(BaseModel):
     """채팅 스트리밍 요청 (기존 로직과 호환)"""
@@ -124,3 +121,13 @@ class ChatFeedbackResponse(BaseModel):
     feedback_type: str = Field(description="피드백 유형")
     feedback_score: int = Field(description="피드백 점수")
     created_at: datetime = Field(description="생성 시간")
+
+class ChatSessionMessagesResponse(BaseModel):
+    """채팅 세션 메시지 목록 응답 스키마"""
+    session_id: str = Field(description="세션 ID")
+    messages: List[ChatMessageResponse] = Field(description="메시지 목록")
+
+class ChatSessionListResponse(BaseModel):
+    """채팅 세션 목록 응답 스키마"""
+    sessions: List[ChatSessionResponse] = Field(description="세션 목록")
+    total: int = Field(description="전체 세션 수")

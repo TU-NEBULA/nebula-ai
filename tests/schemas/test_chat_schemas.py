@@ -5,7 +5,7 @@ Request/Response 스키마의 유효성 검증을 테스트합니다.
 """
 import pytest
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pydantic import ValidationError
 
 from app.schemas.chat import (
@@ -114,74 +114,68 @@ class TestChatStreamSchemas:
 
 
 class TestChatResponseSchemas:
-    """채팅 응답 스키마 테스트"""
+    """채팅 응답 스키마 테스트 (기존 구조)"""
 
     def test_chat_session_response(self):
         """채팅 세션 응답 테스트"""
-        session_id = uuid.uuid4()
+        session_id = str(uuid.uuid4())
         response_data = {
             "id": session_id,
-            "user_id": "123",
             "title": "테스트 세션",
             "session_type": "general",
-            "total_messages": 5,
-            "created_at": datetime.now(),
-            "last_activity_at": datetime.now()
+            "created_at": datetime.now(timezone.utc),
+            "updated_at": datetime.now(timezone.utc),
+            "is_active": True
         }
         
         response = ChatSessionResponse(**response_data)
         
         assert response.id == session_id
-        assert response.user_id == "123"
         assert response.title == "테스트 세션"
         assert response.session_type == "general"
-        assert response.total_messages == 5
+        assert response.is_active is True
         assert isinstance(response.created_at, datetime)
-        assert isinstance(response.last_activity_at, datetime)
 
     def test_chat_message_response(self):
         """채팅 메시지 응답 테스트"""
-        message_id = uuid.uuid4()
-        session_id = uuid.uuid4()
+        message_id = str(uuid.uuid4())
         
         response_data = {
             "id": message_id,
-            "session_id": session_id,
-            "user_id": "123",
-            "role": "user",
             "content": "안녕하세요!",
-            "response_time_ms": None,  # Optional 필드
-            "created_at": datetime.now()
+            "role": "user",
+            "created_at": datetime.now(timezone.utc),
+            "metadata": None  # Optional 필드
         }
         
         response = ChatMessageResponse(**response_data)
         
         assert response.id == message_id
-        assert response.session_id == session_id
-        assert response.user_id == "123"
-        assert response.role == "user"
         assert response.content == "안녕하세요!"
-        assert response.response_time_ms is None
+        assert response.role == "user"
+        assert response.metadata is None
         assert isinstance(response.created_at, datetime)
 
     def test_chat_message_response_with_response_time(self):
-        """응답 시간이 있는 메시지 응답 테스트"""
-        message_id = uuid.uuid4()
-        session_id = uuid.uuid4()
+        """메타데이터가 있는 메시지 응답 테스트"""
+        message_id = str(uuid.uuid4())
         
         response_data = {
             "id": message_id,
-            "session_id": session_id,
-            "user_id": "123",
-            "role": "assistant",
             "content": "AI 응답입니다.",
-            "response_time_ms": 1500,
-            "created_at": datetime.now()
+            "role": "assistant",
+            "created_at": datetime.now(timezone.utc),
+            "metadata": {
+                "response_time_ms": 1500,
+                "model": "gpt-3.5-turbo",
+                "token_count": 25
+            }
         }
         
         response = ChatMessageResponse(**response_data)
         
-        assert response.response_time_ms == 1500
+        assert response.metadata["response_time_ms"] == 1500
+        assert response.metadata["model"] == "gpt-3.5-turbo"
 
 
 class TestChatFeedbackSchemas:

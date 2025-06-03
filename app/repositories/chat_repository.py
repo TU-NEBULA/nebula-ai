@@ -5,20 +5,21 @@
 Repository 패턴을 통해 데이터베이스 로직을 캡슐화합니다.
 """
 import uuid
-from datetime import datetime, timedelta
+from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Dict, Any
+
+from loguru import logger
 from sqlmodel import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import (
     ChatSession, ChatMessage, RAGReference, UserFeedback
 )
-from loguru import logger
 
 
 class ChatRepository:
     """채팅 관련 데이터 접근을 처리하는 Repository"""
-    
+
     @staticmethod
     async def create_session(
         session: AsyncSession,
@@ -28,7 +29,7 @@ class ChatRepository:
     ) -> ChatSession:
         """새로운 채팅 세션을 생성합니다."""
         chat_session = ChatSession(
-            user_id=str(user_id),  # 스키마에 맞게 문자열로 변환
+            user_id=user_id,
             title=title or "새로운 대화",
             session_type=session_type,
             is_active=True
@@ -36,10 +37,10 @@ class ChatRepository:
         session.add(chat_session)
         await session.commit()
         await session.refresh(chat_session)
-        
+
         logger.info(f"📝 새 채팅 세션 생성 - session_id: {chat_session.id}, user_id: {user_id}")
         return chat_session
-    
+
     @staticmethod
     async def get_session(
         session: AsyncSession,
@@ -50,12 +51,12 @@ class ChatRepository:
         stmt = select(ChatSession).where(
             and_(
                 ChatSession.id == session_id,
-                ChatSession.user_id == str(user_id)
+                ChatSession.user_id == user_id  # int 형태로 비교
             )
         )
         result = await session.execute(stmt)
         return result.scalar_one_or_none()
-    
+
     @staticmethod
     async def get_user_sessions(
         session: AsyncSession,
@@ -66,14 +67,14 @@ class ChatRepository:
         """사용자의 채팅 세션 목록을 조회합니다."""
         stmt = (
             select(ChatSession)
-            .where(ChatSession.user_id == str(user_id))
-            .order_by(ChatSession.updated_at.desc())
+            .where(ChatSession.user_id == user_id)  # int 형태로 비교
+            .order_by(ChatSession.updated_at.desc())  # pylint: disable=no-member
             .offset(offset)
             .limit(limit)
         )
         result = await session.execute(stmt)
         return list(result.scalars().all())
-    
+
     @staticmethod
     async def save_message(
         session: AsyncSession,
@@ -81,17 +82,18 @@ class ChatRepository:
         content: str,
         role: str,
         user_id: int,
-        metadata: Optional[Dict[str, Any]] = None
+        **kwargs
     ) -> ChatMessage:
         """채팅 메시지를 저장합니다."""
+        metadata = kwargs.get('metadata')
         try:
             # 중복 메시지 방지를 위한 검증 (같은 세션, 같은 사용자, 같은 내용의 메시지가 최근 1분 내에 있는지 확인)
-            recent_time = datetime.utcnow() - timedelta(minutes=1)
-            
+            recent_time = datetime.now(timezone.utc) - timedelta(minutes=1)
+
             existing_message_stmt = select(ChatMessage).where(
                 and_(
                     ChatMessage.session_id == session_id,
-                    ChatMessage.user_id == str(user_id),
+                    ChatMessage.user_id == user_id,  # int 형태로 비교
                     ChatMessage.content == content,
                     ChatMessage.role == role,
                     ChatMessage.created_at >= recent_time
@@ -99,30 +101,30 @@ class ChatRepository:
             )
             existing_result = await session.execute(existing_message_stmt)
             existing_message = existing_result.scalar_one_or_none()
-            
+
             if existing_message:
                 logger.warning(f"⚠️ 중복 메시지 감지 - 기존 메시지 반환: {existing_message.id}")
                 return existing_message
-            
+
             message = ChatMessage(
                 session_id=session_id,
                 content=content,
                 role=role,
-                user_id=str(user_id),
+                user_id=user_id,  # int 형태 그대로 사용
                 rag_metadata=metadata or {}
             )
             session.add(message)
             await session.commit()
             await session.refresh(message)
-            
+
             logger.debug(f"💾 메시지 저장 - session_id: {session_id}, role: {role}")
             return message
-            
+
         except Exception as e:
             await session.rollback()
             logger.error(f"❌ 메시지 저장 실패: {e}")
             raise
-    
+
     @staticmethod
     async def get_session_messages(
         session: AsyncSession,
@@ -136,15 +138,15 @@ class ChatRepository:
             .where(
                 and_(
                     ChatMessage.session_id == session_id,
-                    ChatMessage.user_id == str(user_id)
+                    ChatMessage.user_id == user_id  # int 형태로 비교
                 )
             )
-            .order_by(ChatMessage.created_at.asc())
+            .order_by(ChatMessage.created_at.asc())  # pylint: disable=no-member
             .limit(limit)
         )
         result = await session.execute(stmt)
         return list(result.scalars().all())
-    
+
     @staticmethod
     async def save_rag_references(
         session: AsyncSession,
@@ -167,11 +169,11 @@ class ChatRepository:
             )
             rag_refs.append(rag_ref)
             session.add(rag_ref)
-        
+
         await session.commit()
         logger.debug(f"🔗 RAG 참조 저장 - message_id: {message_id}, 참조 수: {len(rag_refs)}")
         return rag_refs
-    
+
     @staticmethod
     async def update_session_title(
         session: AsyncSession,
@@ -183,12 +185,12 @@ class ChatRepository:
         chat_session = await ChatRepository.get_session(session, session_id, user_id)
         if chat_session:
             chat_session.title = title
-            chat_session.updated_at = datetime.utcnow()
+            chat_session.updated_at = datetime.now(timezone.utc)
             await session.commit()
             await session.refresh(chat_session)
             logger.info(f"📝 세션 제목 업데이트 - session_id: {session_id}, title: {title}")
         return chat_session
-    
+
     @staticmethod
     async def deactivate_session(
         session: AsyncSession,
@@ -199,29 +201,31 @@ class ChatRepository:
         chat_session = await ChatRepository.get_session(session, session_id, user_id)
         if chat_session:
             chat_session.is_active = False
-            chat_session.updated_at = datetime.utcnow()
+            chat_session.updated_at = datetime.now(timezone.utc)
             await session.commit()
             logger.info(f"🔇 세션 비활성화 - session_id: {session_id}")
             return True
         return False
-    
+
     @staticmethod
     async def save_user_feedback(
         session: AsyncSession,
         message_id: uuid.UUID,
         user_id: int,
         feedback_type: str,
-        rating: Optional[int] = None,
-        comment: Optional[str] = None
+        **kwargs
     ) -> UserFeedback:
         """사용자 피드백을 저장합니다."""
+        rating = kwargs.get('rating')
+        comment = kwargs.get('comment')
+
         feedback_detail = None
         if comment:
             feedback_detail = {"comment": comment}
-            
+
         feedback = UserFeedback(
             message_id=message_id,
-            user_id=str(user_id),
+            user_id=user_id,  # int 형태 그대로 사용
             feedback_type=feedback_type,
             feedback_score=rating or 3,  # 기본값 3
             feedback_detail=feedback_detail
@@ -229,6 +233,6 @@ class ChatRepository:
         session.add(feedback)
         await session.commit()
         await session.refresh(feedback)
-        
+
         logger.info(f"👍 피드백 저장 - message_id: {message_id}, type: {feedback_type}")
-        return feedback 
+        return feedback
