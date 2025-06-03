@@ -58,6 +58,20 @@ class Settings(BaseSettings):
     EXTRACT_REQ_QUEUE: str
     CHAT_REQ_QUEUE: str
     BOOKMARK_SAVE_QUEUE: str
+    BOOKMARK_RELATIONSHIP_QUEUE: str = Field(
+        default="bookmark_relationship",
+        description="북마크 관계 저장 요청 큐"
+    )
+
+    # Spring Boot 서버 설정
+    SPRING_BOOT_BASE_URL: str = Field(
+        default="http://localhost:8080",
+        description="Spring Boot 서버의 기본 URL"
+    )
+    SPRING_BOOT_TIMEOUT: float = Field(
+        default=30.0,
+        description="Spring Boot API 호출 타임아웃 (초)"
+    )
 
     # 기본 썸네일 설정
     BASE_THUMBNAIL: str
@@ -77,6 +91,35 @@ class Settings(BaseSettings):
     
     # SSL 설정 (RDS에서 권장)
     DB_SSL_MODE: str = Field(default="require")
+
+    # 유사도 계산 설정
+    SIMILARITY_THRESHOLD: float = Field(
+        default=0.7,
+        ge=0.0,
+        le=1.0,
+        description="북마크 유사도 임계값 (0.0 ~ 1.0)"
+    )
+    MAX_SIMILAR_BOOKMARKS: int = Field(
+        default=10,
+        ge=1,
+        le=50,
+        description="최대 유사 북마크 개수"
+    )
+    SIMILARITY_CALCULATION_TIMEOUT: float = Field(
+        default=30.0,
+        description="유사도 계산 타임아웃 (초)"
+    )
+
+    # 메시지 큐 관련 설정
+    MESSAGE_PUBLISH_RETRY_COUNT: int = Field(
+        default=3,
+        ge=1,
+        description="메시지 발행 재시도 횟수"
+    )
+    MESSAGE_PUBLISH_RETRY_DELAY: float = Field(
+        default=1.0,
+        description="메시지 발행 재시도 지연시간 (초)"
+    )
 
     @property
     def RABBITMQ_URL(self) -> str:

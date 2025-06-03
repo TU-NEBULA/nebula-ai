@@ -1,19 +1,15 @@
 """
 북마크 모델 모듈
 
-이 모듈은 북마크 관련 모델들을 정의합니다.
-
-주요 기능:
-- 북마크 AI 처리 상태 모델
-- 문서 청크 모델
-- 사용자 AI 프로필 모델
+이 모듈은 북마크 관련 SQLModel 테이블들을 정의합니다.
+메시지 모델들은 별도의 message_models.py에 분리되어 있습니다.
 """
 from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 from sqlmodel import Field, SQLModel, Column, Index
 from sqlalchemy.dialects.postgresql import JSONB
-from .base import BaseModel
+from .base import TimestampModel
 
 class BookmarkAIStatusBase(SQLModel):
     """북마크 AI 처리 상태 기본 스키마"""
@@ -37,12 +33,9 @@ class BookmarkAIStatusBase(SQLModel):
     content_language: Optional[str] = Field(default=None, max_length=10)
     content_quality_score: Optional[float] = Field(default=None)
 
-class BookmarkAIStatus(BookmarkAIStatusBase, BaseModel, table=True):
+class BookmarkAIStatus(BookmarkAIStatusBase, TimestampModel, table=True):
     """북마크 AI 처리 상태 테이블"""
     __tablename__ = "bookmark_ai_status"
-    
-    # 기본 키를 bookmark_id로 오버라이드
-    id: Optional[UUID] = Field(default=None, primary_key=False)
     
     # 인덱스 정의
     __table_args__ = (
@@ -85,12 +78,9 @@ class DocumentChunkBase(SQLModel):
     content_category: Optional[str] = Field(default=None, max_length=100)
     importance_score: Optional[float] = Field(default=None)
 
-class DocumentChunk(DocumentChunkBase, BaseModel, table=True):
+class DocumentChunk(DocumentChunkBase, TimestampModel, table=True):
     """문서 청크 테이블"""
     __tablename__ = "document_chunks"
-    
-    # 기본 키를 chunk_id로 오버라이드
-    id: Optional[UUID] = Field(default=None, primary_key=False)
     
     # 인덱스 정의
     __table_args__ = (
@@ -138,12 +128,9 @@ class UserAIProfileBase(SQLModel):
     positive_feedback_count: int = Field(default=0)
     negative_feedback_count: int = Field(default=0)
 
-class UserAIProfile(UserAIProfileBase, BaseModel, table=True):
+class UserAIProfile(UserAIProfileBase, TimestampModel, table=True):
     """사용자 AI 프로필 테이블"""
     __tablename__ = "user_ai_profiles"
-    
-    # 기본 키를 user_id로 오버라이드
-    id: Optional[UUID] = Field(default=None, primary_key=False)
     
     # 인덱스 정의
     __table_args__ = (
