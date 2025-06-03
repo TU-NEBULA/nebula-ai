@@ -27,7 +27,7 @@ except ImportError:
 # 채팅 세션 모델
 class ChatSessionBase(SQLModel):
     """채팅 세션 기본 스키마"""
-    user_id: str = SQLField(index=True, max_length=255)
+    user_id: int = SQLField(index=True)
     title: Optional[str] = SQLField(default=None, max_length=500)
     session_type: str = SQLField(default="general", max_length=50)
     is_active: bool = SQLField(default=True)  # 세션 활성화 상태
@@ -93,7 +93,7 @@ class ChatSessionUpdate(SQLModel):
 class ChatMessageBase(SQLModel):
     """채팅 메시지 기본 스키마"""
     session_id: UUID = SQLField(foreign_key="chat_sessions.id")
-    user_id: str = SQLField(index=True, max_length=255)
+    user_id: int = SQLField(index=True)
     role: str = SQLField(max_length=20)  # 'user' or 'assistant'
     content: str = SQLField(sa_column=Column(Text))
     
@@ -147,7 +147,7 @@ class ChatMessageRead(ChatMessageBase):
 class UserFeedbackBase(SQLModel):
     """사용자 피드백 기본 스키마"""
     message_id: UUID = SQLField(foreign_key="chat_messages.id")
-    user_id: str = SQLField(index=True, max_length=255)
+    user_id: int = SQLField(index=True)
     feedback_type: str = SQLField(max_length=50)  # 'helpful', 'not_helpful', 'partially_helpful'
     feedback_score: int = SQLField(ge=1, le=5)
     feedback_detail: Optional[Dict[str, Any]] = SQLField(
@@ -237,7 +237,7 @@ class RAGReferenceRead(RAGReferenceBase):
 # 사용자 프로필 모델 (옵션)
 class UserProfileBase(SQLModel):
     """사용자 프로필 기본 스키마"""
-    user_id: str = SQLField(primary_key=True, max_length=255)
+    user_id: int = SQLField(primary_key=True)
     display_name: Optional[str] = SQLField(default=None, max_length=100)
     preferences: Optional[Dict[str, Any]] = SQLField(
         default=None,
@@ -279,7 +279,7 @@ class UserProfileRead(UserProfileBase):
 if PGVECTOR_AVAILABLE:
     class DocumentVectorBase(SQLModel):
         """문서 벡터 기본 스키마"""
-        user_id: str = SQLField(index=True, max_length=255, description="사용자 ID")
+        user_id: int = SQLField(index=True, description="사용자 ID")
         source_id: str = SQLField(max_length=255, description="원본 문서 ID (star_id, bookmark_id 등)")
         source_type: str = SQLField(max_length=50, description="소스 타입 (bookmark, web, document 등)")
         
@@ -380,7 +380,7 @@ if PGVECTOR_AVAILABLE:
     class VectorSearchRequest(SQLModel):
         """벡터 검색 요청"""
         query_embedding: List[float]
-        user_id: Optional[str] = None
+        user_id: Optional[int] = None
         source_types: Optional[List[str]] = None
         limit: int = SQLField(default=10, ge=1, le=100)
         similarity_threshold: float = SQLField(default=0.7, ge=0.0, le=1.0)
