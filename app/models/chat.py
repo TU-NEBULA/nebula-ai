@@ -334,7 +334,7 @@ if PGVECTOR_AVAILABLE:
         
         # 인덱스 정의
         __table_args__ = (
-            # 벡터 유사도 검색용 인덱스 (cosine distance)
+            # 벡터 유사도 검색용 인덱스 
             Index("idx_document_vectors_embedding_cosine", "embedding", postgresql_using="ivfflat", postgresql_ops={"embedding": "vector_cosine_ops"}),
             
             # 일반 검색용 인덱스
@@ -343,8 +343,8 @@ if PGVECTOR_AVAILABLE:
             Index("idx_document_vectors_keywords_gin", "keywords", postgresql_using="gin"),
             Index("idx_document_vectors_user_created", "user_id", "created_at"),
             
-            # 복합 인덱스
-            Index("idx_document_vectors_user_embedding", "user_id", "embedding", postgresql_using="ivfflat"),
+            # 사용자별 검색용 별도 인덱스 
+            Index("idx_document_vectors_user_filter", "user_id"),
         )
 
 
