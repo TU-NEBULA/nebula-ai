@@ -195,11 +195,15 @@ async def _delete_pattern_individually(session, bookmark_data: BookmarkData, pat
 async def _save_content_chunks(session, bookmark_data: BookmarkData, body_text: str,
                                similar_bookmarks: List[Dict]) -> tuple:
     """콘텐츠 청크들을 저장합니다."""
+    metadata = {
+        "memo": bookmark_data.memo,
+        "summary": bookmark_data.summary
+    }
+    
     rag_chunks = prepare_content_for_rag(
         text=body_text,
         keywords=bookmark_data.keywords,
-        memo=bookmark_data.memo,
-        summary=bookmark_data.summary,
+        metadata=metadata,
         chunk_size=1000,
         chunk_overlap=200
     )

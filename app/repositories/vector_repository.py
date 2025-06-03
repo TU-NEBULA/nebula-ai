@@ -250,6 +250,42 @@ class VectorRepository:
         return list(result.scalars().all())
     
     @staticmethod
+    async def get_documents_by_user(
+        session: AsyncSession,
+        user_id: int,
+        source_type: Optional[str] = None,
+        limit: Optional[int] = None
+    ) -> List[DocumentVector]:
+        """
+        특정 사용자의 모든 문서 벡터를 조회합니다.
+        
+        Args:
+            session: 데이터베이스 세션
+            user_id: 사용자 ID (int)
+            source_type: 특정 소스 타입만 조회 (선택적)
+            limit: 최대 결과 수 (선택적)
+            
+        Returns:
+            DocumentVector 객체들의 리스트
+        """
+        stmt = select(DocumentVector).where(DocumentVector.user_id == user_id)
+        
+        if source_type:
+            stmt = stmt.where(DocumentVector.source_type == source_type)
+        
+        # 생성 시간 역순으로 정렬 (최신 순)
+        stmt = stmt.order_by(DocumentVector.created_at.desc())
+        
+        if limit:
+            stmt = stmt.limit(limit)
+        
+        result = await session.execute(stmt)
+        documents = list(result.scalars().all())
+        
+        logger.info(f"📚 사용자 문서 조회 완료 - user_id: {user_id}, source_type: {source_type}, 결과 수: {len(documents)}")
+        return documents
+    
+    @staticmethod
     async def delete_documents_by_source(
         session: AsyncSession,
         user_id: str,
@@ -274,7 +310,7 @@ class VectorRepository:
     @staticmethod
     async def get_user_document_count(
         session: AsyncSession,
-        user_id: str,
+        user_id: int,
         source_type: Optional[str] = None
     ) -> int:
         """사용자의 문서 수를 조회합니다."""

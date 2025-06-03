@@ -1,5 +1,7 @@
 """
 SimilarityService 테스트
+
+북마크 유사도 계산 서비스의 기능을 테스트합니다.
 """
 import pytest
 import numpy as np
@@ -174,4 +176,206 @@ def test_similarity_service_initialization():
     
     assert service.vector_service is not None
     assert hasattr(service, 'similarity_threshold')
-    assert hasattr(service, 'max_similar_bookmarks') 
+    assert hasattr(service, 'max_similar_bookmarks')
+
+
+class TestSimilarityService:
+    """SimilarityService 테스트 클래스"""
+    
+    @pytest.fixture
+    def mock_document_vector(self):
+        """Mock DocumentVector 객체"""
+        mock_doc = MagicMock()
+        mock_doc.source_id = "bookmark_123"
+        mock_doc.title = "테스트 북마크"
+        mock_doc.url = "https://example.com"
+        mock_doc.embedding = [0.1] * 1536
+        mock_doc.content = "테스트 콘텐츠"
+        mock_doc.keywords = ["테스트", "키워드"]
+        mock_doc.summary = "테스트 요약"
+        mock_doc.created_at = "2024-01-01T00:00:00"
+        mock_doc.id = "doc_456"
+        return mock_doc
+    
+    @pytest.mark.asyncio
+    async def test_get_user_bookmarks_success(self, similarity_service, mock_document_vector):
+        """사용자 북마크 조회 성공 테스트"""
+        user_id = 123
+        
+        # Mock database session and VectorRepository.get_documents_by_user
+        with patch('app.services.similarity_service.get_async_session') as mock_session, \
+             patch('app.services.similarity_service.VectorRepository.get_documents_by_user') as mock_get_docs:
+            
+            # Mock session async generator
+            mock_db_session = MagicMock()
+            
+            async def async_session_generator():
+                yield mock_db_session
+            
+            mock_session.return_value = async_session_generator()
+            
+            # Mock documents results
+            mock_get_docs.return_value = [mock_document_vector]
+            
+            # 테스트 실행
+            result = await similarity_service._get_user_bookmarks(user_id)
+            
+            # 검증
+            assert len(result) == 1
+            assert result[0]["id"] == "bookmark_123"
+            assert result[0]["title"] == "테스트 북마크"
+            assert result[0]["url"] == "https://example.com"
+            assert result[0]["embedding"] == [0.1] * 1536
+            assert result[0]["content"] == "테스트 콘텐츠"
+            assert result[0]["keywords"] == ["테스트", "키워드"]
+            assert result[0]["summary"] == "테스트 요약"
+            
+            # VectorRepository.get_documents_by_user가 올바른 파라미터로 호출되었는지 확인
+            mock_get_docs.assert_called_once()
+            call_args = mock_get_docs.call_args[1]  # kwargs
+            assert call_args["user_id"] == 123  # int 타입 그대로
+            assert call_args["source_type"] == "bookmark"
+            assert call_args["limit"] == 1000
+    
+    @pytest.mark.asyncio
+    async def test_get_user_bookmarks_empty_result(self, similarity_service):
+        """사용자 북마크 조회 결과가 없는 경우 테스트"""
+        user_id = 123
+        
+        with patch('app.services.similarity_service.get_async_session') as mock_session, \
+             patch('app.services.similarity_service.VectorRepository.get_documents_by_user') as mock_get_docs:
+            
+            # Mock session async generator
+            mock_db_session = MagicMock()
+            
+            async def async_session_generator():
+                yield mock_db_session
+            
+            mock_session.return_value = async_session_generator()
+            
+            # 빈 결과 반환
+            mock_get_docs.return_value = []
+            
+            result = await similarity_service._get_user_bookmarks(user_id)
+            
+            assert result == []
+    
+    @pytest.mark.asyncio
+    async def test_get_user_bookmarks_duplicate_source_ids(self, similarity_service):
+        """중복된 source_id가 있는 경우 중복 제거 테스트"""
+        user_id = 123
+        
+        # 같은 source_id를 가진 두 개의 문서 (다른 청크)
+        mock_doc1 = MagicMock()
+        mock_doc1.source_id = "bookmark_123"
+        mock_doc1.title = "테스트 북마크"
+        mock_doc1.url = "https://example.com"
+        mock_doc1.embedding = [0.1] * 1536
+        mock_doc1.content = "첫 번째 청크"
+        mock_doc1.keywords = ["테스트"]
+        mock_doc1.summary = "요약"
+        mock_doc1.created_at = "2024-01-01T00:00:00"
+        
+        mock_doc2 = MagicMock()
+        mock_doc2.source_id = "bookmark_123"  # 같은 source_id
+        mock_doc2.title = "테스트 북마크"
+        mock_doc2.url = "https://example.com"
+        mock_doc2.embedding = [0.2] * 1536
+        mock_doc2.content = "두 번째 청크"
+        mock_doc2.keywords = ["테스트"]
+        mock_doc2.summary = "요약"
+        mock_doc2.created_at = "2024-01-01T00:00:00"
+        
+        with patch('app.services.similarity_service.get_async_session') as mock_session, \
+             patch('app.services.similarity_service.VectorRepository.get_documents_by_user') as mock_get_docs:
+            
+            # Mock session async generator
+            mock_db_session = MagicMock()
+            
+            async def async_session_generator():
+                yield mock_db_session
+            
+            mock_session.return_value = async_session_generator()
+            
+            # 두 개의 문서 반환 (같은 source_id)
+            mock_get_docs.return_value = [mock_doc1, mock_doc2]
+            
+            result = await similarity_service._get_user_bookmarks(user_id)
+            
+            # 중복이 제거되어 하나만 반환되어야 함
+            assert len(result) == 1
+            assert result[0]["id"] == "bookmark_123"
+            assert result[0]["content"] == "첫 번째 청크"  # 첫 번째 것만 남음
+    
+    @pytest.mark.asyncio
+    async def test_get_user_document_stats_success(self, similarity_service):
+        """사용자 문서 통계 조회 성공 테스트"""
+        user_id = 123
+        expected_count = 5
+        
+        with patch('app.services.similarity_service.get_async_session') as mock_session, \
+             patch('app.services.similarity_service.VectorRepository.get_user_document_count') as mock_count:
+            
+            # Mock session async generator
+            mock_db_session = MagicMock()
+            
+            async def async_session_generator():
+                yield mock_db_session
+            
+            mock_session.return_value = async_session_generator()
+            
+            mock_count.return_value = expected_count
+            
+            result = await similarity_service.get_user_document_stats(user_id)
+            
+            assert result["user_id"] == user_id
+            assert result["total_bookmarks"] == expected_count
+            assert result["last_updated"] is None
+            
+            mock_count.assert_called_once_with(
+                session=mock_db_session,
+                user_id=123,  # int 타입 그대로
+                source_type="bookmark"
+            )
+    
+    @pytest.mark.asyncio
+    async def test_get_user_bookmarks_error_handling(self, similarity_service):
+        """데이터베이스 연결 오류 시 에러 핸들링 테스트"""
+        user_id = 123
+        
+        with patch('app.services.similarity_service.get_async_session') as mock_session:
+            # ConnectionError 발생 시뮬레이션
+            mock_session.side_effect = ConnectionError("데이터베이스 연결 실패")
+            
+            result = await similarity_service._get_user_bookmarks(user_id)
+            
+            # 빈 리스트 반환
+            assert result == []
+    
+    @pytest.mark.asyncio
+    async def test_calculate_similarities_success(self, similarity_service):
+        """유사도 계산 성공 테스트"""
+        new_embedding = np.array([0.1] * 1536)
+        
+        existing_bookmarks = [
+            {
+                "id": "bookmark_1",
+                "title": "북마크 1",
+                "url": "https://example1.com",
+                "embedding": [0.1] * 1536  # 동일한 임베딩 (유사도 1.0)
+            },
+            {
+                "id": "bookmark_2", 
+                "title": "북마크 2",
+                "url": "https://example2.com",
+                "embedding": [0.0] * 1536  # 다른 임베딩 (유사도 낮음)
+            }
+        ]
+        
+        result = await similarity_service._calculate_similarities(new_embedding, existing_bookmarks)
+        
+        assert len(result) == 2
+        assert result[0]["bookmark_id"] == "bookmark_1"
+        assert result[0]["similarity_score"] == pytest.approx(1.0, rel=1e-3)
+        assert result[1]["bookmark_id"] == "bookmark_2"
+        assert result[1]["similarity_score"] < 0.5 

@@ -446,11 +446,14 @@ class TestPrepareContentForRAG:
     def test_empty_text_rag_preparation(self):
         """빈 텍스트 RAG 콘텐츠 준비 테스트"""
         # 빈 텍스트라도 최소 1개 청크 보장
+        metadata = {
+            "memo": "빈 텍스트 메모",
+            "summary": "빈 텍스트 요약"
+        }
         rag_content = prepare_content_for_rag(
             text="",
             keywords=["테스트"],
-            memo="빈 텍스트 메모",
-            summary="빈 텍스트 요약"
+            metadata=metadata
         )
         
         assert len(rag_content) >= 1
@@ -461,11 +464,14 @@ class TestPrepareContentForRAG:
     def test_chunk_keyword_extraction_safety(self):
         """청크별 키워드 추출 안전성 테스트"""
         # 빈 청크에서도 키워드 추출이 안전하게 처리되어야 함
+        metadata = {
+            "memo": "테스트 메모",
+            "summary": "테스트 요약"
+        }
         rag_content = prepare_content_for_rag(
             text="",
             keywords=["안전성"],
-            memo="테스트 메모",
-            summary="테스트 요약"
+            metadata=metadata
         )
         
         assert len(rag_content) >= 1
@@ -477,11 +483,14 @@ class TestPrepareContentForRAG:
         """콘텐츠가 있는 청크의 키워드 추출 테스트"""
         # 실제 콘텐츠에서는 키워드가 추출되어야 함
         content = "인공지능과 머신러닝은 현대 기술의 핵심입니다. 딥러닝 기술이 발전하고 있습니다."
+        metadata = {
+            "memo": "기술 관련 메모",
+            "summary": "기술 요약"
+        }
         rag_content = prepare_content_for_rag(
             text=content,
             keywords=["AI", "기술"],
-            memo="기술 관련 메모",
-            summary="기술 요약"
+            metadata=metadata
         )
         
         assert len(rag_content) >= 1
@@ -508,8 +517,7 @@ class TestPrepareContentForRAG:
             rag_content = prepare_content_for_rag(
                 text=text,
                 keywords=["테스트"],
-                memo="테스트 메모",
-                summary="테스트 요약"
+                metadata={"memo": "테스트 메모", "summary": "테스트 요약"}
             )
             assert len(rag_content) >= 1, f"텍스트 '{text}'에서 RAG 콘텐츠 준비 실패"
 
@@ -524,8 +532,7 @@ class TestPrepareContentForRAG:
         rag_content = prepare_content_for_rag(
             text=long_text,
             keywords=user_keywords,
-            memo=user_memo,
-            summary=user_summary
+            metadata={"memo": user_memo, "summary": user_summary}
         )
         
         # 모든 청크에서 사용자 데이터가 보존되어야 함
@@ -602,8 +609,7 @@ class TestBookmarkUpdatePreparation:
         rag_content = prepare_content_for_rag(
             text=content,
             keywords=updated_keywords,
-            memo=updated_memo,
-            summary=updated_summary
+            metadata={"memo": updated_memo, "summary": updated_summary}
         )
         
         # 모든 청크에 업데이트된 데이터가 반영되어야 함
@@ -626,8 +632,7 @@ class TestRobustnessAndErrorHandling:
         rag_content = prepare_content_for_rag(
             text="A" * 50000,
             keywords=["테스트"],
-            memo="테스트 메모",
-            summary="테스트 요약"
+            metadata={"memo": "테스트 메모", "summary": "테스트 요약"}
         )
         assert len(rag_content) >= 1, "매우 긴 텍스트 RAG 콘텐츠 준비 실패"
 
@@ -637,8 +642,7 @@ class TestRobustnessAndErrorHandling:
         rag_content = prepare_content_for_rag(
             text="🤖 AI와 로봇 🚀",
             keywords=["특수문자"],
-            memo="특수문자 테스트",
-            summary="특수문자 요약"
+            metadata={"memo": "특수문자 테스트", "summary": "특수문자 요약"}
         )
         assert len(rag_content) >= 1
         assert isinstance(rag_content[0]["chunk_keywords"], list)
@@ -650,14 +654,74 @@ class TestRobustnessAndErrorHandling:
             rag_content = prepare_content_for_rag(
                 text=None,  # None 입력
                 keywords=["테스트"],
-                memo="None 테스트",
-                summary="None 요약"
+                metadata={"memo": "None 테스트", "summary": "None 요약"}
             )
             # None이 문자열로 변환되거나 빈 문자열로 처리되어야 함
             assert len(rag_content) >= 1
         except Exception as e:
             # 예외가 발생하더라도 적절한 처리가 되어야 함
             assert "NoneType" in str(e) or "expected string" in str(e)
+
+
+def test_prepare_content_for_rag():
+    """RAG용 컨텐츠 준비 테스트"""
+    text = "이것은 테스트 텍스트입니다. " * 100  # 충분히 긴 텍스트
+    keywords = ["테스트", "키워드"]
+    metadata = {
+        "memo": "사용자 메모",
+        "summary": "테스트 요약"
+    }
+    
+    # 기본 사용법
+    result = prepare_content_for_rag(text, keywords, metadata)
+    
+    assert len(result) > 0
+    assert all(chunk["keywords"] == keywords for chunk in result)
+    assert all(chunk["user_memo"] == "사용자 메모" for chunk in result)
+    assert all(chunk["summary"] == "테스트 요약" for chunk in result)
+    assert all("chunk_index" in chunk for chunk in result)
+    assert all("total_chunks" in chunk for chunk in result)
+    assert all("chunk_keywords" in chunk for chunk in result)
+    
+    # keyword-only arguments 테스트
+    result_custom = prepare_content_for_rag(
+        text, 
+        keywords, 
+        metadata,
+        chunk_size=500,
+        chunk_overlap=100
+    )
+    
+    assert len(result_custom) >= len(result)  # 더 작은 청크 크기로 더 많은 청크 생성
+
+
+def test_prepare_content_for_rag_empty_metadata():
+    """메타데이터가 없는 경우 테스트"""
+    text = "간단한 텍스트"
+    keywords = ["키워드"]
+    
+    # metadata 없이 호출
+    result = prepare_content_for_rag(text, keywords)
+    
+    assert len(result) == 1
+    assert result[0]["user_memo"] == ""
+    assert result[0]["summary"] == ""
+    assert result[0]["keywords"] == keywords
+
+
+def test_prepare_content_for_rag_empty_text():
+    """빈 텍스트 처리 테스트"""
+    text = ""
+    keywords = ["키워드"]
+    metadata = {"memo": "메모"}
+    
+    result = prepare_content_for_rag(text, keywords, metadata)
+    
+    # 빈 텍스트라도 최소 하나의 청크는 반환
+    assert len(result) == 1
+    assert result[0]["content"] == ""
+    assert result[0]["keywords"] == keywords
+    assert result[0]["user_memo"] == "메모"
 
 
 if __name__ == "__main__":
