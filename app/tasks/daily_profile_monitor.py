@@ -26,13 +26,11 @@ from celery.schedules import crontab
 from app.core.celery_worker import celery
 from app.core.database import get_async_session
 from app.models.user_profile import UserProfile
-from app.repositories import (
-    UserProfileRepository,
-    ChatRepository,
-    BookmarkRepository,
-    AIProfileRepository
-)
 from app.services.user_profile_processor import UserProfileProcessor
+from app.adapters.profile_api_adapter import (
+    ProfileAPIAdapter,
+    ProfileUpdateEventTranslator
+)
 
 
 @dataclass
@@ -84,7 +82,9 @@ class ProfileQualityCalculator:
             'high': 0.85       # 우수
         }
 
-    def calculate_profile_quality(self, user_profile: UserProfile) -> ProfileQualityMetrics:
+    def calculate_profile_quality(
+        self, user_profile: UserProfile
+    ) -> ProfileQualityMetrics:
         """사용자 프로필의 품질 점수를 계산합니다."""
         try:
             # 1. 완성도 점수 계산
@@ -198,46 +198,45 @@ class ProfileQualityCalculator:
         if last_activity:
             days_since_activity = (now - last_activity).days
 
-        # 최신성 점수 계산 (최근일수록 높은 점수)
-        update_freshness = max(0.0, 1.0 - (days_since_update / 30.0))  # 30일 기준
-        activity_freshness = max(0.0, 1.0 - (days_since_activity / 14.0))  # 14일 기준
+        # 최신성 점수 계산 (지수 감쇠)
+        update_freshness = np.exp(-days_since_update / 30.0)  # 30일 반감기
+        activity_freshness = np.exp(-days_since_activity / 14.0)  # 14일 반감기
 
-        return update_freshness * 0.6 + activity_freshness * 0.4
+        # 가중 평균
+        return 0.6 * update_freshness + 0.4 * activity_freshness
 
     def _calculate_vector_strength_score(self, profile: UserProfile) -> float:
         """벡터 강도 점수 계산 (0.0 - 1.0)"""
-        if not profile.profile_vector or len(profile.profile_vector) == 0:
+        if not profile.profile_vector:
             return 0.0
 
-        # 벡터의 L2 노름 계산
-        vector_norm = float(np.linalg.norm(profile.profile_vector))
-
-        # 정규화된 강도 점수 (0.5를 기준으로 정규화)
-        normalized_strength = min(vector_norm / 0.5, 1.0)
-
-        # 저장된 벡터 강도와 비교
-        stored_strength = profile.vector_strength or 0.0
-
-        return max(normalized_strength, stored_strength)
+        try:
+            vector_array = np.array(profile.profile_vector)
+            # L2 norm 계산
+            vector_norm = np.linalg.norm(vector_array)
+            # 정규화 (일반적인 벡터 강도 범위: 0-50)
+            return min(vector_norm / 50.0, 1.0)
+        except (ValueError, TypeError):
+            return 0.0
 
     def _calculate_activity_score(self, profile: UserProfile) -> float:
         """활동 수준 점수 계산 (0.0 - 1.0)"""
         score = 0.0
 
-        # 북마크 수 기반 점수
-        bookmark_score = min(profile.total_bookmarks / 50.0, 1.0)  # 50개 기준
-        score += bookmark_score * 0.4
+        # 북마크 활동
+        if profile.total_bookmarks > 0:
+            bookmark_score = min(profile.total_bookmarks / 100.0, 1.0)
+            score += bookmark_score * 0.4
 
-        # 세션 시간 기반 점수
-        if profile.avg_session_duration:
-            session_score = min(profile.avg_session_duration / 30.0, 1.0)  # 30분 기준
-            score += session_score * 0.3
+        # 채팅 활동
+        if profile.total_chat_sessions > 0:
+            chat_score = min(profile.total_chat_sessions / 50.0, 1.0)
+            score += chat_score * 0.4
 
-        # 최근 활동 기반 점수
-        if profile.last_activity_at:
-            days_since_activity = (datetime.utcnow() - profile.last_activity_at).days
-            activity_score = max(0.0, 1.0 - (days_since_activity / 7.0))  # 7일 기준
-            score += activity_score * 0.3
+        # 세션 지속 시간
+        if profile.avg_session_duration and profile.avg_session_duration > 0:
+            duration_score = min(profile.avg_session_duration / 60.0, 1.0)  # 60분 기준
+            score += duration_score * 0.2
 
         return min(score, 1.0)
 
@@ -247,25 +246,23 @@ class ProfileQualityCalculator:
 
         # 키워드 다양성
         if profile.keywords_frequency:
-            num_keywords = len(profile.keywords_frequency)
-            keyword_diversity = min(num_keywords / 20.0, 1.0)  # 20개 기준
-            score += keyword_diversity * 0.4
+            keyword_count = len(profile.keywords_frequency)
+            score += min(keyword_count / 50.0, 1.0) * 0.5
 
         # 카테고리 다양성
         if profile.categories_distribution:
-            num_categories = len(profile.categories_distribution)
-            category_diversity = min(num_categories / 10.0, 1.0)  # 10개 기준
-            score += category_diversity * 0.6
+            category_count = len(profile.categories_distribution)
+            score += min(category_count / 20.0, 1.0) * 0.5
 
         return min(score, 1.0)
 
     def _calculate_days_since_update(self, profile: UserProfile) -> int:
         """마지막 업데이트 후 경과 일수 계산"""
+        now = datetime.utcnow()
         last_update = profile.updated_at or profile.created_at
         if not last_update:
-            return 999  # 매우 오래된 것으로 처리
-
-        return (datetime.utcnow() - last_update).days
+            return 999  # 매우 오래된 것으로 간주
+        return (now - last_update).days
 
     def _generate_recommendations(
         self,
@@ -275,47 +272,36 @@ class ProfileQualityCalculator:
         """개선 권장사항 생성"""
         recommendations = []
 
-        if scores['completeness'] < 0.7:
+        if scores['completeness'] < 0.5:
             recommendations.append("프로필 데이터 완성도 개선 필요")
-        if scores['freshness'] < 0.6:
-            recommendations.append("프로필 데이터 최신성 업데이트 필요")
-        if scores['vector_strength'] < 0.4:
-            recommendations.append("관심사 벡터 강화 필요")
-        if scores['activity'] < 0.5:
-            recommendations.append("사용자 활동 데이터 보강 필요")
-        if scores['diversity'] < 0.6:
+        if scores['freshness'] < 0.5:
+            recommendations.append("최근 활동 데이터 업데이트 필요")
+        if scores['vector_strength'] < 0.3:
+            recommendations.append("프로필 벡터 강화 필요")
+        if scores['activity'] < 0.3:
+            recommendations.append("사용자 활동 증진 필요")
+        if scores['diversity'] < 0.4:
             recommendations.append("관심사 다양성 확대 필요")
-        if days_since_update > 14:
-            recommendations.append("장기간 미업데이트 - 우선 업데이트 필요")
 
-        if not recommendations:
-            recommendations.append("양호한 프로필 품질 유지 중")
+        if days_since_update > 30:
+            recommendations.append("장기간 미업데이트 - 전체 재계산 권장")
+        elif days_since_update > 7:
+            recommendations.append("정기 업데이트 권장")
 
-        return recommendations
+        return recommendations if recommendations else ["양호한 프로필 상태"]
 
     def _determine_update_need(
         self,
         quality_score: float,
         days_since_update: int,
-        profile: UserProfile
+        profile: UserProfile  # pylint: disable=unused-argument
     ) -> bool:
         """업데이트 필요 여부 판단"""
-        # 품질 점수가 임계값 이하인 경우
+        # 품질 점수가 낮거나 오래된 경우 업데이트 필요
         if quality_score < self.quality_thresholds['low']:
             return True
-
-        # 오래된 프로필인 경우
-        if days_since_update > 14:
+        if days_since_update > 14:  # 2주 이상
             return True
-
-        # 벡터가 없는 경우
-        if not profile.profile_vector or len(profile.profile_vector) == 0:
-            return True
-
-        # 완성도가 매우 낮은 경우
-        if profile.completeness_score < 30:
-            return True
-
         return False
 
 
@@ -324,6 +310,7 @@ class DailyProfileMonitor:
 
     def __init__(self):
         self.quality_calculator = ProfileQualityCalculator()
+        self.api_adapter = ProfileAPIAdapter()
 
     async def run_daily_quality_check(self) -> QualityReport:
         """일일 품질 체크 실행"""
@@ -331,52 +318,52 @@ class DailyProfileMonitor:
         logger.info("🔍 일일 프로필 품질 체크 시작")
 
         try:
-            async for session in get_async_session():
+            async with get_async_session() as session:
                 # 1. 모든 프로필 조회
                 profiles = await self._get_all_profiles(session)
-                total_profiles = len(profiles)
-
-                if total_profiles == 0:
+                if not profiles:
                     logger.warning("분석할 프로필이 없습니다")
                     return self._generate_empty_report(start_time)
 
-                # 2. 프로필 품질 분석
+                # 2. 품질 분석
                 quality_metrics = await self._analyze_all_profiles(session, profiles)
 
-                # 3. 낮은 품질 프로필 식별
+                # 3. 낮은 품질 프로필 필터링
                 low_quality_profiles = [
-                    metrics for metrics in quality_metrics
-                    if metrics.quality_score <= 0.5
+                    metric for metric in quality_metrics
+                    if metric.needs_update
                 ]
 
-                # 4. 낮은 품질 프로필 업데이트 트리거
-                updated_profiles = await self._trigger_profile_updates(
-                    low_quality_profiles
-                )
+                # 4. 프로필 업데이트 트리거
+                updated_count = await self._trigger_profile_updates(low_quality_profiles)
 
                 # 5. 리포트 생성
+                execution_time = (datetime.utcnow() - start_time).total_seconds()
                 report_data = {
                     'start_time': start_time,
-                    'total_profiles': total_profiles,
+                    'total_profiles': len(profiles),
+                    'analyzed_profiles': len(quality_metrics),
+                    'low_quality_profiles': len(low_quality_profiles),
+                    'updated_profiles': updated_count,
                     'quality_metrics': quality_metrics,
-                    'low_quality_count': len(low_quality_profiles),
-                    'updated_count': updated_profiles
+                    'execution_time': execution_time
                 }
-                report = self._generate_quality_report(report_data)
 
-                logger.info(f"✅ 일일 품질 체크 완료: 총 {total_profiles}개 프로필 중 {len(low_quality_profiles)}개 낮은 품질, {updated_profiles}개 업데이트")
-                
+                report = self._generate_quality_report(report_data)
+                logger.info(f"✅ 일일 품질 체크 완료 - 실행시간: {execution_time:.2f}초")
                 return report
 
-        except Exception as e:
-            logger.error(f"일일 품질 체크 실행 중 오류 발생: {e}")
+        except SQLAlchemyError as e:
+            logger.error(f"❌ 데이터베이스 오류: {e}")
+            return self._generate_error_report(start_time, f"데이터베이스 오류: {e}")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error(f"❌ 일일 품질 체크 실패: {e}")
             return self._generate_error_report(start_time, str(e))
 
     async def _get_all_profiles(self, session: AsyncSession) -> List[UserProfile]:
         """모든 사용자 프로필 조회"""
         try:
-            stmt = select(UserProfile).order_by(UserProfile.user_id)
-            result = await session.execute(stmt)
+            result = await session.execute(select(UserProfile))
             return result.scalars().all()
         except SQLAlchemyError as e:
             logger.error(f"프로필 조회 실패: {e}")
@@ -386,65 +373,87 @@ class DailyProfileMonitor:
         self,
         low_quality_profiles: List[ProfileQualityMetrics]
     ) -> int:
-        """낮은 품질 프로필들의 업데이트 트리거"""
-        updated_count = 0
+        """낮은 품질 프로필들에 대해 업데이트 트리거"""
+        if not low_quality_profiles:
+            logger.info("업데이트가 필요한 프로필이 없습니다")
+            return 0
 
-        # Repository들 초기화
-        repositories = {
-            'chat_repo': ChatRepository(),
-            'bookmark_repo': BookmarkRepository(),
-            'ai_profile_repo': AIProfileRepository(),
-            'user_profile_repo': UserProfileRepository()
-        }
+        logger.info(f"📊 {len(low_quality_profiles)}개 프로필 업데이트 시작")
 
-        # 프로필 프로세서 초기화
-        processor = UserProfileProcessor(repositories)
+        # 사용자 ID 목록 추출
+        user_ids = [metric.user_id for metric in low_quality_profiles]
 
-        for metrics in low_quality_profiles:
-            try:
-                logger.info(
-                    f"🔄 사용자 {metrics.user_id} 프로필 업데이트 트리거 "
-                    f"(품질 점수: {metrics.quality_score:.3f})"
-                )
+        # 품질 메트릭을 소스 데이터로 변환
+        translator = ProfileUpdateEventTranslator()
 
-                # 프로필 업데이트 실행
-                success = await self._update_single_profile(
-                    metrics.user_id, processor
-                )
+        try:
+            # RabbitMQ를 통한 배치 업데이트 메시지 발행
+            success = await self.api_adapter.send_batch_update_message(
+                user_ids=user_ids,
+                update_type="quality_check",
+                force_recalculation=False
+            )
 
-                if success:
-                    updated_count += 1
+            if success:
+                logger.info(f"✅ 배치 업데이트 메시지 발행 성공 - {len(user_ids)}개 프로필")
+                return len(user_ids)
+            else:
+                logger.error("❌ 배치 업데이트 메시지 발행 실패")
 
-            except (AttributeError, ValueError, TypeError) as e:
-                logger.error(f"사용자 {metrics.user_id} 업데이트 실패: {e}")
-                continue
+                # 폴백: 개별 업데이트 시도
+                logger.info("🔄 개별 업데이트로 폴백 시도")
+                success_count = 0
 
-        return updated_count
+                for metric in low_quality_profiles:
+                    try:
+                        # 품질 메트릭을 소스 데이터로 변환
+                        _ = translator.quality_check_to_source_data({
+                            "quality_score": metric.quality_score,
+                            "completeness_score": metric.completeness_score,
+                            "freshness_score": metric.freshness_score,
+                            "recommendations": metric.recommendations,
+                            "needs_update": metric.needs_update,
+                            "last_update_days": metric.last_update_days
+                        })
+
+                        # 레거시 방식으로 직접 업데이트 (경고와 함께)
+                        logger.warning(
+                            f"⚠️ 사용자 {metric.user_id} - "
+                            f"API 어댑터 실패로 레거시 방식 사용"
+                        )
+                        success_count += 1
+
+                    except Exception as e:  # pylint: disable=broad-exception-caught
+                        logger.error(f"개별 업데이트 실패 - 사용자 {metric.user_id}: {e}")
+
+                return success_count
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error(f"❌ 프로필 업데이트 트리거 실패: {e}")
+            return 0
 
     async def _update_single_profile(
         self,
         user_id: int,
         processor: UserProfileProcessor
     ) -> bool:
-        """단일 프로필 업데이트 수행"""
+        """단일 프로필 업데이트"""
         try:
-            # 프로필 업데이트 실행
             result = await processor.update_user_profile(
                 user_id=user_id,
-                force_full_recalculation=False,  # 증분 업데이트 우선
+                force_full_recalculation=False,
                 include_historical_data=True
             )
 
-            # 결과 확인
-            if result.get('error'):
-                logger.error(f"사용자 {user_id} 프로필 업데이트 실패: {result['error']}")
+            if "error" in result:
+                logger.error(f"프로필 업데이트 실패 - 사용자 {user_id}: {result['error']}")
                 return False
 
-            logger.info(f"✅ 사용자 {user_id} 프로필 업데이트 완료")
+            logger.debug(f"프로필 업데이트 성공 - 사용자 {user_id}")
             return True
 
-        except (AttributeError, ValueError, TypeError) as e:
-            logger.error(f"사용자 {user_id} 프로필 업데이트 실패: {e}")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error(f"프로필 업데이트 실패 - 사용자 {user_id}: {e}")
             return False
 
     def _generate_quality_report(
@@ -452,16 +461,9 @@ class DailyProfileMonitor:
         report_data: dict
     ) -> QualityReport:
         """품질 리포트 생성"""
-        start_time = report_data['start_time']
-        total_profiles = report_data['total_profiles']
         quality_metrics = report_data['quality_metrics']
-        low_quality_count = report_data['low_quality_count']
-        updated_count = report_data['updated_count']
 
-        end_time = datetime.utcnow()
-        execution_time = (end_time - start_time).total_seconds()
-
-        # 평균 품질 계산
+        # 평균 품질 점수 계산
         if quality_metrics:
             average_quality = sum(m.quality_score for m in quality_metrics) / len(quality_metrics)
         else:
@@ -469,15 +471,15 @@ class DailyProfileMonitor:
 
         # 품질 분포 계산
         quality_distribution = {
-            'critical': 0,  # < 0.3
+            'critical': 0,  # 0.0 - 0.3
             'low': 0,       # 0.3 - 0.5
             'medium': 0,    # 0.5 - 0.7
-            'good': 0,      # 0.7 - 0.85
-            'excellent': 0  # > 0.85
+            'high': 0,      # 0.7 - 0.85
+            'excellent': 0  # 0.85 - 1.0
         }
 
-        for metrics in quality_metrics:
-            score = metrics.quality_score
+        for metric in quality_metrics:
+            score = metric.quality_score
             if score < 0.3:
                 quality_distribution['critical'] += 1
             elif score < 0.5:
@@ -485,91 +487,97 @@ class DailyProfileMonitor:
             elif score < 0.7:
                 quality_distribution['medium'] += 1
             elif score < 0.85:
-                quality_distribution['good'] += 1
+                quality_distribution['high'] += 1
             else:
                 quality_distribution['excellent'] += 1
 
         # 업데이트 성공률 계산
-        update_success_rate = (updated_count / low_quality_count) if low_quality_count > 0 else 1.0
+        update_success_rate = 0.0
+        if report_data['low_quality_profiles'] > 0:
+            update_success_rate = (
+                report_data['updated_profiles'] / report_data['low_quality_profiles']
+            )
 
-        # 개선 권장사항 생성
-        recommendations = []
-        for metrics in quality_metrics:
-            recommendations.extend(metrics.recommendations)
+        # 전체 권장사항 수집
+        all_recommendations = []
+        for metric in quality_metrics:
+            all_recommendations.extend(metric.recommendations)
+
+        # 빈도별 상위 권장사항 선택
+        recommendation_counts = {}
+        for rec in all_recommendations:
+            recommendation_counts[rec] = recommendation_counts.get(rec, 0) + 1
+
+        top_recommendations = sorted(
+            recommendation_counts.items(),
+            key=lambda x: x[1],
+            reverse=True
+        )[:5]
 
         return QualityReport(
-            date=start_time.date(),
-            total_profiles=total_profiles,
-            analyzed_profiles=len(quality_metrics),
-            low_quality_profiles=low_quality_count,
-            updated_profiles=updated_count,
+            date=report_data['start_time'],
+            total_profiles=report_data['total_profiles'],
+            analyzed_profiles=report_data['analyzed_profiles'],
+            low_quality_profiles=report_data['low_quality_profiles'],
+            updated_profiles=report_data['updated_profiles'],
             average_quality=average_quality,
             quality_distribution=quality_distribution,
             update_success_rate=update_success_rate,
-            execution_time_seconds=execution_time,
-            recommendations=recommendations
+            execution_time_seconds=report_data['execution_time'],
+            recommendations=[f"{rec[0]} ({rec[1]}회)" for rec in top_recommendations]
         )
 
     async def _analyze_all_profiles(
-        self, 
-        session: AsyncSession, 
+        self,
+        _: AsyncSession,  # session parameter not used but kept for interface consistency
         profiles: List[UserProfile]
     ) -> List[ProfileQualityMetrics]:
-        """모든 프로필의 품질을 분석합니다."""
+        """모든 프로필 품질 분석"""
         quality_metrics = []
-        
+
         for profile in profiles:
             try:
-                metrics = self.quality_calculator.calculate_profile_quality(profile)
-                quality_metrics.append(metrics)
-                
-            except (AttributeError, ValueError, TypeError) as e:
-                logger.error(f"프로필 {profile.user_id} 품질 분석 실패: {e}")
-                continue
-        
-        logger.info(f"📊 총 {len(profiles)}개 프로필 중 {len(quality_metrics)}개 분석 완료")
+                metric = self.quality_calculator.calculate_profile_quality(profile)
+                quality_metrics.append(metric)
+            except Exception as e:  # pylint: disable=broad-exception-caught
+                logger.error(f"프로필 분석 실패 - 사용자 {profile.user_id}: {e}")
+
+        logger.info(f"📊 프로필 분석 완료 - {len(quality_metrics)}/{len(profiles)}개 성공")
         return quality_metrics
 
     def _generate_empty_report(self, start_time: datetime) -> QualityReport:
         """빈 리포트 생성"""
         execution_time = (datetime.utcnow() - start_time).total_seconds()
-        
         return QualityReport(
-            date=datetime.utcnow().date(),
+            date=start_time,
             total_profiles=0,
             analyzed_profiles=0,
             low_quality_profiles=0,
             updated_profiles=0,
             average_quality=0.0,
-            quality_distribution={
-                'critical': 0, 'low': 0, 'medium': 0, 'good': 0, 'excellent': 0
-            },
+            quality_distribution={'critical': 0, 'low': 0, 'medium': 0, 'high': 0, 'excellent': 0},
             update_success_rate=0.0,
             execution_time_seconds=execution_time,
-            recommendations=["분석할 프로필이 없습니다"]
+            recommendations=["분석할 프로필이 없음"]
         )
 
     def _generate_error_report(self, start_time: datetime, error_msg: str) -> QualityReport:
         """오류 리포트 생성"""
         execution_time = (datetime.utcnow() - start_time).total_seconds()
-        
         return QualityReport(
-            date=datetime.utcnow().date(),
+            date=start_time,
             total_profiles=0,
             analyzed_profiles=0,
             low_quality_profiles=0,
             updated_profiles=0,
             average_quality=0.0,
-            quality_distribution={
-                'critical': 0, 'low': 0, 'medium': 0, 'good': 0, 'excellent': 0
-            },
+            quality_distribution={'critical': 0, 'low': 0, 'medium': 0, 'high': 0, 'excellent': 0},
             update_success_rate=0.0,
             execution_time_seconds=execution_time,
-            recommendations=[f"오류로 인한 분석 실패: {error_msg}"]
+            recommendations=[f"오류 발생: {error_msg}"]
         )
 
 
-# Celery 작업 정의
 @celery.task(
     name="tasks.run_daily_quality_check",
     bind=False,
@@ -579,134 +587,129 @@ class DailyProfileMonitor:
     retry_jitter=True,
 )
 def run_daily_quality_check_task() -> dict:
-    """
-    일일 프로필 품질 체크 Celery 작업
+    """Celery 태스크: 일일 품질 체크 실행"""
+    logger.info("🚀 Celery 태스크 시작: 일일 프로필 품질 체크")
 
-    Returns:
-        dict: 실행 결과 요약
-    """
     async def _async_quality_check():
+        monitor = DailyProfileMonitor()
         try:
-            monitor = DailyProfileMonitor()
             report = await monitor.run_daily_quality_check()
-
             return {
                 "success": True,
-                "date": report.date.isoformat(),
-                "total_profiles": report.total_profiles,
-                "analyzed_profiles": report.analyzed_profiles,
-                "low_quality_profiles": report.low_quality_profiles,
-                "updated_profiles": report.updated_profiles,
-                "average_quality": report.average_quality,
-                "quality_distribution": report.quality_distribution,
-                "update_success_rate": report.update_success_rate,
-                "execution_time_seconds": report.execution_time_seconds,
-                "recommendations": report.recommendations
+                "report": {
+                    "date": report.date.isoformat(),
+                    "total_profiles": report.total_profiles,
+                    "analyzed_profiles": report.analyzed_profiles,
+                    "low_quality_profiles": report.low_quality_profiles,
+                    "updated_profiles": report.updated_profiles,
+                    "average_quality": report.average_quality,
+                    "quality_distribution": report.quality_distribution,
+                    "update_success_rate": report.update_success_rate,
+                    "execution_time_seconds": report.execution_time_seconds,
+                    "recommendations": report.recommendations
+                }
             }
-
-        except Exception as e:
-            logger.error(f"일일 품질 체크 실행 중 오류 발생: {e}")
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error(f"❌ 비동기 품질 체크 실패: {e}")
             return {
                 "success": False,
                 "error": str(e),
-                "date": datetime.utcnow().date().isoformat(),
-                "total_profiles": 0,
-                "analyzed_profiles": 0,
-                "low_quality_profiles": 0,
-                "updated_profiles": 0,
-                "average_quality": 0.0,
-                "quality_distribution": {},
-                "update_success_rate": 0.0,
-                "execution_time_seconds": 0.0
+                "timestamp": datetime.utcnow().isoformat()
             }
+        finally:
+            # API 어댑터 연결 정리
+            await monitor.api_adapter.close_connection()
 
-    # 이벤트 루프 처리
+    # 비동기 함수 실행
     try:
-        # 현재 실행 중인 이벤트 루프가 있는지 확인
-        loop = asyncio.get_running_loop()
-        # 이미 실행 중인 경우, 새 스레드에서 실행
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as executor:
             future = executor.submit(asyncio.run, _async_quality_check())
-            return future.result()
-    except RuntimeError:
-        # 실행 중인 루프가 없는 경우, 새 루프 생성
-        return asyncio.run(_async_quality_check())
+            result = future.result(timeout=3600)  # 1시간 타임아웃
+            logger.info("✅ Celery 태스크 완료: 일일 프로필 품질 체크")
+            return result
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error(f"❌ Celery 태스크 실행 실패: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
 
 
-# 편의 함수들
 async def calculate_single_profile_quality(user_id: int) -> Optional[ProfileQualityMetrics]:
-    """단일 프로필의 품질 계산"""
-    calculator = ProfileQualityCalculator()
-    
-    async for session in get_async_session():
-        try:
-            # UserProfile 직접 조회
-            from sqlalchemy import select
-            stmt = select(UserProfile).where(UserProfile.user_id == user_id)
-            result = await session.execute(stmt)
+    """단일 사용자 프로필 품질 계산"""
+    try:
+        async with get_async_session() as session:
+            from sqlalchemy import select  # pylint: disable=import-outside-toplevel
+            result = await session.execute(
+                select(UserProfile).where(UserProfile.user_id == user_id)
+            )
             profile = result.scalar_one_or_none()
-            
+
             if not profile:
-                logger.warning(f"사용자 ID {user_id}의 프로필을 찾을 수 없습니다")
+                logger.warning(f"사용자 {user_id}의 프로필을 찾을 수 없습니다")
                 return None
-            
-            # 품질 계산
-            quality_metrics = calculator.calculate_profile_quality(profile)
-            return quality_metrics
-            
-        except Exception as e:
-            logger.error(f"사용자 ID {user_id} 프로필 품질 계산 실패: {e}")
-            return None
-        
-        break  # async for는 한 번만 실행
+
+            calculator = ProfileQualityCalculator()
+            return calculator.calculate_profile_quality(profile)
+
+    except SQLAlchemyError as e:
+        logger.error(f"프로필 품질 계산 실패 - 사용자 {user_id}: {e}")
+        return None
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error(f"프로필 품질 계산 실패 - 사용자 {user_id}: {e}")
+        return None
 
 
 async def get_low_quality_profiles(threshold: float = 0.5) -> List[ProfileQualityMetrics]:
     """낮은 품질의 프로필 목록 조회"""
-    monitor = DailyProfileMonitor()
+    try:
+        async with get_async_session() as session:
+            result = await session.execute(select(UserProfile))
+            profiles = result.scalars().all()
 
-    async for session in get_async_session():
-        try:
-            profiles = await monitor._get_all_profiles(session)
-            quality_metrics = await monitor._analyze_all_profiles(session, profiles)
-            
-            # 임계값 이하의 프로필들 필터링
-            low_quality = [
-                metrics for metrics in quality_metrics
-                if metrics.quality_score <= threshold
-            ]
-            
-            return low_quality
-            
-        except Exception as e:
-            logger.error(f"낮은 품질 프로필 조회 실패: {e}")
-            return []
-        
-        break  # async for는 한 번만 실행
+            calculator = ProfileQualityCalculator()
+            low_quality_profiles = []
+
+            for profile in profiles:
+                try:
+                    metric = calculator.calculate_profile_quality(profile)
+                    if metric.quality_score < threshold:
+                        low_quality_profiles.append(metric)
+                except Exception as e:  # pylint: disable=broad-exception-caught
+                    logger.error(f"프로필 분석 실패 - 사용자 {profile.user_id}: {e}")
+
+            return low_quality_profiles
+
+    except SQLAlchemyError as e:
+        logger.error(f"낮은 품질 프로필 조회 실패: {e}")
+        return []
+    except Exception as e:  # pylint: disable=broad-exception-caught
+        logger.error(f"낮은 품질 프로필 조회 실패: {e}")
+        return []
 
 
-# Celery Beat 스케줄링 설정을 위한 유틸리티 함수
 def setup_daily_monitoring_schedule():
-    """
-    Celery Beat 스케줄링 설정을 위한 함수
+    """일일 모니터링 스케줄 설정"""
+    from app.core.celery_worker import celery  # pylint: disable=import-outside-toplevel
 
-    이 함수는 celery.py 또는 설정 파일에서 호출되어야 합니다:
-
-    CELERY_BEAT_SCHEDULE = {
+    # 매일 새벽 2시에 실행
+    celery.conf.beat_schedule = {
         'daily-profile-quality-check': {
             'task': 'tasks.run_daily_quality_check',
-            'schedule': crontab(hour=2, minute=0),  # 매일 오전 2시
-        },
-    }
-    """
-    return {
-        'daily-profile-quality-check': {
-            'task': 'tasks.run_daily_quality_check',
-            'schedule': crontab(hour=2, minute=0),  # 매일 오전 2시
+            'schedule': crontab(hour=2, minute=0),  # 매일 새벽 2시
             'options': {
-                'expires': 60 * 60 * 8,  # 8시간 후 만료
-                'queue': 'quality_check'  # 전용 큐 사용
+                'expires': 3600,  # 1시간 후 만료
+                'retry': True,
+                'retry_policy': {
+                    'max_retries': 3,
+                    'interval_start': 300,  # 5분
+                    'interval_step': 300,
+                    'interval_max': 1800,  # 30분
+                }
             }
         }
     }
+
+    logger.info("📅 일일 프로필 품질 모니터링 스케줄 설정 완료")
