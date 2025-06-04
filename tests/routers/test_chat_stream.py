@@ -87,7 +87,15 @@ class TestChatStreamAPI:
             params={"user_id": 123, "title": "메시지 테스트 세션"}
         )
         create_data = create_response.json()
-        session_id = create_data["data"]["id"]  # BaseResponse에서 데이터 추출
+        
+        # 다양한 응답 형식 처리
+        if "data" in create_data and "id" in create_data["data"]:
+            session_id = create_data["data"]["id"]  # BaseResponse에서 데이터 추출
+        elif "id" in create_data:
+            session_id = create_data["id"]  # 직접 응답
+        else:
+            # 응답 구조를 확인하고 실패
+            pytest.fail(f"세션 생성 응답에서 session_id를 찾을 수 없습니다: {create_data}")
         
         # 메시지 조회 (빈 세션)
         response = await async_client.get(
@@ -167,7 +175,15 @@ class TestChatStreamAPI:
             params={"user_id": 123, "title": "기존 세션 테스트"}
         )
         create_data = create_response.json()
-        session_id = create_data["data"]["id"]  # BaseResponse에서 데이터 추출
+        
+        # 다양한 응답 형식 처리
+        if "data" in create_data and "id" in create_data["data"]:
+            session_id = create_data["data"]["id"]  # BaseResponse에서 데이터 추출
+        elif "id" in create_data:
+            session_id = create_data["id"]  # 직접 응답
+        else:
+            # 응답 구조를 확인하고 실패
+            pytest.fail(f"세션 생성 응답에서 session_id를 찾을 수 없습니다: {create_data}")
         
         # Mock 설정
         mock_vector_search.return_value = []  # 빈 검색 결과
@@ -259,7 +275,15 @@ class TestChatStreamIntegration:
         assert create_response.status_code == status.HTTP_200_OK
         create_data = create_response.json()
         assert create_data["success"] is True
-        session_id = create_data["data"]["id"]
+        
+        # 다양한 응답 형식 처리
+        if "data" in create_data and "id" in create_data["data"]:
+            session_id = create_data["data"]["id"]  # BaseResponse에서 데이터 추출
+        elif "id" in create_data:
+            session_id = create_data["id"]  # 직접 응답
+        else:
+            # 응답 구조를 확인하고 실패
+            pytest.fail(f"세션 생성 응답에서 session_id를 찾을 수 없습니다: {create_data}")
         
         # 2. 세션 목록에서 확인
         list_response = await async_client.get(

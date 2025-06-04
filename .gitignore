@@ -205,12 +205,14 @@ logs/*
 
 # Task files - these are generated and shouldn't be in version control
 tasks.json
-tasks/
+# Only ignore tasks/ directory in project root, not app/tasks/
+/tasks/
 *.task.md
 
 # Taskmaster reports and logs
 .taskmaster/reports/
 .taskmaster/logs/
+scripts/prd.txt
 
 # Node.js related (for taskmaster)
 logs
@@ -239,3 +241,6 @@ node_modules/
 .roo
 .roomodes
 .windsurfrules
+
+# Added by Task Master AI
+# Task files

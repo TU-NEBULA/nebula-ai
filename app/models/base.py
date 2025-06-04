@@ -12,27 +12,29 @@
 from datetime import datetime
 from typing import Optional
 from uuid import UUID, uuid4
-from sqlmodel import Field, SQLModel
-from sqlalchemy import Column, DateTime, func
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlmodel import Field as SQLField, SQLModel
+from sqlalchemy import Column, DateTime, text
 
-class UUIDModel(SQLModel):
-    """UUID 기본 모델"""
-    id: UUID = Field(
+
+class BaseModel(SQLModel):
+    """모든 모델의 기본 클래스"""
+    # UUID 기본 키 - sa_column과 primary_key를 분리
+    id: UUID = SQLField(
         default_factory=uuid4,
-        sa_column=Column(PG_UUID(as_uuid=True), primary_key=True)
+        primary_key=True
     )
 
-class TimestampModel(SQLModel):
-    """타임스탬프 기본 모델"""
-    created_at: datetime = Field(
+    # 타임스탬프 필드
+    created_at: datetime = SQLField(
         default_factory=datetime.utcnow,
-        sa_column=Column(DateTime(timezone=True), server_default=func.now())
+        sa_column=Column(DateTime(timezone=True), server_default=text('NOW()'))
     )
-    updated_at: Optional[datetime] = Field(
+    updated_at: Optional[datetime] = SQLField(
         default=None,
-        sa_column=Column(DateTime(timezone=True), onupdate=func.now())
+        sa_column=Column(DateTime(timezone=True), onupdate=text('NOW()'))
     )
 
-class BaseModel(UUIDModel, TimestampModel):
-    """모든 모델의 기본 클래스""" 
+
+# 하위 호환성을 위한 별칭들
+Base = SQLModel
+TimestampModel = SQLModel  # 믹스인으로 사용하지 말고 각 모델에서 개별 정의

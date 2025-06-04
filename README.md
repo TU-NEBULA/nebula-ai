@@ -34,6 +34,45 @@ make test-setup
 make test-help
 ```
 
+### 커버리지 테스트
+```bash
+# 커버리지와 함께 테스트 실행
+make test-cov
+
+# HTML 커버리지 리포트 생성 및 열기
+make cov-html
+
+# 커버리지 파일 정리
+make clean-cov
+```
+
+### 특정 테스트 실행 (pytest 직접 사용)
+```bash
+# 서비스 테스트만 실행
+pytest tests/services/ -v
+
+# 프로필 관련 테스트만 실행
+pytest tests/ -k "profile" -v
+
+# 통합 테스트만 실행
+pytest tests/integration/ -v
+
+# 특정 테스트 파일 실행
+pytest tests/services/test_vector_generator.py -v
+```
+
+### 테스트 환경 관리
+```bash
+# 테스트 서비스 상태 확인
+make test-services
+
+# 테스트 서비스 로그 확인
+make test-logs
+
+# 테스트 환경 정리
+make test-clean
+```
+
 ## 📂 프로젝트 구조
 
 ```
@@ -196,3 +235,27 @@ make help
 ## 📄 라이선스
 
 이 프로젝트는 MIT 라이선스 하에 배포됩니다. 자세한 내용은 [LICENSE](LICENSE) 파일을 참조하세요.
+
+## 📊 테스트 구조
+
+```
+tests/
+├── services/          # 서비스 레이어 테스트
+│   ├── test_vector_generator.py
+│   ├── test_user_profile_processor.py
+│   ├── test_message_handlers.py
+│   └── test_chat_service.py
+├── schemas/           # Pydantic 스키마 테스트
+│   ├── test_profile_schemas.py
+│   └── test_chat_schemas.py
+├── routers/           # API 라우터 테스트
+│   ├── test_profile_api.py
+│   └── test_chat_stream.py
+├── integration/       # 통합 테스트
+│   ├── test_profile_integration.py
+│   └── test_bookmark_flow_integration.py
+├── models/           # 데이터베이스 모델 테스트
+├── manual/           # 수동 테스트 스크립트
+├── performance/      # 성능 테스트
+└── conftest.py       # 공통 테스트 설정
+```

@@ -11,6 +11,7 @@ from typing import List, Optional, Dict, Any
 from loguru import logger
 from sqlmodel import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.chat import (
     ChatSession, ChatMessage, RAGReference, UserFeedback
@@ -76,6 +77,65 @@ class ChatRepository:
         return list(result.scalars().all())
 
     @staticmethod
+    async def get_user_sessions_with_messages(
+        session: AsyncSession,
+        user_id: int,
+        days: int = 30
+    ) -> List[ChatSession]:
+        """메시지가 포함된 사용자의 최근 채팅 세션을 조회합니다."""
+        recent_date = datetime.now(timezone.utc) - timedelta(days=days)
+
+        stmt = (
+            select(ChatSession)
+            .where(
+                and_(
+                    ChatSession.user_id == user_id,
+                    ChatSession.updated_at >= recent_date
+                )
+            )
+            .options(selectinload(ChatSession.messages))
+            .order_by(ChatSession.updated_at.desc())  # pylint: disable=no-member
+        )
+
+        result = await session.execute(stmt)
+        sessions = list(result.scalars().all())
+
+        logger.debug(f"💬 사용자 {user_id} 최근 {days}일 세션 조회 - 총 {len(sessions)}개")
+        return sessions
+
+    @staticmethod
+    async def get_user_recent_messages(
+        session: AsyncSession,
+        user_id: int,
+        days: int = 30,
+        role: str = "user",
+        limit: Optional[int] = None
+    ) -> List[ChatMessage]:
+        """사용자의 최근 메시지를 조회합니다."""
+        recent_date = datetime.now(timezone.utc) - timedelta(days=days)
+
+        stmt = (
+            select(ChatMessage)
+            .where(
+                and_(
+                    ChatMessage.user_id == user_id,
+                    ChatMessage.role == role,
+                    ChatMessage.created_at >= recent_date
+                )
+            )
+            .order_by(ChatMessage.created_at.desc())  # pylint: disable=no-member
+        )
+
+        if limit:
+            stmt = stmt.limit(limit)
+
+        result = await session.execute(stmt)
+        messages = list(result.scalars().all())
+
+        logger.debug(f"📝 사용자 {user_id} 최근 {days}일 {role} 메시지 조회 - 총 {len(messages)}개")
+        return messages
+
+    @staticmethod
     async def save_message(
         session: AsyncSession,
         session_id: uuid.UUID,
@@ -120,9 +180,9 @@ class ChatRepository:
             logger.debug(f"💾 메시지 저장 - session_id: {session_id}, role: {role}")
             return message
 
-        except Exception as e:
+        except Exception as e:  # pylint: disable=broad-exception-caught
             await session.rollback()
-            logger.error(f"❌ 메시지 저장 실패: {e}")
+            logger.error(f"❌메시지 저장 실패: {e}")
             raise
 
     @staticmethod

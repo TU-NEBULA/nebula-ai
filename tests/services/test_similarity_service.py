@@ -206,13 +206,13 @@ class TestSimilarityService:
         with patch('app.services.similarity_service.get_async_session') as mock_session, \
              patch('app.services.similarity_service.VectorRepository.get_documents_by_user') as mock_get_docs:
             
-            # Mock session async generator
-            mock_db_session = MagicMock()
+            # Mock async generator (async for에서 사용)
+            mock_db_session = AsyncMock()
             
-            async def async_session_generator():
+            async def mock_async_generator():
                 yield mock_db_session
-            
-            mock_session.return_value = async_session_generator()
+                
+            mock_session.return_value = mock_async_generator()
             
             # Mock documents results
             mock_get_docs.return_value = [mock_document_vector]
@@ -245,13 +245,13 @@ class TestSimilarityService:
         with patch('app.services.similarity_service.get_async_session') as mock_session, \
              patch('app.services.similarity_service.VectorRepository.get_documents_by_user') as mock_get_docs:
             
-            # Mock session async generator
-            mock_db_session = MagicMock()
+            # Mock async generator (async for에서 사용)
+            mock_db_session = AsyncMock()
             
-            async def async_session_generator():
+            async def mock_async_generator():
                 yield mock_db_session
-            
-            mock_session.return_value = async_session_generator()
+                
+            mock_session.return_value = mock_async_generator()
             
             # 빈 결과 반환
             mock_get_docs.return_value = []
@@ -289,13 +289,13 @@ class TestSimilarityService:
         with patch('app.services.similarity_service.get_async_session') as mock_session, \
              patch('app.services.similarity_service.VectorRepository.get_documents_by_user') as mock_get_docs:
             
-            # Mock session async generator
-            mock_db_session = MagicMock()
+            # Mock async generator (async for에서 사용)
+            mock_db_session = AsyncMock()
             
-            async def async_session_generator():
+            async def mock_async_generator():
                 yield mock_db_session
-            
-            mock_session.return_value = async_session_generator()
+                
+            mock_session.return_value = mock_async_generator()
             
             # 두 개의 문서 반환 (같은 source_id)
             mock_get_docs.return_value = [mock_doc1, mock_doc2]
@@ -316,13 +316,13 @@ class TestSimilarityService:
         with patch('app.services.similarity_service.get_async_session') as mock_session, \
              patch('app.services.similarity_service.VectorRepository.get_user_document_count') as mock_count:
             
-            # Mock session async generator
-            mock_db_session = MagicMock()
+            # Mock async generator (async for에서 사용)
+            mock_db_session = AsyncMock()
             
-            async def async_session_generator():
+            async def mock_async_generator():
                 yield mock_db_session
-            
-            mock_session.return_value = async_session_generator()
+                
+            mock_session.return_value = mock_async_generator()
             
             mock_count.return_value = expected_count
             

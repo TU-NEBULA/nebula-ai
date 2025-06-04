@@ -12,6 +12,7 @@ from typing import List, Dict
 import numpy as np
 import openai
 from sklearn.metrics.pairwise import cosine_similarity
+from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.database import get_async_session
@@ -61,6 +62,11 @@ class SimilarityService:
                 new_bookmark_content, keywords, summary
             )
 
+            # 임베딩이 0 벡터인 경우 (오류 발생 시) 빈 리스트 반환
+            if np.allclose(new_embedding, 0.0):
+                log.warning("임베딩 생성 실패로 인해 유사도 계산을 건너뜁니다.")
+                return []
+
             # 2. 사용자의 기존 북마크들 조회
             existing_bookmarks = await self._get_user_bookmarks(user_id)
 
@@ -95,7 +101,7 @@ class SimilarityService:
             return result
 
         except (ConnectionError, TimeoutError, ValueError,
-                ImportError, LookupError, OSError, Exception) as e:
+                ImportError, LookupError, OSError) as e:
             log.error("유사도 계산 중 오류 발생: %s", e)
             return []
 
@@ -106,7 +112,7 @@ class SimilarityService:
         summary: str
     ) -> np.ndarray:
         """북마크 임베딩 벡터 생성"""
-        
+
         try:
             # 텍스트 조합: 내용 + 키워드 + 요약
             combined_text = f"{content}\n키워드: {', '.join(keywords)}\n요약: {summary}"
@@ -114,63 +120,73 @@ class SimilarityService:
             # OpenAI 임베딩 생성
             loop = asyncio.get_event_loop()
             with ThreadPoolExecutor() as executor:
-                response = await loop.run_in_executor(
-                    executor,
-                    lambda: openai.embeddings.create(
-                        model=settings.OPENAI_EMBED_MODEL,
-                        input=combined_text
+                try:
+                    response = await loop.run_in_executor(
+                        executor,
+                        lambda: openai.embeddings.create(
+                            model=settings.OPENAI_EMBED_MODEL,
+                            input=combined_text
+                        )
                     )
-                )
+                except (openai.OpenAIError, ConnectionError, TimeoutError) as executor_e:
+                    # ThreadPoolExecutor 내부 예외를 다시 raise
+                    raise executor_e
 
             embedding = np.array(response.data[0].embedding)
             return embedding
-            
-        except Exception as e:
+
+        except (openai.OpenAIError, ValueError, TypeError,
+                ConnectionError, TimeoutError) as e:
             log.error("임베딩 생성 중 오류 발생: %s", e)
-            # 오류 발생 시 예외를 다시 올려서 상위에서 처리하도록 함
-            raise
+            # 빈 배열을 반환하여 상위에서 처리하도록 함
+            return np.array([0.0] * 1536)  # 기본 차원 크기
 
     async def _get_user_bookmarks(self, user_id: int) -> List[Dict]:
         """사용자의 기존 북마크들 조회"""
         try:
             async for session in get_async_session():
-                log.info("사용자 %s의 북마크 조회 중...", user_id)
+                try:
+                    log.info("사용자 %s의 북마크 조회 중...", user_id)
 
-                documents = await VectorRepository.get_documents_by_user(
-                    session=session,
-                    user_id=user_id,
-                    source_type="bookmark",
-                    limit=1000
-                )
+                    documents = await VectorRepository.get_documents_by_user(
+                        session=session,
+                        user_id=user_id,
+                        source_type="bookmark",
+                        limit=1000
+                    )
 
-                bookmarks = []
-                processed_source_ids = set()
+                    bookmarks = []
+                    processed_source_ids = set()
 
-                for doc_vector in documents:
-                    try:
-                        # 같은 source_id의 문서는 하나만 처리 (첫 번째 청크만 사용)
-                        if doc_vector.source_id in processed_source_ids:
+                    for doc_vector in documents:
+                        try:
+                            # 같은 source_id의 문서는 하나만 처리 (첫 번째 청크만 사용)
+                            if doc_vector.source_id in processed_source_ids:
+                                continue
+                            processed_source_ids.add(doc_vector.source_id)
+
+                            bookmark_data = {
+                                "id": doc_vector.source_id,  # source_id를 bookmark ID로 사용
+                                "title": doc_vector.title or "제목 없음",
+                                "url": doc_vector.url or "",
+                                "embedding": doc_vector.embedding,
+                                "content": doc_vector.content,
+                                "keywords": doc_vector.keywords or [],
+                                "summary": doc_vector.summary or "",
+                                "created_at": doc_vector.created_at
+                            }
+                            bookmarks.append(bookmark_data)
+
+                        except (SQLAlchemyError, ValueError, AttributeError, KeyError) as e:
+                            log.warning("북마크 %s 처리 중 오류: %s", doc_vector.id, e)
                             continue
-                        processed_source_ids.add(doc_vector.source_id)
 
-                        bookmark_data = {
-                            "id": doc_vector.source_id,  # source_id를 bookmark ID로 사용
-                            "title": doc_vector.title or "제목 없음",
-                            "url": doc_vector.url or "",
-                            "embedding": doc_vector.embedding,
-                            "content": doc_vector.content,
-                            "keywords": doc_vector.keywords or [],
-                            "summary": doc_vector.summary or "",
-                            "created_at": doc_vector.created_at
-                        }
-                        bookmarks.append(bookmark_data)
+                    log.info("사용자 %s의 북마크 %d개 조회 완료", user_id, len(bookmarks))
+                    return bookmarks
 
-                    except (AttributeError, KeyError) as e:
-                        log.warning("북마크 %s 처리 중 오류: %s", doc_vector.id, e)
-                        continue
-
-                log.info("사용자 %s의 북마크 %d개 조회 완료", user_id, len(bookmarks))
-                return bookmarks
+                except (SQLAlchemyError, ValueError, AttributeError, KeyError) as e:
+                    log.error("북마크 조회 중 내부 오류: %s", e)
+                    return []
 
         except (ConnectionError, TimeoutError) as e:
             log.error("사용자 북마크 조회 중 오류: %s", e)
@@ -221,18 +237,23 @@ class SimilarityService:
         """
         try:
             async for session in get_async_session():
-                # 사용자 문서 수 조회
-                bookmark_count = await VectorRepository.get_user_document_count(
-                    session=session,
-                    user_id=user_id,  # int 타입 그대로 사용
-                    source_type="bookmark"
-                )
+                try:
+                    # 사용자 문서 수 조회
+                    bookmark_count = await VectorRepository.get_user_document_count(
+                        session=session,
+                        user_id=user_id,  # int 타입 그대로 사용
+                        source_type="bookmark"
+                    )
 
-                return {
-                    "user_id": user_id,
-                    "total_bookmarks": bookmark_count,
-                    "last_updated": None  # 필요시 구현
-                }
+                    return {
+                        "user_id": user_id,
+                        "total_bookmarks": bookmark_count,
+                        "last_updated": None  # 필요시 구현
+                    }
+
+                except (SQLAlchemyError, ValueError, AttributeError, KeyError) as e:
+                    log.error("문서 통계 조회 중 내부 오류: %s", e)
+                    return {"user_id": user_id, "total_bookmarks": 0, "last_updated": None}
 
         except (ConnectionError, TimeoutError) as e:
             log.error("사용자 문서 통계 조회 중 오류: %s", e)
