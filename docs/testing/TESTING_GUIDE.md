@@ -258,7 +258,11 @@ celery -A app.core.celery_worker inspect active
 
 # Worker 재시작
 celery -A app.core.celery_worker control shutdown
-celery -A app.core.celery_worker worker --loglevel=info -Q embedding
+celery -A app.core.celery_worker worker --loglevel=info -Q bookmark_save,user_profile,user_analysis,recommendations,analytics,monitoring
+
+# 특정 큐만 테스트하고 싶은 경우
+celery -A app.core.celery_worker worker --loglevel=debug -Q bookmark_save    # 북마크만
+celery -A app.core.celery_worker worker --loglevel=debug -Q user_profile     # 유저 프로필만
 
 # 큐 정리
 celery -A app.core.celery_worker purge
@@ -309,11 +313,16 @@ async for message in queue:
 ### 2. Celery 최적화
 
 ```bash
-# Worker 수 증가
-celery -A app.core.celery_worker worker --concurrency=4 -Q embedding
+# Worker 수 증가 (모든 큐)
+celery -A app.core.celery_worker worker --concurrency=4 -Q bookmark_save,user_profile,user_analysis,recommendations,analytics,monitoring
 
-# 메모리 제한 설정
-celery -A app.core.celery_worker worker --max-memory-per-child=200000 -Q embedding
+# 메모리 제한 설정 (모든 큐)
+celery -A app.core.celery_worker worker --max-memory-per-child=200000 -Q bookmark_save,user_profile,user_analysis,recommendations,analytics,monitoring
+
+# 큐별 전용 워커 운영 (고성능 환경)
+celery -A app.core.celery_worker worker --concurrency=2 -Q bookmark_save,user_profile     # 주요 태스크
+celery -A app.core.celery_worker worker --concurrency=1 -Q user_analysis,recommendations  # 분석 태스크
+celery -A app.core.celery_worker worker --concurrency=1 -Q analytics,monitoring          # 배경 태스크
 
 # 태스크 라우팅 최적화
 # app/core/celery_worker.py에서 CELERY_TASK_ROUTES 설정
@@ -332,6 +341,181 @@ async def save_documents_batch(self, documents: List[Dict]):
 # app/core/database.py
 DB_POOL_SIZE = 20
 DB_MAX_OVERFLOW = 10
+```
+
+## 📝 테스트 체크리스트
+
+### 개발 전 체크리스트
+- [ ] 환경 변수 설정 완료 (.env)
+- [ ] Docker 서비스 정상 실행
+- [ ] 데이터베이스 초기화 완료
+- [ ] 의존성 설치 완료
+
+### 기능 테스트 체크리스트
+- [ ] Consumer 메시지 수신 및 파싱
+- [ ] 데이터 검증 및 오류 처리
+- [ ] Celery 태스크 큐 전달
+- [ ] Task 비즈니스 로직 실행
+- [ ] 외부 서비스 연동 (S3, 임베딩)
+- [ ] 데이터베이스 저장
+- [ ] 관계 메시지 발행
+
+### 성능 테스트 체크리스트
+- [ ] 단일 메시지 처리 시간 < 100ms
+- [ ] 처리량 > 10 메시지/초
+- [ ] 메모리 사용량 안정적
+- [ ] 동시 처리 성능 확인
+- [ ] 대량 데이터 처리 안정성
+
+### 배포 전 체크리스트
+- [ ] 모든 단위 테스트 통과
+- [ ] 통합 테스트 통과
+- [ ] 성능 테스트 기준 충족
+- [ ] 로그 레벨 적절히 설정
+- [ ] 모니터링 설정 완료
+
+## 🎯 테스트 자동화
+
+### GitHub Actions 설정
+
+```yaml
+# .github/workflows/test.yml
+name: Tests
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    services:
+      rabbitmq:
+        image: rabbitmq:3-management
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd "rabbitmqctl status"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 5
+      
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 5
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      run: |
+        pip install pipenv
+        pipenv install --dev
+    
+    - name: Run unit tests
+      run: pipenv run pytest tests/ -v
+    
+    - name: Run manual tests
+      run: |
+        pipenv run python tests/manual/consumer_test.py
+        pipenv run python tests/manual/task_test.py
+    
+    - name: Run performance tests
+      run: pipenv run python tests/performance/bookmark_performance_test.py
+```
+
+### 로컬 테스트 자동화
+
+```bash
+# Makefile에 추가
+.PHONY: test-all
+test-all: test-unit test-manual test-performance
+
+.PHONY: test-unit
+test-unit:
+	pytest tests/ -v
+
+.PHONY: test-manual
+test-manual:
+	python tests/manual/consumer_test.py
+	python tests/manual/task_test.py
+
+.PHONY: test-performance
+test-performance:
+	python tests/performance/bookmark_performance_test.py
+
+.PHONY: test-setup
+test-setup:
+	docker-compose -f docker/test/docker-compose.test.yml up -d
+	sleep 10
+	python scripts/test/setup_dev_environment.py
+```
+
+## 📚 추가 리소스
+
+- [북마크 테스트 상세 가이드](BOOKMARK_TEST_GUIDE.md)
+- [수동 테스트 README](../tests/manual/README.md)
+- [성능 테스트 결과 분석](performance_analysis.md)
+- [트러블슈팅 가이드](troubleshooting.md)
+
+---
+
+**문의사항이나 문제가 발생하면 다음 정보와 함께 이슈를 등록해주세요:**
+- 실행 환경 (OS, Python 버전)
+- 오류 메시지 및 로그
+- 재현 단계
+- 기대 결과 vs 실제 결과 
+
+### 🎯 Celery 큐별 특성 및 용도
+
+| 큐 이름 | 우선순위 | 용도 | 처리 특성 | 예상 부하 |
+|---------|----------|------|-----------|-----------|
+| `bookmark_save` | 높음 | 북마크 저장 및 처리 | 실시간, 사용자 대기 | 높음 |
+| `user_profile` | 중간 | 프로필 업데이트 및 벡터 생성 | 배경 처리, 지연 허용 | 중간 |
+| `user_analysis` | 낮음 | 유사도 계산, 관계 분석 | CPU 집약적, 장시간 | 높음 |
+| `recommendations` | 낮음 | 개인화 추천 생성 | AI 기반, 지연 가능 | 중간 |
+| `analytics` | 최저 | 트렌드 분석, 통계 | 배치 처리, 주기적 | 낮음 |
+| `monitoring` | 배경 | 품질 체크, 시스템 모니터링 | 스케줄 기반, 무인 | 낮음 |
+
+### 🚀 큐별 최적화 전략
+
+```bash
+# 성능 최적화: 큐별 전용 워커 운영
+# 실시간 처리가 중요한 큐 (높은 동시성)
+celery -A app.core.celery_worker worker --concurrency=4 -Q bookmark_save,user_profile -n worker1@%h
+
+# CPU 집약적 작업 전용 (낮은 동시성, 높은 CPU)
+celery -A app.core.celery_worker worker --concurrency=2 -Q user_analysis -n worker2@%h
+
+# 배경 작업 전용 (낮은 우선순위)
+celery -A app.core.celery_worker worker --concurrency=2 -Q recommendations,analytics,monitoring -n worker3@%h
+```
+
+#### 2. Celery Worker 문제
+```bash
+# Worker 상태 확인
+celery -A app.core.celery_worker inspect active
+
+# Worker 재시작
+celery -A app.core.celery_worker control shutdown
+celery -A app.core.celery_worker worker --loglevel=info -Q bookmark_save,user_profile,user_analysis,recommendations,analytics,monitoring
+
+# 특정 큐만 테스트하고 싶은 경우
+celery -A app.core.celery_worker worker --loglevel=debug -Q bookmark_save    # 북마크만
+celery -A app.core.celery_worker worker --loglevel=debug -Q user_profile     # 유저 프로필만
+
+# 큐 정리
+celery -A app.core.celery_worker purge
 ```
 
 ## 📝 테스트 체크리스트

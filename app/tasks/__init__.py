@@ -16,6 +16,9 @@ from .user_profile_tasks import (
     analyze_trends_task
 )
 
+# 일일 모니터링 관련 태스크
+from .daily_profile_monitor import run_daily_quality_check_task
+
 # 내보낼 태스크들
 __all__ = [
     # 북마크 태스크
@@ -26,4 +29,7 @@ __all__ = [
     'calculate_user_similarities_task',
     'generate_recommendations_task',
     'analyze_trends_task',
+
+    # 일일 모니터링 태스크
+    'run_daily_quality_check_task',
 ]

@@ -29,7 +29,7 @@ class VectorRepository:
     @staticmethod
     async def save_document_vectors(
         session: AsyncSession,
-        user_id: str,
+        user_id: int,
         source_id: str,
         source_type: str,
         chunks: List[str],
@@ -109,7 +109,7 @@ class VectorRepository:
     async def similarity_search(
         session: AsyncSession,
         query_embedding: List[float],
-        user_id: Optional[str] = None,
+        user_id: Optional[int] = None,
         source_types: Optional[List[str]] = None,
         limit: int = 10,
         similarity_threshold: float = 0.7
@@ -163,7 +163,7 @@ class VectorRepository:
         session: AsyncSession,
         query_embedding: List[float],
         query_text: Optional[str] = None,
-        user_id: Optional[str] = None,
+        user_id: Optional[int] = None,
         source_types: Optional[List[str]] = None,
         keywords: Optional[List[str]] = None,
         limit: int = 10,
@@ -233,7 +233,7 @@ class VectorRepository:
     @staticmethod
     async def get_documents_by_source(
         session: AsyncSession,
-        user_id: str,
+        user_id: int,
         source_id: str,
         source_type: str
     ) -> List[DocumentVector]:
@@ -288,7 +288,7 @@ class VectorRepository:
     @staticmethod
     async def delete_documents_by_source(
         session: AsyncSession,
-        user_id: str,
+        user_id: int,
         source_id: str,
         source_type: str
     ) -> int:

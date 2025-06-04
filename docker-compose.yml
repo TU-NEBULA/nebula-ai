@@ -21,7 +21,7 @@ services:
       context: ./
       dockerfile: Dockerfile
     container_name: celery_worker
-    command: pipenv run celery -A app.core.celery_worker worker --loglevel=info -Q embedding
+    command: pipenv run celery -A app.core.celery_worker worker --loglevel=info -Q bookmark_save,user_profile,user_analysis,recommendations,analytics,monitoring
     env_file:
       - .env
     volumes:

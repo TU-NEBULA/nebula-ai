@@ -578,6 +578,25 @@ class DailyProfileMonitor:
         )
 
 
+def _run_async_safely(async_func):
+    """Celery 워커에서 안전하게 비동기 함수를 실행"""
+    try:
+        # 현재 실행 중인 이벤트 루프가 있는지 확인
+        loop = asyncio.get_running_loop()
+        # 이미 이벤트 루프가 실행 중이면 새로운 스레드에서 실행
+        logger.debug("기존 이벤트 루프 감지 - 새 스레드에서 실행")
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(asyncio.run, async_func)
+            return future.result(timeout=3600)  # 1시간 타임아웃
+    except RuntimeError:
+        # 이벤트 루프가 실행 중이지 않으면 일반적인 방법 사용
+        logger.debug("새 이벤트 루프 생성하여 실행")
+        return asyncio.run(async_func)
+    except Exception as e:
+        logger.error("❌ 비동기 실행 중 오류: {}", e)
+        raise
+
+
 @celery.task(
     name="tasks.run_daily_quality_check",
     bind=False,
@@ -622,12 +641,9 @@ def run_daily_quality_check_task() -> dict:
 
     # 비동기 함수 실행
     try:
-        import concurrent.futures
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(asyncio.run, _async_quality_check())
-            result = future.result(timeout=3600)  # 1시간 타임아웃
-            logger.info("✅ Celery 태스크 완료: 일일 프로필 품질 체크")
-            return result
+        result = _run_async_safely(_async_quality_check())
+        logger.info("✅ Celery 태스크 완료: 일일 프로필 품질 체크")
+        return result
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error(f"❌ Celery 태스크 실행 실패: {e}")
         return {

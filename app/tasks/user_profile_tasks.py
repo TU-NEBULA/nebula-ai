@@ -18,6 +18,7 @@ import math
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
+import concurrent.futures
 
 import numpy as np
 from loguru import logger
@@ -41,6 +42,9 @@ from app.repositories import (
 
 # 새로운 VectorGenerator 임포트
 from app.services.vector_generator import VectorGenerator, ActivityData, ActivityType
+from app.repositories.bookmark_repository import BookmarkRepository
+from app.repositories.user_profile_repository import RecommendationRepository
+from app.utils.async_utils import run_async_safely
 
 
 @dataclass
@@ -562,6 +566,25 @@ def create_repositories():
     }
 
 
+def _run_async_safely(async_func):
+    """Celery 워커에서 안전하게 비동기 함수를 실행"""
+    try:
+        # 현재 실행 중인 이벤트 루프가 있는지 확인
+        loop = asyncio.get_running_loop()
+        # 이미 이벤트 루프가 실행 중이면 새로운 스레드에서 실행
+        logger.debug("기존 이벤트 루프 감지 - 새 스레드에서 실행")
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            future = executor.submit(asyncio.run, async_func)
+            return future.result(timeout=300)  # 5분 타임아웃
+    except RuntimeError:
+        # 이벤트 루프가 실행 중이지 않으면 일반적인 방법 사용
+        logger.debug("새 이벤트 루프 생성하여 실행")
+        return asyncio.run(async_func)
+    except Exception as e:
+        logger.error("❌ 비동기 실행 중 오류: {}", e)
+        raise
+
+
 @celery.task(
     name="tasks.update_user_profile",
     bind=True,
@@ -578,7 +601,7 @@ def update_user_profile_task(self, profile_data_dict: dict) -> dict:
 
     try:
         profile_data = ProfileUpdateData(**profile_data_dict)
-        result = asyncio.run(_async_update_profile_logic(profile_data))
+        result = _run_async_safely(_async_update_profile_logic(profile_data))
 
         logger.info(f"✅ 사용자 {profile_data.user_id} 프로필 업데이트 완료")
         return {
@@ -761,7 +784,7 @@ def calculate_user_similarities_task(self, data_dict: dict) -> dict:
     logger.info(f"🔄 사용자 {user_id} 유사도 계산 시작")
 
     try:
-        result = asyncio.run(_async_calculate_similarities(user_id))
+        result = _run_async_safely(_async_calculate_similarities(user_id))
         logger.info(f"✅ 사용자 {user_id} 유사도 계산 완료")
         return result
 
@@ -900,7 +923,7 @@ def generate_recommendations_task(self, data_dict: dict) -> dict:
     logger.info(f"🎯 사용자 {user_id} 추천 생성 시작")
 
     try:
-        result = asyncio.run(_async_generate_recommendations(user_id))
+        result = _run_async_safely(_async_generate_recommendations(user_id))
         logger.info(f"✅ 사용자 {user_id} 추천 생성 완료")
         return result
 
@@ -1063,7 +1086,7 @@ def analyze_trends_task(_, __) -> dict:
     logger.info("📊 트렌드 분석 시작")
 
     try:
-        result = asyncio.run(_async_analyze_trends())
+        result = _run_async_safely(_async_analyze_trends())
         logger.info("✅ 트렌드 분석 완료")
         return result
 

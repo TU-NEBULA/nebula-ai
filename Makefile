@@ -26,7 +26,7 @@ stop:
 
 .PHONY: build
 build:
-	docker-compose build --no-cache
+	docker-compose build
 
 .PHONY: restart
 restart: stop build start

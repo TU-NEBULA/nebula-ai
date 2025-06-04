@@ -21,7 +21,7 @@ services:
   celery_worker:
     image: wonjun0120/nebula-ai
     container_name: celery_worker
-    command: pipenv run celery -A app.core.celery_worker worker --loglevel=info -Q embedding
+    command: pipenv run celery -A app.core.celery_worker worker --loglevel=info -Q bookmark_save,user_profile,user_analysis,recommendations,analytics,monitoring
     depends_on:
       rabbitmq:
         condition: service_healthy

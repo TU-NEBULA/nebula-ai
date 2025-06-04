@@ -53,8 +53,10 @@ async def test_direct_bookmark_save():
                 saved_vectors = await vector_service.save_document(
                     session=session,
                     user_id=user_id,  # 정수 직접 전달
-                    source_id=source_id,
-                    source_type="bookmark_chunk",
+                    source_data={
+                        "source_id": source_id,
+                        "source_type": "bookmark_chunk"
+                    },
                     content=test_bookmark["content"],
                     title=test_bookmark["title"],
                     url=test_bookmark["url"],

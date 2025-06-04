@@ -34,7 +34,7 @@ class VectorService:
     async def save_document(  # pylint: disable=too-many-locals
         self,
         session: AsyncSession,
-        user_id: str,
+        user_id: int,
         source_data: Dict[str, Any],
         content: str,
         **kwargs
@@ -199,7 +199,7 @@ class VectorService:
     async def delete_document(
         self,
         session: AsyncSession,
-        user_id: str,
+        user_id: int,
         source_id: str,
         source_type: str
     ) -> int:
@@ -232,7 +232,7 @@ class VectorService:
     async def get_user_document_stats(
         self,
         session: AsyncSession,
-        user_id: str
+        user_id: int
     ) -> Dict[str, Any]:
         """
         사용자의 문서 통계를 조회합니다.

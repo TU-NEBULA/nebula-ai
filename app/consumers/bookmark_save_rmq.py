@@ -84,42 +84,68 @@ async def on_bookmark_save(message: IncomingMessage):
 
 async def start_bookmark_save_consumer():
     """북마크 저장 Consumer 시작"""
-    try:
-        # RabbitMQ 연결
-        connection = await get_rabbit_connection()
-        channel = await connection.channel()
+    max_retries = 5
+    retry_delay = 5  # 5초 간격으로 재시도
+    
+    for attempt in range(max_retries):
+        try:
+            logger.info("🚀 북마크 저장 Consumer 시작 시도 {}/{} - 큐: {}", 
+                       attempt + 1, max_retries, settings.BOOKMARK_SAVE_QUEUE)
+            
+            # RabbitMQ 연결
+            connection = await get_rabbit_connection()
+            logger.info("✅ RabbitMQ 연결 성공")
+            
+            channel = await connection.channel()
+            logger.info("✅ 채널 생성 성공")
 
-        # QoS 설정 (안전한 순차 처리를 위해 1로 설정)
-        # 나중에 시스템 안정성 확인 후 점진적으로 증가 예정
-        await channel.set_qos(prefetch_count=1)
+            # QoS 설정 (안전한 순차 처리를 위해 1로 설정)
+            # 나중에 시스템 안정성 확인 후 점진적으로 증가 예정
+            await channel.set_qos(prefetch_count=1)
+            logger.info("✅ QoS 설정 완료")
 
-        # 큐 선언
-        queue = await channel.declare_queue(
-            settings.BOOKMARK_SAVE_QUEUE,
-            durable=True
-        )
+            # 큐 선언
+            queue = await channel.declare_queue(
+                settings.BOOKMARK_SAVE_QUEUE,
+                durable=True
+            )
+            logger.info("✅ 큐 선언 완료: {}", settings.BOOKMARK_SAVE_QUEUE)
 
-        logger.info("🚀 북마크 저장 Consumer 시작 - 큐: {}", settings.BOOKMARK_SAVE_QUEUE)
+            logger.info("🚀 북마크 저장 Consumer 시작 완료 - 큐: {}", settings.BOOKMARK_SAVE_QUEUE)
 
-        # 메시지 소비 시작
-        await queue.consume(on_bookmark_save)
+            # 메시지 소비 시작
+            await queue.consume(on_bookmark_save)
+            logger.info("🎯 북마크 저장 Consumer 대기 중: {}", settings.BOOKMARK_SAVE_QUEUE)
 
-        # 테스트 환경에서는 즉시 반환, 실제 환경에서는 무한 대기
-        if os.getenv("PYTEST_CURRENT_TEST"):
-            # 테스트 환경: 즉시 반환
-            logger.info("🧪 테스트 환경 감지 - Consumer 초기화만 수행")
-            return
+            # 테스트 환경에서는 즉시 반환, 실제 환경에서는 무한 대기
+            if os.getenv("PYTEST_CURRENT_TEST"):
+                # 테스트 환경: 즉시 반환
+                logger.info("🧪 테스트 환경 감지 - Consumer 초기화만 수행")
+                return
 
-        # 실제 환경: Consumer 실행 유지
-        await asyncio.Future()  # 무한 대기
+            # 실제 환경: Consumer 실행 유지
+            await asyncio.Future()  # 무한 대기
 
-    except AMQPException as e:
-        logger.error("❌ RabbitMQ 연결 오류: {}", e)
-        raise
-    except (ConnectionError, OSError) as e:
-        logger.error("❌ 네트워크 연결 오류: {}", e)
-        raise
-    except Exception as e:  # pylint: disable=broad-exception-caught
-        # Consumer 시작 실패는 심각한 문제이므로 상세 로깅 후 재발생
-        logger.exception("❌ Consumer 시작 중 예상하지 못한 오류: {}", e)
-        raise
+        except AMQPException as e:
+            logger.error("❌ RabbitMQ 연결 오류 (시도 {}/{}): {}", attempt + 1, max_retries, e)
+            if attempt == max_retries - 1:
+                logger.error("❌ 북마크 저장 Consumer 최대 재시도 횟수 초과 - 포기")
+                raise
+            logger.info("🔄 {}초 후 재시도...", retry_delay)
+            await asyncio.sleep(retry_delay)
+            
+        except (ConnectionError, OSError) as e:
+            logger.error("❌ 네트워크 연결 오류 (시도 {}/{}): {}", attempt + 1, max_retries, e)
+            if attempt == max_retries - 1:
+                logger.error("❌ 북마크 저장 Consumer 최대 재시도 횟수 초과 - 포기")
+                raise
+            logger.info("🔄 {}초 후 재시도...", retry_delay)
+            await asyncio.sleep(retry_delay)
+            
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.exception("❌ Consumer 시작 중 예상하지 못한 오류 (시도 {}/{}): {}", attempt + 1, max_retries, e)
+            if attempt == max_retries - 1:
+                logger.error("❌ 북마크 저장 Consumer 최대 재시도 횟수 초과 - 포기")
+                raise
+            logger.info("🔄 {}초 후 재시도...", retry_delay)
+            await asyncio.sleep(retry_delay)

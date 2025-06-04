@@ -13,15 +13,18 @@
 from dataclasses import dataclass
 from typing import List, Dict
 import asyncio
+import logging
+import concurrent.futures
 
 from loguru import logger
 from app.core.celery_worker import celery
 from app.core.database import get_async_session
-from app.external.s3_service import download_html_from_s3
+from app.external.s3_service import download_html_from_s3, download_html_from_url
 from app.services.vector_service import vector_service
 from app.services.similarity_service import SimilarityService
 from app.services.message_publisher import message_publisher
 from app.utils.text_processing import extract_main_text, prepare_content_for_rag
+from app.utils.async_utils import run_async_safely
 
 # 서비스 인스턴스들
 similarity_service = SimilarityService()
@@ -41,23 +44,71 @@ class BookmarkData:
     summary: str
 
 
-async def _download_and_extract_content(s3_key: str) -> str:
-    """S3에서 HTML을 다운로드하고 텍스트를 추출합니다."""
-    logger.info("📥 S3에서 HTML 다운로드 시작 - s3_key: {}", s3_key)
-    html = download_html_from_s3(s3_key)
-
-    body_text = extract_main_text(html)
-    logger.info("📄 텍스트 추출 완료 - 길이: {}", len(body_text))
-    return body_text
+async def _download_and_extract_content(s3_key: str, url: str) -> str:
+    """S3에서 HTML을 다운로드하고 텍스트를 추출합니다. S3 실패 시 URL로 fallback합니다."""
+    logger.info("📥 콘텐츠 다운로드 시작 - s3_key: {}, url: {}", s3_key, url)
+    
+    # 1차 시도: S3에서 다운로드
+    try:
+        logger.info("📥 S3에서 HTML 다운로드 시도 - s3_key: {}", s3_key)
+        html = download_html_from_s3(s3_key)
+        body_text = extract_main_text(html)
+        logger.info("📄 S3에서 텍스트 추출 완료 - 길이: {}", len(body_text))
+        return body_text
+        
+    except FileNotFoundError as e:
+        logger.warning("⚠️ S3 파일이 존재하지 않음 - s3_key: {}, URL로 fallback 시도", s3_key)
+        
+        # 2차 시도: URL에서 직접 다운로드
+        try:
+            logger.info("🌐 URL에서 HTML 다운로드 시도 - url: {}", url)
+            html = download_html_from_url(url)
+            body_text = extract_main_text(html)
+            logger.warning("⚠️ URL fallback 성공 - url: {}, 텍스트 길이: {}", url, len(body_text))
+            return body_text
+            
+        except (ConnectionError, ValueError) as url_error:
+            logger.error("❌ URL fallback도 실패 - url: {}, 오류: {}", url, url_error)
+            logger.warning("⚠️ S3와 URL 모두 실패, 빈 콘텐츠로 처리 진행")
+            return ""
+        
+    except (ConnectionError, ValueError) as e:
+        logger.error("❌ S3 다운로드 실패 - s3_key: {}, 오류: {}", s3_key, e)
+        # S3에 연결 문제가 있는 경우에도 URL로 fallback 시도
+        try:
+            logger.info("🌐 S3 연결 실패로 URL fallback 시도 - url: {}", url)
+            html = download_html_from_url(url)
+            body_text = extract_main_text(html)
+            logger.warning("⚠️ URL fallback 성공 - url: {}, 텍스트 길이: {}", url, len(body_text))
+            return body_text
+            
+        except (ConnectionError, ValueError) as url_error:
+            logger.error("❌ URL fallback도 실패 - url: {}, 오류: {}", url, url_error)
+            # 중요한 에러는 재발생시켜 태스크 재시도 유도
+            raise
+        
+    except Exception as e:
+        logger.error("❌ 예상치 못한 오류 - s3_key: {}, url: {}, 오류: {}", s3_key, url, e)
+        # 예상치 못한 에러도 재발생
+        raise
 
 
 async def _calculate_similarity(bookmark_data: BookmarkData, body_text: str) -> List[Dict]:
     """유사도 계산을 수행합니다."""
     logger.info("🔍 유사도 계산 시작...")
-    content_for_similarity = (
-        f"{bookmark_data.title} {bookmark_data.summary} "
-        f"{' '.join(bookmark_data.keywords)} {body_text[:1000]}"
-    )
+    
+    # S3 파일이 없어 body_text가 비어있더라도 메타데이터로 유사도 계산 진행
+    if not body_text:
+        logger.info("📝 본문 텍스트가 비어있음 - 메타데이터만으로 유사도 계산 진행")
+        content_for_similarity = (
+            f"{bookmark_data.title} {bookmark_data.summary} "
+            f"{' '.join(bookmark_data.keywords)}"
+        )
+    else:
+        content_for_similarity = (
+            f"{bookmark_data.title} {bookmark_data.summary} "
+            f"{' '.join(bookmark_data.keywords)} {body_text[:1000]}"
+        )
 
     similar_bookmarks = await similarity_service.find_similar_bookmarks(
         new_bookmark_content=content_for_similarity,
@@ -195,47 +246,103 @@ async def _delete_pattern_individually(session, bookmark_data: BookmarkData, pat
 async def _save_content_chunks(session, bookmark_data: BookmarkData, body_text: str,
                                similar_bookmarks: List[Dict]) -> tuple:
     """콘텐츠 청크들을 저장합니다."""
-    metadata = {
-        "memo": bookmark_data.memo,
-        "summary": bookmark_data.summary
-    }
-    
-    rag_chunks = prepare_content_for_rag(
-        text=body_text,
-        keywords=bookmark_data.keywords,
-        metadata=metadata,
-        chunk_size=1000,
-        chunk_overlap=200
-    )
-
-    saved_vectors = []
-    for chunk_data in rag_chunks:
+    # S3 파일이 없어 body_text가 비어있는 경우에도 메타데이터는 저장
+    if not body_text:
+        logger.info("📝 본문 텍스트가 비어있음 - 메타데이터만으로 벡터 저장 진행")
+        # 빈 콘텐츠 대신 메타데이터 정보를 사용
+        fallback_content = f"{bookmark_data.title}\n{bookmark_data.summary}\n{bookmark_data.memo}"
+        if not fallback_content.strip():
+            fallback_content = "북마크 데이터 (본문 없음)"
+        
+        # 단일 벡터 생성
         chunk_metadata = {
-            "chunk_index": chunk_data["chunk_index"],
-            "total_chunks": chunk_data["total_chunks"],
+            "chunk_index": 0,
+            "total_chunks": 1,
             "user_selected_keywords": bookmark_data.keywords,
-            "chunk_keywords": chunk_data["chunk_keywords"],
+            "chunk_keywords": bookmark_data.keywords,
             "user_memo": bookmark_data.memo,
+            "user_summary": bookmark_data.summary,
             "s3_key": bookmark_data.s3_key,
-            "chunk_type": "content",
             "similar_bookmarks_count": len(similar_bookmarks)
+        }
+
+        source_data = {
+            "source_id": f"{bookmark_data.star_id}_chunk_0",
+            "source_type": "bookmark_content",
+            "title": bookmark_data.title,
+            "url": bookmark_data.url,
         }
 
         chunk_vectors = await vector_service.save_document(
             session=session,
             user_id=bookmark_data.user_id,
-            source_id=f"{bookmark_data.star_id}_chunk_{chunk_data['chunk_index']}",
-            source_type="bookmark_chunk",
-            content=chunk_data["content"],
-            title=bookmark_data.title,
-            url=bookmark_data.url,
-            keywords=bookmark_data.keywords,
-            summary=bookmark_data.summary,
-            extra_metadata=chunk_metadata
+            source_data=source_data,
+            content=fallback_content,
+            **chunk_metadata
         )
-        saved_vectors.extend(chunk_vectors)
+        
+        logger.info("✅ 메타데이터 벡터 저장 완료 - 청크 수: 1, 벡터 수: {}", len(chunk_vectors))
+        return chunk_vectors, 1
+    
+    # 일반적인 콘텐츠 청크 처리
+    logger.info("📝 콘텐츠 청크 생성 및 저장 시작...")
+    
+    # 청크로 분할 (keywords 매개변수 추가)
+    chunks = prepare_content_for_rag(
+        text=body_text, 
+        keywords=bookmark_data.keywords,
+        metadata={
+            "memo": bookmark_data.memo,
+            "summary": bookmark_data.summary
+        }
+    )
+    
+    # 청크에서 content만 추출
+    text_chunks = [chunk["content"] for chunk in chunks]
+    total_chunks = len(text_chunks)
+    all_vectors = []
+    
+    logger.info("📄 텍스트 분할 완료 - 총 청크 수: {}", total_chunks)
+    
+    # 각 청크를 개별적으로 처리 (로그는 요약만)
+    for i, chunk_text in enumerate(text_chunks):
+        chunk_metadata = {
+            "chunk_index": i,
+            "total_chunks": total_chunks,
+            "user_selected_keywords": bookmark_data.keywords,
+            "chunk_keywords": bookmark_data.keywords,
+            "user_memo": bookmark_data.memo,
+            "user_summary": bookmark_data.summary,
+            "s3_key": bookmark_data.s3_key,
+            "similar_bookmarks_count": len(similar_bookmarks)
+        }
 
-    return saved_vectors, rag_chunks
+        source_data = {
+            "source_id": f"{bookmark_data.star_id}_chunk_{i}",
+            "source_type": "bookmark_content",
+            "title": bookmark_data.title,
+            "url": bookmark_data.url,
+        }
+
+        chunk_vectors = await vector_service.save_document(
+            session=session,
+            user_id=bookmark_data.user_id,
+            source_data=source_data,
+            content=chunk_text,
+            **chunk_metadata
+        )
+        
+        all_vectors.extend(chunk_vectors)
+        
+        # 진행 상황 로그 (매 5개 청크마다)
+        if (i + 1) % 5 == 0 or i == total_chunks - 1:
+            logger.info("🔄 청크 처리 진행 중... ({}/{}) - 누적 벡터: {}", 
+                       i + 1, total_chunks, len(all_vectors))
+
+    logger.info("✅ 모든 콘텐츠 청크 저장 완료 - 청크 수: {}, 벡터 수: {}", 
+               total_chunks, len(all_vectors))
+    
+    return all_vectors, total_chunks
 
 
 async def _save_memo_if_exists(session, bookmark_data: BookmarkData,
@@ -258,11 +365,15 @@ async def _save_memo_if_exists(session, bookmark_data: BookmarkData,
         f"내용 요약: {bookmark_data.summary}"
     )
 
+    source_data = {
+        "source_id": f"{bookmark_data.star_id}_memo",
+        "source_type": "bookmark_memo"
+    }
+
     memo_vectors = await vector_service.save_document(
         session=session,
         user_id=bookmark_data.user_id,
-        source_id=f"{bookmark_data.star_id}_memo",
-        source_type="bookmark_memo",
+        source_data=source_data,
         content=memo_content,
         title=f"[메모] {bookmark_data.title}",
         url=bookmark_data.url,
@@ -292,11 +403,15 @@ async def _save_summary_if_exists(session, bookmark_data: BookmarkData,
         f"핵심 키워드: {', '.join(bookmark_data.keywords)}"
     )
 
+    source_data = {
+        "source_id": f"{bookmark_data.star_id}_summary",
+        "source_type": "bookmark_summary"
+    }
+
     summary_vectors = await vector_service.save_document(
         session=session,
         user_id=bookmark_data.user_id,
-        source_id=f"{bookmark_data.star_id}_summary",
-        source_type="bookmark_summary",
+        source_data=source_data,
         content=summary_content,
         title=f"[요약] {bookmark_data.title}",
         url=bookmark_data.url,
@@ -324,44 +439,74 @@ def _save_bookmark_logic(bookmark_data: BookmarkData) -> dict:
         dict: 처리 결과 및 상세 정보
     """
     async def _async_save_logic():
-        # 1. S3에서 HTML 다운로드 및 텍스트 추출
-        body_text = await _download_and_extract_content(bookmark_data.s3_key)
+        """비동기 로직 실행"""
+        session = None
+        try:
+            # get_async_session을 컨텍스트 매니저로 사용
+            async_session_gen = get_async_session()
+            session = await async_session_gen.__anext__()
+            
+            total_deleted = 0  # 변수 초기화
+            logger.info("📊 벡터 데이터베이스 저장 시작 - user_id: {}, star_id: {}", 
+                       bookmark_data.user_id, bookmark_data.star_id)
+            
+            # 벡터 서비스 로그 레벨을 일시적으로 조정 (WARNING으로 변경)
+            vector_logger = logging.getLogger("app.services.vector_service")
+            repo_logger = logging.getLogger("app.repositories.vector_repository")
+            original_vector_level = vector_logger.level
+            original_repo_level = repo_logger.level
+            
+            try:
+                # 로그 레벨을 WARNING으로 설정하여 INFO 로그 숨기기
+                vector_logger.setLevel(logging.WARNING)
+                repo_logger.setLevel(logging.WARNING)
+                
+                # 4-0. 기존 북마크 데이터 삭제 (업데이트 처리)
+                total_deleted = await _delete_existing_data(session, bookmark_data)
+                if total_deleted > 0:
+                    logger.info("🗑️ 기존 북마크 데이터 삭제 완료 - 벡터 수: {}", total_deleted)
+                
+                # 4-1. S3 파일 다운로드 및 텍스트 추출
+                body_text = await _download_and_extract_content(bookmark_data.s3_key, bookmark_data.url)
 
-        # 2. 유사도 계산 수행
-        similar_bookmarks = await _calculate_similarity(bookmark_data, body_text)
+                # 4-2. 유사도 계산
+                similar_bookmarks = await _calculate_similarity(bookmark_data, body_text)
 
-        # 3. 관계 데이터 메시지 발행
-        relationship_published = await _publish_relationships(bookmark_data, similar_bookmarks)
+                # 4-3. 관계 메시지 발행 (Spring Boot로 전송)
+                await _publish_relationships(bookmark_data, similar_bookmarks)
 
-        # 4. PostgreSQL 벡터 데이터베이스 저장
-        logger.info("💾 벡터 데이터베이스 저장 시작...")
+                # 4-4. 콘텐츠 청크 저장
+                saved_vectors, total_chunks = await _save_content_chunks(
+                    session, bookmark_data, body_text, similar_bookmarks
+                )
 
-        async for session in get_async_session():
-            # 4-1. 기존 데이터 삭제
-            total_deleted = await _delete_existing_data(session, bookmark_data)
+                # 4-5. 메모 저장 (있는 경우)
+                memo_vectors = await _save_memo_if_exists(
+                    session, bookmark_data, similar_bookmarks
+                )
+                saved_vectors.extend(memo_vectors)
 
-            # 4-2. 콘텐츠 청크 저장
-            saved_vectors, rag_chunks = await _save_content_chunks(
-                session, bookmark_data, body_text, similar_bookmarks
-            )
-
-            # 4-3. 메모 저장 (있는 경우)
-            memo_vectors = await _save_memo_if_exists(session, bookmark_data, similar_bookmarks)
-            saved_vectors.extend(memo_vectors)
-
-            # 4-4. 요약 저장 (있는 경우)
-            summary_vectors = await _save_summary_if_exists(
-                session, bookmark_data, similar_bookmarks, rag_chunks
-            )
-            saved_vectors.extend(summary_vectors)
+                # 4-6. 요약 저장 (있는 경우)
+                summary_vectors = await _save_summary_if_exists(
+                    session, bookmark_data, similar_bookmarks, saved_vectors
+                )
+                saved_vectors.extend(summary_vectors)
+                
+                # 트랜잭션 커밋
+                await session.commit()
+                
+            finally:
+                # 로그 레벨 원복
+                vector_logger.setLevel(original_vector_level)
+                repo_logger.setLevel(original_repo_level)
 
             logger.info("✅ 벡터 데이터베이스 저장 완료 - 벡터 수: {}", len(saved_vectors))
-
+            
             return {
                 "status": "success",
                 "inserted": len(saved_vectors),
                 "deleted": total_deleted,
-                "content_chunks": len(rag_chunks),
+                "content_chunks": total_chunks,
                 "has_memo": bool(bookmark_data.memo and bookmark_data.memo.strip()),
                 "has_summary": bool(bookmark_data.summary and bookmark_data.summary.strip()),
                 "total_keywords": len(bookmark_data.keywords),
@@ -370,12 +515,28 @@ def _save_bookmark_logic(bookmark_data: BookmarkData) -> dict:
                 "user_url": bookmark_data.url,
                 "is_update": total_deleted > 0,
                 "similar_bookmarks_found": len(similar_bookmarks),
-                "relationship_published": relationship_published,
+                "relationship_published": True,
                 "content_length": len(body_text)
             }
 
-    # 비동기 함수를 동기로 실행
-    return asyncio.run(_async_save_logic())
+        except Exception as e:
+            logger.error("❌ 비동기 로직 실행 중 오류: {}", e)
+            if session:
+                try:
+                    await session.rollback()
+                except Exception as rollback_error:
+                    logger.error("❌ 롤백 중 오류: {}", rollback_error)
+            raise
+        finally:
+            # 세션 안전하게 종료
+            if session:
+                try:
+                    await session.close()
+                except Exception as close_error:
+                    logger.error("❌ 세션 종료 중 오류: {}", close_error)
+
+    # Celery 워커 환경에서 안전한 비동기 실행
+    return run_async_safely(_async_save_logic(), timeout=300)
 
 
 @celery.task(
@@ -406,41 +567,69 @@ def save_bookmark_task(_self, bookmark_data_dict: dict) -> dict:
     Returns:
         dict: 처리 결과 및 상세 정보
     """
+    user_id = bookmark_data_dict.get("user_id", "unknown")
+    star_id = bookmark_data_dict.get("star_id", "unknown")
+    
     logger.info(
         "🚀 북마크 완전 처리 태스크 시작 - user_id: {}, star_id: {}",
-        bookmark_data_dict.get("user_id"),
-        bookmark_data_dict.get("star_id")
+        user_id, star_id
     )
 
     try:
         bookmark_data = BookmarkData(**bookmark_data_dict)
         result = _save_bookmark_logic(bookmark_data)
 
+        # result가 None인 경우 처리
+        if result is None:
+            logger.error("❌ 북마크 처리 로직에서 None 반환 - star_id: {}", bookmark_data.star_id)
+            result = {
+                "status": "error",
+                "error": "처리 결과가 None입니다."
+            }
+
         logger.info(
             "✅ 북마크 완전 처리 태스크 완료 - star_id: {}, 결과: {}",
             bookmark_data.star_id,
-            result["status"]
+            result.get("status", "unknown")
         )
         return result
 
     except (ConnectionError, TimeoutError) as e:
-        logger.error(
-            "❌ 북마크 처리 태스크 네트워크 오류 - star_id: {}, 오류: {}",
-            bookmark_data_dict.get("star_id"),
-            e
-        )
+        error_msg = f"북마크 처리 태스크 네트워크 오류 - user_id: {user_id}, star_id: {star_id}, 오류: {e}"
+        logger.error(f"❌ {error_msg}")
+        
+        # 서버 로그에도 기록 (print를 사용하여 stdout으로 출력)
+        print(f"[CELERY ERROR] {error_msg}")
+        
+        # 재시도 정보 로깅
+        if hasattr(_self, 'retry_state') and _self.retry_state:
+            retry_count = _self.retry_state.attempt_number
+            logger.error(f"🔄 재시도 {retry_count}/3 - star_id: {star_id}")
+            print(f"[CELERY RETRY] 재시도 {retry_count}/3 - star_id: {star_id}")
+        
         raise
+        
     except ValueError as e:
-        logger.error(
-            "❌ 북마크 처리 태스크 데이터 오류 - star_id: {}, 오류: {}",
-            bookmark_data_dict.get("star_id"),
-            e
-        )
+        error_msg = f"북마크 처리 태스크 데이터 오류 - user_id: {user_id}, star_id: {star_id}, 오류: {e}"
+        logger.error(f"❌ {error_msg}")
+        
+        # 서버 로그에도 기록
+        print(f"[CELERY ERROR] {error_msg}")
+        
+        # 데이터 오류는 재시도하지 않음
         raise
+        
     except Exception as e:
-        logger.error(
-            "❌ 북마크 처리 태스크 실패 - star_id: {}, 오류: {}",
-            bookmark_data_dict.get("star_id"),
-            e
-        )
+        error_msg = f"북마크 처리 태스크 실패 - user_id: {user_id}, star_id: {star_id}, 오류: {e}"
+        logger.error(f"❌ {error_msg}")
+        
+        # 서버 로그에도 기록
+        print(f"[CELERY ERROR] {error_msg}")
+        
+        # 재시도 정보 로깅
+        if hasattr(_self, 'retry_state') and _self.retry_state:
+            retry_count = _self.retry_state.attempt_number
+            logger.error(f"🔄 재시도 {retry_count}/3 - star_id: {star_id}")
+            print(f"[CELERY RETRY] 재시도 {retry_count}/3 - star_id: {star_id}")
+        
         raise

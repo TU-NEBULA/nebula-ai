@@ -31,11 +31,15 @@ async_engine = create_async_engine(
     pool_recycle=settings.DB_POOL_RECYCLE,
     # RDS 최적화 설정
     pool_pre_ping=True,  # 연결 상태 확인
+    # Celery 워커 환경에서 안전한 연결 종료를 위한 설정
+    pool_reset_on_return='commit',  # 연결 반환 시 트랜잭션 정리
     connect_args={
         "server_settings": {
             "jit": "off",  # JIT 비활성화 (RDS에서 권장)
         },
         "command_timeout": 60,
+        # asyncpg 관련 설정 - 연결 종료 시 이벤트 루프 문제 방지
+        "loop": None,  # 외부 이벤트 루프 사용하지 않음
     },
 )
 
