@@ -5,9 +5,10 @@ OpenAI API 서비스 모듈
 텍스트 분석, 임베딩 생성, 완성 생성 등의 기능을 제공합니다.
 """
 
-import os
 from typing import List, Dict, Any, Optional
 from loguru import logger
+
+from app.core.config import settings
 
 try:
     from openai import AsyncOpenAI
@@ -24,11 +25,15 @@ class OpenAIService:
         if not OPENAI_AVAILABLE:
             raise ImportError("OpenAI 패키지가 필요합니다. pip install openai를 실행해주세요.")
 
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            raise ValueError("OPENAI_API_KEY 환경변수가 설정되지 않았습니다.")
-
-        self.client = AsyncOpenAI(api_key=api_key)
+        try:
+            api_key = settings.OPENAI_API_KEY
+            if not api_key:
+                raise ValueError("OPENAI_API_KEY 환경변수가 설정되지 않았습니다.")
+            
+            self.client = AsyncOpenAI(api_key=api_key)
+        except Exception as e:
+            logger.error(f"OpenAI 클라이언트 초기화 실패: {e}")
+            raise
 
     async def generate_completion(
         self,

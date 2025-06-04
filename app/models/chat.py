@@ -273,7 +273,7 @@ class UserProfile(UserProfileBase, table=True):
 
     # 인덱스 정의
     __table_args__ = (
-        Index("idx_user_profiles_preferences_gin", "preferences", postgresql_using="gin"),
+        Index("idx_chat_user_profiles_preferences_gin", "preferences", postgresql_using="gin"),
     )
 
 class UserProfileCreate(UserProfileBase):

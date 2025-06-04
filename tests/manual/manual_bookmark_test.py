@@ -13,11 +13,12 @@ import os
 from pathlib import Path
 
 # 프로젝트 루트를 Python path에 추가
-project_root = Path(__file__).parent.parent
+project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from app.core.rabbit import get_rabbit_connection
 import aio_pika
+from app.core.config import settings
 
 
 async def send_bookmark_message(message_data: dict):
@@ -29,7 +30,7 @@ async def send_bookmark_message(message_data: dict):
         channel = await connection.channel()
         
         # 큐 선언
-        queue_name = os.getenv('BOOKMARK_SAVE_QUEUE', 'bookmark_save')
+        queue_name = settings.BOOKMARK_SAVE_QUEUE
         await channel.declare_queue(queue_name, durable=True)
         
         # 메시지 전송
@@ -237,4 +238,4 @@ if __name__ == "__main__":
     except ImportError:
         print("⚠️ python-dotenv가 없습니다. 환경변수를 수동으로 설정해주세요.")
     
-    asyncio.run(main()) 
+    asyncio.run(main())

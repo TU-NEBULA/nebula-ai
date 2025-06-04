@@ -74,12 +74,45 @@ async def init_db() -> None:
     """
     try:
         async with async_engine.begin() as conn:
-            # 모든 SQLModel 테이블 생성
-            await conn.run_sync(SQLModel.metadata.create_all)
-        logger.info("✅ 데이터베이스 테이블 초기화 완료")
+            # 각 테이블을 개별적으로 생성하여 중복 오류 방지
+            from sqlmodel import SQLModel
+            from sqlalchemy import DDL
+            from sqlalchemy.exc import ProgrammingError
+            
+            # 모든 테이블 생성 시도
+            try:
+                await conn.run_sync(SQLModel.metadata.create_all)
+                logger.info("✅ 데이터베이스 테이블 초기화 완료")
+            except ProgrammingError as pe:
+                # 인덱스나 테이블이 이미 존재하는 경우 처리
+                if "already exists" in str(pe):
+                    logger.warning(f"⚠️ 일부 데이터베이스 객체가 이미 존재함: {pe}")
+                    # 테이블만 생성하고 인덱스는 별도 처리
+                    try:
+                        # 테이블만 생성 (인덱스 제외)
+                        await conn.run_sync(_create_tables_only)
+                        logger.info("✅ 데이터베이스 테이블 생성 완료 (인덱스 제외)")
+                    except Exception as table_error:
+                        logger.warning(f"⚠️ 테이블 생성 중 일부 오류 (무시 가능): {table_error}")
+                else:
+                    raise pe
+                    
     except SQLAlchemyError as e:
         logger.error(f"❌ 데이터베이스 테이블 초기화 실패: {e}")
         raise
+
+def _create_tables_only(bind):
+    """테이블만 생성하고 인덱스는 제외"""
+    from sqlmodel import SQLModel
+    from sqlalchemy.schema import CreateTable
+    
+    for table in SQLModel.metadata.tables.values():
+        try:
+            bind.execute(CreateTable(table, if_not_exists=True))
+        except Exception as e:
+            # 이미 존재하는 테이블은 무시
+            if "already exists" not in str(e):
+                raise
 
 # 연결 테스트
 async def test_connection() -> bool:

@@ -155,17 +155,17 @@ async def check_database_messages():
     print("\n🔍 데이터베이스 메시지 확인")
     print("-" * 60)
     
-    # PostgreSQL 연결 정보는 환경변수에서 가져옴
-    import os
-    from dotenv import load_dotenv
-    load_dotenv()
+    # PostgreSQL 연결 정보는 settings에서 가져옴
+    import sys
+    sys.path.append('..')
+    from app.core.config import settings
     
     try:
         import asyncpg
         
         db_url = (
-            f"postgresql://{os.getenv('POSTGRES_USER')}:{os.getenv('POSTGRES_PASSWORD')}"
-            f"@{os.getenv('POSTGRES_HOST')}:{os.getenv('POSTGRES_PORT')}/{os.getenv('POSTGRES_DB')}"
+            f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
+            f"@{settings.POSTGRES_HOST}:{settings.POSTGRES_PORT}/{settings.POSTGRES_DB}"
         )
         
         conn = await asyncpg.connect(db_url)
@@ -216,4 +216,4 @@ if __name__ == "__main__":
     asyncio.run(test_duplicate_prevention())
     asyncio.run(check_database_messages())
     
-    print("\n✅ 테스트 완료") 
+    print("\n✅ 테스트 완료")

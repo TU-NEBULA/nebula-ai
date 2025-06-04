@@ -7,7 +7,6 @@ Nebula AI 애플리케이션의 메인 진입점 모듈
 """
 
 import asyncio
-import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -16,6 +15,7 @@ from loguru import logger
 
 from app.routers import init_routers
 from app.core.database import init_db
+from app.core.config import settings
 from app.services.message_handlers import RabbitMQConsumer
 
 # 로그 설정
@@ -38,16 +38,22 @@ async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
     await init_db()
 
     # RabbitMQ 컨슈머 설정 (환경변수에 RabbitMQ URL이 있는 경우에만)
-    rabbitmq_url = os.getenv("RABBITMQ_URL")
-    if rabbitmq_url:
-        global RABBITMQ_CONSUMER  # pylint: disable=global-statement
-        RABBITMQ_CONSUMER = RabbitMQConsumer(rabbitmq_url)
+    try:
+        rabbitmq_url = settings.RABBITMQ_URL
+        # 필수 환경변수가 설정되어 있는지 확인
+        if (hasattr(settings, 'RABBITMQ_HOST') and settings.RABBITMQ_HOST and 
+            hasattr(settings, 'RABBITMQ_USERNAME') and settings.RABBITMQ_USERNAME):
+            
+            global RABBITMQ_CONSUMER  # pylint: disable=global-statement
+            RABBITMQ_CONSUMER = RabbitMQConsumer(rabbitmq_url)
 
-        # 백그라운드에서 컨슈머 실행
-        asyncio.create_task(RABBITMQ_CONSUMER.setup_queues_and_consumers())
-        print("RabbitMQ 컨슈머 설정 완료")
-    else:
-        print("RabbitMQ URL이 설정되지 않음 - MQ 기능 비활성화")
+            # 백그라운드에서 컨슈머 실행
+            asyncio.create_task(RABBITMQ_CONSUMER.setup_queues_and_consumers())
+            print("RabbitMQ 컨슈머 설정 완료")
+        else:
+            print("RabbitMQ URL이 설정되지 않음 - MQ 기능 비활성화")
+    except Exception as e:
+        print(f"RabbitMQ 설정 오류 - MQ 기능 비활성화: {e}")
 
     yield
 
