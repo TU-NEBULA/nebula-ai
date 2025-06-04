@@ -5,6 +5,7 @@ User Profile Processing Service
 """
 
 import asyncio
+import re
 import time
 from datetime import datetime
 from typing import Dict, List, Any, Optional
@@ -1023,3 +1024,307 @@ class UserProfileProcessor:
 
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.warning(f"⚠️ Redis 캐시 정리 실패 - User ID: {user_id}, 오류: {e}")
+
+    async def handle_chat_completion_event(
+        self,
+        user_id: int,
+        chat_data: Dict[str, Any],
+        use_redis_cache: bool = True
+    ) -> Dict[str, Any]:
+        """
+        채팅 세션 완료 이벤트를 처리하여 사용자 프로필을 실시간으로 업데이트합니다.
+
+        Args:
+            user_id: 사용자 ID
+            chat_data: 채팅 세션 데이터 (messages, session_id, duration, topic 등)
+            use_redis_cache: Redis 캐시 사용 여부
+
+        Returns:
+            업데이트 결과 메타데이터
+        """
+        logger.info(f"💬 채팅 완료 이벤트 처리 시작 - User ID: {user_id}")
+
+        try:
+            # 1. 채팅 데이터에서 활동 정보 추출
+            chat_content = self._extract_chat_content(chat_data)
+
+            # 2. ActivityData 형식으로 변환
+            activity_data = ActivityData(
+                activity_type=ActivityType.CHAT,
+                content=chat_content,
+                created_at=datetime.now(),
+                metadata={
+                    "session_id": chat_data.get("session_id", ""),
+                    "duration": chat_data.get("duration", 0),
+                    "message_count": chat_data.get("message_count", 0),
+                    "topic": chat_data.get("topic", "general"),
+                    "language": chat_data.get("language", "korean"),
+                    "source": "chat_completion_event"
+                },
+                weight=self._calculate_chat_weight(chat_data)  # 채팅 길이와 내용에 따른 가중치
+            )
+
+            # 3. Redis에 임시 저장 (원자적 연산을 위해)
+            if use_redis_cache:
+                await self._cache_chat_update(user_id, activity_data)
+
+            # 4. 증분 벡터 업데이트 실행
+            result = await self.update_vector_incrementally(
+                user_id=user_id,
+                new_activities=[{
+                    "activity_type": "chat",
+                    "content": chat_content,
+                    "timestamp": datetime.now(),
+                    "metadata": activity_data.metadata,
+                    "weight": activity_data.weight
+                }]
+            )
+
+            # 5. Redis 캐시 정리
+            if use_redis_cache:
+                await self._cleanup_chat_cache(user_id)
+
+            # 업데이트 결과가 오류인지 확인
+            if "error" in result:
+                logger.error(f"❌ 채팅 완료 이벤트 - 벡터 업데이트 실패 - User ID: {user_id}")
+                return {
+                    **result,
+                    "event_type": "chat_completion",
+                    "user_id": user_id,
+                    "session_id": chat_data.get("session_id", ""),
+                    "timestamp": datetime.now()
+                }
+
+            logger.info(f"✅ 채팅 완료 이벤트 처리 완료 - User ID: {user_id}")
+
+            return {
+                **result,
+                "event_type": "chat_completion",
+                "session_id": chat_data.get("session_id", ""),
+                "message_count": chat_data.get("message_count", 0),
+                "update_timestamp": datetime.now()
+            }
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error(f"❌ 채팅 완료 이벤트 처리 실패 - User ID: {user_id}, 오류: {e}")
+            return {
+                "error": str(e),
+                "event_type": "chat_completion",
+                "user_id": user_id,
+                "timestamp": datetime.now()
+            }
+
+    def _extract_chat_content(self, chat_data: Dict[str, Any]) -> str:
+        """
+        채팅 세션 데이터에서 분석 가능한 콘텐츠를 추출합니다.
+
+        Args:
+            chat_data: 채팅 세션 데이터
+
+        Returns:
+            분석용 콘텐츠 문자열
+        """
+        content_parts = []
+
+        # 기본 세션 정보 추가
+        content_parts.extend(self._extract_chat_session_info(chat_data))
+
+        # 메시지 내용 추가
+        if message_content := self._extract_chat_messages(chat_data):
+            content_parts.append(message_content)
+
+        # 요약 및 키워드 추가
+        content_parts.extend(self._extract_chat_metadata(chat_data))
+
+        return " | ".join(content_parts) if content_parts else "Empty chat session"
+
+    def _extract_chat_session_info(self, chat_data: Dict[str, Any]) -> List[str]:
+        """채팅 세션 기본 정보를 추출합니다."""
+        info_parts = []
+
+        if session_id := chat_data.get("session_id"):
+            info_parts.append(f"Session: {session_id}")
+
+        if topic := chat_data.get("topic"):
+            info_parts.append(f"Topic: {topic}")
+
+        if language := chat_data.get("language"):
+            info_parts.append(f"Language: {language}")
+
+        if message_count := chat_data.get("message_count"):
+            info_parts.append(f"Messages: {message_count}")
+
+        if duration := chat_data.get("duration"):
+            info_parts.append(f"Duration: {duration}s")
+
+        return info_parts
+
+    def _extract_chat_messages(self, chat_data: Dict[str, Any]) -> Optional[str]:
+        """채팅 메시지 내용을 추출하고 정리합니다."""
+        messages = chat_data.get("messages")
+        if not messages:
+            return None
+
+        user_messages = []
+        for message in messages:
+            if message.get("role") == "user":
+                content = message.get("content", "")
+                if content:
+                    cleaned_content = self._clean_chat_content(content)
+                    if cleaned_content:
+                        user_messages.append(cleaned_content)
+
+        if not user_messages:
+            return None
+
+        # 모든 사용자 메시지를 하나로 합치되 너무 길면 요약
+        combined_messages = " | ".join(user_messages)
+        if len(combined_messages) > 1000:
+            combined_messages = combined_messages[:1000] + "..."
+
+        return f"User Messages: {combined_messages}"
+
+    def _extract_chat_metadata(self, chat_data: Dict[str, Any]) -> List[str]:
+        """채팅 메타데이터(요약, 키워드)를 추출합니다."""
+        metadata_parts = []
+
+        if summary := chat_data.get("summary"):
+            metadata_parts.append(f"Summary: {summary}")
+
+        if keywords := chat_data.get("keywords"):
+            if isinstance(keywords, list):
+                metadata_parts.append(f"Keywords: {', '.join(keywords)}")
+            else:
+                metadata_parts.append(f"Keywords: {keywords}")
+
+        return metadata_parts
+
+    def _clean_chat_content(self, content: str) -> str:
+        """
+        채팅 내용에서 개인정보를 제거하고 정리합니다.
+
+        Args:
+            content: 원본 채팅 내용
+
+        Returns:
+            정리된 내용
+        """
+        # 기본 정리
+        cleaned = content.strip()
+
+        # 개인정보 패턴 제거
+        cleaned = self._remove_personal_info_patterns(cleaned)
+
+        # 너무 짧은 내용은 제외
+        if len(cleaned) < 3:
+            return ""
+
+        return cleaned
+
+    def _remove_personal_info_patterns(self, text: str) -> str:
+        """개인정보 패턴을 제거합니다."""
+        # 이메일 패턴
+        text = re.sub(r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', '[EMAIL]', text)
+
+        # 전화번호 패턴
+        text = re.sub(r'\b\d{2,3}-\d{3,4}-\d{4}\b', '[PHONE]', text)
+        text = re.sub(r'\b010-\d{4}-\d{4}\b', '[PHONE]', text)
+
+        # 숫자 시퀀스 (카드번호, 계좌번호 등으로 추정되는)
+        text = re.sub(r'\b\d{4}-\d{4}-\d{4}-\d{4}\b', '[CARD]', text)
+        text = re.sub(r'\b\d{10,20}\b', '[NUMBER]', text)
+
+        return text
+
+    def _calculate_chat_weight(self, chat_data: Dict[str, Any]) -> float:
+        """
+        채팅 세션의 중요도에 따른 가중치를 계산합니다.
+
+        Args:
+            chat_data: 채팅 세션 데이터
+
+        Returns:
+            가중치 (0.5 ~ 3.0)
+        """
+        base_weight = 1.0
+
+        # 메시지 수에 따른 가중치 (더 많은 메시지 = 더 높은 관심도)
+        message_count = chat_data.get("message_count", 0)
+        if message_count > 20:
+            base_weight += 0.5
+        elif message_count > 10:
+            base_weight += 0.3
+        elif message_count > 5:
+            base_weight += 0.1
+
+        # 세션 지속 시간에 따른 가중치 (더 긴 대화 = 더 높은 관심도)
+        duration = chat_data.get("duration", 0)
+        if duration > 1800:  # 30분 이상
+            base_weight += 0.5
+        elif duration > 900:  # 15분 이상
+            base_weight += 0.3
+        elif duration > 300:  # 5분 이상
+            base_weight += 0.1
+
+        # 특정 토픽에 따른 가중치
+        topic = chat_data.get("topic", "").lower()
+        if topic in ["work", "study", "education", "professional"]:
+            base_weight += 0.3
+        elif topic in ["hobby", "interest", "personal"]:
+            base_weight += 0.2
+
+        # 최소/최대 가중치 제한
+        return max(0.5, min(3.0, base_weight))
+
+    async def _cache_chat_update(self, user_id: int, activity_data: ActivityData):
+        """
+        Redis에 채팅 업데이트 정보를 임시 저장합니다.
+
+        Args:
+            user_id: 사용자 ID
+            activity_data: 활동 데이터
+        """
+        try:
+            # Redis 연결이 있는 경우에만 실행
+            if hasattr(self, 'redis_client') and self.redis_client:
+                cache_key = f"chat_update:{user_id}:{int(datetime.now().timestamp())}"
+                cache_data = {
+                    "activity_type": activity_data.activity_type.value,
+                    "content": activity_data.content,
+                    "timestamp": activity_data.created_at.isoformat(),
+                    "metadata": activity_data.metadata,
+                    "weight": activity_data.weight
+                }
+
+                # 10분 TTL로 저장 (채팅은 북마크보다 더 오래 유지)
+                await self.redis_client.setex(
+                    cache_key,
+                    600,  # 10분
+                    str(cache_data)
+                )
+
+                logger.debug(f"📝 Redis에 채팅 업데이트 캐시됨 - Key: {cache_key}")
+            else:
+                logger.debug("Redis 클라이언트가 없어 캐시를 건너뜁니다")
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning(f"⚠️ Redis 캐시 저장 실패 - User ID: {user_id}, 오류: {e}")
+
+    async def _cleanup_chat_cache(self, user_id: int):
+        """
+        처리 완료된 채팅 업데이트 캐시를 정리합니다.
+
+        Args:
+            user_id: 사용자 ID
+        """
+        try:
+            if hasattr(self, 'redis_client') and self.redis_client:
+                pattern = f"chat_update:{user_id}:*"
+                keys = await self.redis_client.keys(pattern)
+
+                if keys:
+                    await self.redis_client.delete(*keys)
+                    logger.debug(f"🧹 Redis 채팅 캐시 정리 완료 - {len(keys)}개 키 삭제")
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning(f"⚠️ Redis 채팅 캐시 정리 실패 - User ID: {user_id}, 오류: {e}")

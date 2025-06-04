@@ -245,6 +245,98 @@ class ChatEventListener:
             "message": "Task 32.2에서 구현 예정"
         }
 
+    async def handle_chat_session_completed(
+        self,
+        user_id: int,
+        chat_data: Dict[str, Any],
+        metadata: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """
+        채팅 세션 완료 이벤트를 처리합니다.
+        
+        Args:
+            user_id: 사용자 ID
+            chat_data: 채팅 세션 데이터
+            metadata: 추가 메타데이터
+
+        Returns:
+            처리 결과
+        """
+        logger.info(f"💬 채팅 세션 완료 이벤트 처리 - User ID: {user_id}")
+
+        try:
+            # 메타데이터 추가
+            if metadata:
+                chat_data.update(metadata)
+
+            # 이벤트 타임스탬프 추가
+            chat_data["event_timestamp"] = datetime.now()
+            chat_data["event_type"] = "chat_session_completed"
+
+            # 채팅 세션이 프로필 업데이트에 충분한지 확인
+            if not self._should_update_profile_for_chat(chat_data):
+                logger.debug(f"프로필 업데이트 불필요 - User ID: {user_id}")
+                return {
+                    "user_id": user_id,
+                    "event_type": "chat_session_completed",
+                    "profile_updated": False,
+                    "reason": "Chat session too short or insignificant"
+                }
+
+            # UserProfileProcessor를 통해 프로필 업데이트
+            result = await self.profile_processor.handle_chat_completion_event(
+                user_id=user_id,
+                chat_data=chat_data
+            )
+
+            # 콜백 실행 (있는 경우)
+            if "chat_session_completed" in self.event_callbacks:
+                callback_result = await self.event_callbacks["chat_session_completed"](
+                    user_id, chat_data, result
+                )
+                result["callback_result"] = callback_result
+
+            logger.info(f"✅ 채팅 세션 완료 이벤트 처리 완료 - User ID: {user_id}")
+
+            return result
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error(f"❌ 채팅 세션 완료 이벤트 처리 실패 - User ID: {user_id}, 오류: {e}")
+            return {
+                "error": str(e),
+                "user_id": user_id,
+                "event_type": "chat_session_completed",
+                "timestamp": datetime.now()
+            }
+
+    def _should_update_profile_for_chat(self, chat_data: Dict[str, Any]) -> bool:
+        """
+        채팅 세션이 프로필 업데이트를 필요로 하는지 판단합니다.
+
+        Args:
+            chat_data: 채팅 세션 데이터
+
+        Returns:
+            프로필 업데이트 필요 여부
+        """
+        # 최소 메시지 수 확인
+        message_count = chat_data.get("message_count", 0)
+        if message_count < 3:  # 너무 짧은 대화는 제외
+            return False
+
+        # 최소 세션 지속 시간 확인 (30초 이상)
+        duration = chat_data.get("duration", 0)
+        if duration < 30:
+            return False
+
+        # 메시지가 있고 의미 있는 내용인지 확인
+        messages = chat_data.get("messages", [])
+        user_message_count = sum(1 for msg in messages if msg.get("role") == "user")
+        if user_message_count < 2:  # 최소 2개의 사용자 메시지 필요
+            return False
+
+        return True
+
     def register_callback(self, event_type: str, callback: Callable):
         """
         이벤트 콜백을 등록합니다.

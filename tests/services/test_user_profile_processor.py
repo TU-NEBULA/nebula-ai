@@ -303,6 +303,221 @@ class TestUserProfileProcessor:
         assert all("id" in rec for rec in result)
         assert all("score" in rec for rec in result)
 
+        # 추천 생성 메서드 호출 확인
+        processor.vector_generator.generate_profile_vector.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_handle_chat_completion_event_success(self, processor, mock_repositories):
+        """채팅 완료 이벤트 처리 성공 테스트"""
+        
+        user_id = 123
+        
+        # 기존 프로필 Mock
+        existing_profile = MagicMock()
+        existing_profile.user_id = user_id
+        existing_profile.profile_vector = [0.2, 0.4, 0.6, 0.3, 0.8]
+        existing_profile.vector_metadata = {"keywords": {"programming": 0.7}}
+        mock_repositories['user_profile_repo'].get_profile.return_value = existing_profile
+        
+        # 채팅 데이터
+        chat_data = {
+            "session_id": "chat_session_123",
+            "duration": 600,  # 10분
+            "message_count": 15,
+            "topic": "AI개발",
+            "language": "korean",
+            "messages": [
+                {"role": "user", "content": "파이썬으로 머신러닝 모델을 만들고 싶어요"},
+                {"role": "assistant", "content": "좋은 선택입니다. 먼저 scikit-learn으로 시작해보세요."},
+                {"role": "user", "content": "딥러닝도 배우고 싶은데 어떤 프레임워크가 좋을까요?"},
+                {"role": "assistant", "content": "TensorFlow나 PyTorch를 추천합니다."},
+                {"role": "user", "content": "GPU 설정은 어떻게 하나요?"}
+            ],
+            "summary": "머신러닝과 딥러닝 학습에 대한 상담",
+            "keywords": ["파이썬", "머신러닝", "딥러닝", "GPU"]
+        }
+        
+        # Vector Generator 증분 업데이트 Mock
+        processor.vector_generator.update_vector_incrementally = AsyncMock(return_value=(
+            [0.25, 0.45, 0.65, 0.35, 0.85],  # 업데이트된 벡터
+            {
+                "vector_strength": 0.88,
+                "updated_keywords": {"파이썬": 0.9, "머신러닝": 0.85, "딥러닝": 0.8},
+                "incremental_data_points": 1
+            }
+        ))
+        
+        # Redis 클라이언트 Mock
+        mock_redis = AsyncMock()
+        processor.redis_client = mock_redis
+        
+        # 채팅 완료 이벤트 처리 실행
+        result = await processor.handle_chat_completion_event(user_id, chat_data)
+        
+        # 결과 검증
+        assert result is not None
+        assert result["event_type"] == "chat_completion"
+        assert result["session_id"] == "chat_session_123"
+        assert result["message_count"] == 15
+        assert result["vector_strength"] == 0.88
+        assert "update_timestamp" in result
+        
+        # 메서드 호출 확인
+        processor.vector_generator.update_vector_incrementally.assert_called_once()
+        mock_repositories['user_profile_repo'].update_profile.assert_called_once()
+        
+        # Redis 캐시 사용 확인
+        mock_redis.setex.assert_called_once()
+        mock_redis.keys.assert_called_once()
+    
+    @pytest.mark.asyncio
+    async def test_handle_chat_completion_event_without_redis(self, processor, mock_repositories):
+        """Redis 없이 채팅 완료 이벤트 처리 테스트"""
+        
+        user_id = 456
+        
+        # 기존 프로필 Mock
+        existing_profile = MagicMock()
+        existing_profile.user_id = user_id
+        existing_profile.profile_vector = [0.1, 0.3, 0.5, 0.7, 0.9]
+        mock_repositories['user_profile_repo'].get_profile.return_value = existing_profile
+        
+        # 간단한 채팅 데이터
+        chat_data = {
+            "session_id": "simple_chat",
+            "duration": 300,
+            "message_count": 8,
+            "topic": "general",
+            "messages": [
+                {"role": "user", "content": "안녕하세요"},
+                {"role": "assistant", "content": "안녕하세요! 무엇을 도와드릴까요?"},
+                {"role": "user", "content": "오늘 날씨가 좋네요"}
+            ]
+        }
+        
+        # Redis 클라이언트 없음
+        processor.redis_client = None
+        
+        # Vector Generator Mock
+        processor.vector_generator.update_vector_incrementally = AsyncMock(return_value=(
+            [0.15, 0.35, 0.55, 0.75, 0.95],
+            {"vector_strength": 0.75, "incremental_data_points": 1}
+        ))
+        
+        # 채팅 완료 이벤트 처리 실행
+        result = await processor.handle_chat_completion_event(
+            user_id, chat_data, use_redis_cache=False
+        )
+        
+        # 결과 검증
+        assert result is not None
+        assert result["event_type"] == "chat_completion"
+        assert result["session_id"] == "simple_chat"
+        assert result["vector_strength"] == 0.75
+        
+        # Redis 관련 작업이 실행되지 않았는지 확인
+        processor.vector_generator.update_vector_incrementally.assert_called_once()
+    
+    @pytest.mark.asyncio
+    async def test_extract_chat_content_comprehensive(self, processor):
+        """채팅 내용 추출 테스트"""
+        
+        chat_data = {
+            "session_id": "test_session_001",
+            "topic": "웹개발",
+            "language": "korean",
+            "message_count": 12,
+            "duration": 1200,  # 20분
+            "messages": [
+                {"role": "user", "content": "React와 Vue.js 중 어떤 것을 배우는 게 좋을까요?"},
+                {"role": "assistant", "content": "둘 다 좋은 프레임워크입니다."},
+                {"role": "user", "content": "제 이메일은 test@example.com이고 전화번호는 010-1234-5678입니다"},  # 개인정보 포함
+                {"role": "user", "content": "TypeScript도 함께 배워야 하나요?"}
+            ],
+            "summary": "프론트엔드 개발 프레임워크 선택에 대한 상담",
+            "keywords": ["React", "Vue.js", "TypeScript", "프론트엔드"]
+        }
+        
+        # 내용 추출 실행
+        content = processor._extract_chat_content(chat_data)
+        
+        # 결과 검증
+        assert "Session: test_session_001" in content
+        assert "Topic: 웹개발" in content
+        assert "Language: korean" in content
+        assert "Messages: 12" in content
+        assert "Duration: 1200s" in content
+        assert "React와 Vue.js" in content
+        assert "TypeScript도 함께" in content
+        assert "Summary: 프론트엔드 개발" in content
+        assert "Keywords: React, Vue.js, TypeScript, 프론트엔드" in content
+        
+        # 개인정보가 마스킹되었는지 확인
+        assert "[EMAIL]" in content
+        assert "[PHONE]" in content
+        assert "test@example.com" not in content
+        assert "010-1234-5678" not in content
+    
+    @pytest.mark.asyncio
+    async def test_calculate_chat_weight(self, processor):
+        """채팅 가중치 계산 테스트"""
+        
+        # 긴 대화, 많은 메시지, 전문적 토픽
+        high_importance_chat = {
+            "message_count": 25,
+            "duration": 2100,  # 35분
+            "topic": "work"
+        }
+        weight_high = processor._calculate_chat_weight(high_importance_chat)
+        assert weight_high > 2.0  # 높은 가중치
+        
+        # 중간 대화
+        medium_importance_chat = {
+            "message_count": 12,
+            "duration": 600,  # 10분
+            "topic": "hobby"
+        }
+        weight_medium = processor._calculate_chat_weight(medium_importance_chat)
+        assert 1.0 <= weight_medium <= 2.0  # 중간 가중치
+        
+        # 짧은 대화
+        low_importance_chat = {
+            "message_count": 3,
+            "duration": 120,  # 2분
+            "topic": "general"
+        }
+        weight_low = processor._calculate_chat_weight(low_importance_chat)
+        assert weight_low >= 0.5  # 최소 가중치
+        
+        # 가중치 순서 확인
+        assert weight_high > weight_medium > weight_low
+    
+    @pytest.mark.asyncio
+    async def test_handle_chat_completion_event_error_handling(self, processor, mock_repositories):
+        """채팅 완료 이벤트 처리 오류 처리 테스트"""
+        
+        user_id = 999
+        
+        # 프로필 조회 실패 Mock
+        mock_repositories['user_profile_repo'].get_profile.side_effect = Exception("Database error")
+        
+        chat_data = {
+            "session_id": "error_test",
+            "duration": 300,
+            "message_count": 5,
+            "messages": [{"role": "user", "content": "테스트"}]
+        }
+        
+        # 오류 상황에서 처리 실행
+        result = await processor.handle_chat_completion_event(user_id, chat_data)
+        
+        # 오류 결과 검증
+        assert result is not None
+        assert "error" in result
+        assert result["event_type"] == "chat_completion"
+        assert result["user_id"] == user_id
+        assert "timestamp" in result
+
 
 class TestUserProfileProcessorAdvanced:
     """UserProfileProcessor 고급 기능 테스트"""
@@ -703,4 +918,4 @@ class TestUserProfileProcessorPerformance:
         
         # 평균 처리 시간 확인
         avg_time_per_user = total_time / len(user_ids)
-        assert avg_time_per_user < 0.5  # 사용자당 0.5초 이내 
+        assert avg_time_per_user < 0.5  # 사용자당 0.5초 이내
