@@ -101,6 +101,75 @@ class VectorService:
         logger.info(f"🎉 문서 저장 완료 - user_id: {user_id}, source_id: {source_id}")
         return saved_vectors
 
+    async def save_document_chunk(
+        self,
+        session: AsyncSession,
+        user_id: int,
+        source_data: Dict[str, Any],
+        content: str,
+        chunk_index: int = 0,
+        **kwargs
+    ) -> List[DocumentVector]:
+        """
+        이미 분할된 단일 청크를 임베딩하여 저장합니다. (중복 분할 방지)
+
+        Args:
+            session: 데이터베이스 세션
+            user_id: 사용자 ID
+            source_data: 소스 정보 (source_id, source_type 포함)
+            content: 청크 내용 (이미 분할된 텍스트)
+            chunk_index: 청크 인덱스
+            **kwargs: 추가 옵션들
+                title: 문서 제목
+                url: 원본 URL
+                keywords: 키워드 목록
+                summary: 문서 요약
+                extra_metadata: 추가 메타데이터
+
+        Returns:
+            저장된 DocumentVector 객체들의 리스트
+        """
+        source_id = source_data.get('source_id')
+        source_type = source_data.get('source_type')
+        title = kwargs.get('title')
+        url = kwargs.get('url')
+        keywords = kwargs.get('keywords')
+        summary = kwargs.get('summary')
+        extra_metadata = kwargs.get('extra_metadata')
+
+        logger.info(f"📝 청크 처리 시작 - user_id: {user_id}, source_id: {source_id}, chunk_index: {chunk_index}")
+
+        if not content or not content.strip():
+            logger.warning("빈 청크 내용입니다")
+            return []
+
+        # 1. 단일 청크에 대해 임베딩 생성
+        logger.info("🧠 임베딩 생성 중...")
+        embedding = await self.embeddings.aembed_query(content)  # 단일 텍스트용 메서드 사용
+        logger.info(f"✅ 임베딩 생성 완료 - 차원: {len(embedding)}")
+
+        # 2. 단일 벡터로 저장 (기존 삭제 없이)
+        saved_vectors = await VectorRepository.save_single_document_vector(
+            session=session,
+            user_id=user_id,
+            source_id=source_id,
+            source_type=source_type,
+            chunk_index=chunk_index,
+            content=content,
+            embedding=embedding,
+            title=title,
+            url=url,
+            keywords=keywords,
+            summary=summary,
+            embedding_model=self.embeddings.model,
+            chunk_size=getattr(self.text_splitter, 'chunk_size', 1000),
+            chunk_overlap=getattr(self.text_splitter, 'chunk_overlap', 200),
+            extra_metadata=extra_metadata
+        )
+
+        logger.info(f"🎉 청크 저장 완료 - user_id: {user_id}, source_id: {source_id}, chunk_index: {chunk_index}")
+        return saved_vectors
+
     async def similarity_search(
         self,
         session: AsyncSession,

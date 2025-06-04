@@ -68,10 +68,10 @@ class VectorRepository:
         if len(chunks) != len(embeddings):
             raise ValueError("청크 수와 임베딩 수가 일치하지 않습니다")
         
-        # 기존 동일 소스 문서 삭제
-        await VectorRepository.delete_documents_by_source(
-            session, user_id, source_id, source_type
-        )
+        # 기존 동일 소스 문서 삭제 로직 제거 - 상위 레벨에서 관리
+        # await VectorRepository.delete_documents_by_source(
+        #     session, user_id, source_id, source_type
+        # )
         
         saved_vectors = []
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
@@ -104,6 +104,74 @@ class VectorRepository:
         
         logger.info(f"📚 벡터 문서 저장 완료 - user_id: {user_id}, source_id: {source_id}, 청크 수: {len(saved_vectors)}")
         return saved_vectors
+    
+    @staticmethod
+    async def save_single_document_vector(
+        session: AsyncSession,
+        user_id: int,
+        source_id: str,
+        source_type: str,
+        chunk_index: int,
+        content: str,
+        embedding: List[float],
+        title: Optional[str] = None,
+        url: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
+        summary: Optional[str] = None,
+        embedding_model: str = "text-embedding-3-small",
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
+        extra_metadata: Optional[Dict[str, Any]] = None
+    ) -> List[DocumentVector]:
+        """
+        단일 문서 벡터를 저장합니다. (기존 삭제 없이)
+        
+        Args:
+            session: 데이터베이스 세션
+            user_id: 사용자 ID
+            source_id: 원본 문서 ID
+            source_type: 소스 타입
+            chunk_index: 청크 인덱스
+            content: 청크 내용
+            embedding: 임베딩 벡터
+            title: 문서 제목
+            url: 원본 URL
+            keywords: 키워드 목록
+            summary: 문서 요약
+            embedding_model: 사용된 임베딩 모델
+            chunk_size: 청크 크기
+            chunk_overlap: 청크 겹침
+            extra_metadata: 추가 메타데이터
+            
+        Returns:
+            저장된 DocumentVector 객체 리스트 (단일 요소)
+        """
+        content_hash = VectorRepository._generate_content_hash(content)
+        
+        document_vector = DocumentVector(
+            user_id=user_id,
+            source_id=source_id,
+            source_type=source_type,
+            chunk_index=chunk_index,
+            content=content,
+            content_hash=content_hash,
+            embedding=embedding,
+            title=title,
+            url=url,
+            keywords=keywords,
+            summary=summary,
+            embedding_model=embedding_model,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            extra_metadata=extra_metadata
+        )
+        
+        session.add(document_vector)
+        await session.commit()
+        await session.refresh(document_vector)
+        
+        logger.info(f"📝 단일 벡터 저장 완료 - user_id: {user_id}, source_id: {source_id}, chunk_index: {chunk_index}")
+        return [document_vector]
     
     @staticmethod
     async def similarity_search(

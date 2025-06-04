@@ -167,78 +167,26 @@ async def _delete_existing_data(session, bookmark_data: BookmarkData) -> int:
     """기존 북마크 데이터를 삭제합니다."""
     total_deleted = 0
 
-    # 기존 콘텐츠 청크들 삭제
-    for source_type in ["bookmark", "bookmark_chunk"]:
-        deleted_count = await vector_service.delete_document(
-            session=session,
-            user_id=bookmark_data.user_id,
-            source_id=bookmark_data.star_id,
-            source_type=source_type
-        )
-        total_deleted += deleted_count
-
-    # 특별한 형태의 source_id들도 삭제
-    try:
-        patterns = [
-            f"{bookmark_data.star_id}_chunk_",
-            f"{bookmark_data.star_id}_memo",
-            f"{bookmark_data.star_id}_summary"
-        ]
-
-        for pattern in patterns:
-            try:
-                pattern_deleted = await vector_service.delete_documents_by_pattern(
-                    session=session,
-                    user_id=bookmark_data.user_id,
-                    source_id_pattern=pattern
-                )
-                total_deleted += pattern_deleted
-            except AttributeError:
-                # delete_documents_by_pattern이 없는 경우 개별 삭제
-                deleted_count = await _delete_pattern_individually(
-                    session, bookmark_data, pattern
-                )
-                total_deleted += deleted_count
-
-    except (ConnectionError, TimeoutError) as e:
-        logger.warning("기존 데이터 삭제 중 네트워크 오류 (계속 진행): {}", e)
-    except ValueError as e:
-        logger.warning("기존 데이터 삭제 중 데이터 오류 (계속 진행): {}", e)
-
-    return total_deleted
-
-
-async def _delete_pattern_individually(session, bookmark_data: BookmarkData, pattern: str) -> int:
-    """패턴별로 개별 삭제를 수행합니다."""
-    total_deleted = 0
-
-    if "_chunk_" in pattern:
-        for i in range(20):
-            chunk_deleted = await vector_service.delete_document(
+    # 모든 북마크 관련 데이터를 star_id로 한 번에 삭제
+    source_types = ["bookmark_content", "bookmark_memo", "bookmark_summary"]
+    
+    for source_type in source_types:
+        try:
+            deleted_count = await vector_service.delete_document(
                 session=session,
                 user_id=bookmark_data.user_id,
-                source_id=f"{bookmark_data.star_id}_chunk_{i}",
-                source_type="bookmark_chunk"
+                source_id=bookmark_data.star_id,  # star_id로 통일
+                source_type=source_type
             )
-            total_deleted += chunk_deleted
-            if chunk_deleted == 0:
-                break
-    elif "_memo" in pattern:
-        deleted_count = await vector_service.delete_document(
-            session=session,
-            user_id=bookmark_data.user_id,
-            source_id=f"{bookmark_data.star_id}_memo",
-            source_type="bookmark_memo"
-        )
-        total_deleted += deleted_count
-    elif "_summary" in pattern:
-        deleted_count = await vector_service.delete_document(
-            session=session,
-            user_id=bookmark_data.user_id,
-            source_id=f"{bookmark_data.star_id}_summary",
-            source_type="bookmark_summary"
-        )
-        total_deleted += deleted_count
+            total_deleted += deleted_count
+            
+            if deleted_count > 0:
+                logger.info("🗑️ 기존 데이터 삭제 - source_type: {}, 삭제 수: {}", 
+                           source_type, deleted_count)
+                           
+        except Exception as e:
+            logger.warning("기존 데이터 삭제 중 오류 (계속 진행): source_type: {}, 오류: {}", 
+                          source_type, e)
 
     return total_deleted
 
@@ -267,18 +215,21 @@ async def _save_content_chunks(session, bookmark_data: BookmarkData, body_text: 
         }
 
         source_data = {
-            "source_id": f"{bookmark_data.star_id}_chunk_0",
+            "source_id": bookmark_data.star_id,  # 복잡한 패턴 대신 star_id 직접 사용
             "source_type": "bookmark_content",
-            "title": bookmark_data.title,
-            "url": bookmark_data.url,
         }
 
-        chunk_vectors = await vector_service.save_document(
+        chunk_vectors = await vector_service.save_document_chunk(
             session=session,
             user_id=bookmark_data.user_id,
             source_data=source_data,
             content=fallback_content,
-            **chunk_metadata
+            chunk_index=0,  # fallback은 단일 청크
+            title=bookmark_data.title,
+            url=bookmark_data.url,
+            keywords=bookmark_data.keywords,
+            summary=bookmark_data.summary,
+            extra_metadata=chunk_metadata
         )
         
         logger.info("✅ 메타데이터 벡터 저장 완료 - 청크 수: 1, 벡터 수: {}", len(chunk_vectors))
@@ -318,18 +269,21 @@ async def _save_content_chunks(session, bookmark_data: BookmarkData, body_text: 
         }
 
         source_data = {
-            "source_id": f"{bookmark_data.star_id}_chunk_{i}",
+            "source_id": bookmark_data.star_id,  # 복잡한 패턴 대신 star_id 직접 사용
             "source_type": "bookmark_content",
-            "title": bookmark_data.title,
-            "url": bookmark_data.url,
         }
 
-        chunk_vectors = await vector_service.save_document(
+        chunk_vectors = await vector_service.save_document_chunk(
             session=session,
             user_id=bookmark_data.user_id,
             source_data=source_data,
             content=chunk_text,
-            **chunk_metadata
+            chunk_index=i,
+            title=bookmark_data.title,
+            url=bookmark_data.url,
+            keywords=bookmark_data.keywords,
+            summary=bookmark_data.summary,
+            extra_metadata=chunk_metadata
         )
         
         all_vectors.extend(chunk_vectors)
@@ -366,15 +320,16 @@ async def _save_memo_if_exists(session, bookmark_data: BookmarkData,
     )
 
     source_data = {
-        "source_id": f"{bookmark_data.star_id}_memo",
+        "source_id": bookmark_data.star_id,  # star_id로 통일
         "source_type": "bookmark_memo"
     }
 
-    memo_vectors = await vector_service.save_document(
+    memo_vectors = await vector_service.save_document_chunk(
         session=session,
         user_id=bookmark_data.user_id,
         source_data=source_data,
         content=memo_content,
+        chunk_index=0,  # 메모는 단일 청크
         title=f"[메모] {bookmark_data.title}",
         url=bookmark_data.url,
         keywords=bookmark_data.keywords,
@@ -404,15 +359,16 @@ async def _save_summary_if_exists(session, bookmark_data: BookmarkData,
     )
 
     source_data = {
-        "source_id": f"{bookmark_data.star_id}_summary",
+        "source_id": bookmark_data.star_id,  # star_id로 통일
         "source_type": "bookmark_summary"
     }
 
-    summary_vectors = await vector_service.save_document(
+    summary_vectors = await vector_service.save_document_chunk(
         session=session,
         user_id=bookmark_data.user_id,
         source_data=source_data,
         content=summary_content,
+        chunk_index=0,  # 요약은 단일 청크
         title=f"[요약] {bookmark_data.title}",
         url=bookmark_data.url,
         keywords=bookmark_data.keywords,
