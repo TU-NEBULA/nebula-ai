@@ -48,7 +48,7 @@ async def test_crud_operations():
             # 1. CREATE - 채팅 세션 생성
             logger.info("📝 채팅 세션 생성 테스트")
             test_session = ChatSession(
-                user_id="test_user_123",
+                user_id=123,
                 title="테스트 세션",
                 session_type="test",
                 primary_topic={"main": "테스트 주제"},
@@ -67,14 +67,14 @@ async def test_crud_operations():
             test_messages = [
                 ChatMessage(
                     session_id=session_id,
-                    user_id="test_user_123",
+                    user_id=123,
                     role="user",
                     content="안녕하세요, 테스트 메시지입니다.",
                     response_time_ms=100
                 ),
                 ChatMessage(
                     session_id=session_id,
-                    user_id="test_user_123",
+                    user_id=123,
                     role="assistant",
                     content="안녕하세요! 도움이 필요하시면 말씀해 주세요.",
                     rag_metadata={
@@ -98,7 +98,7 @@ async def test_crud_operations():
             
             # 세션 조회 (SQLModel 스타일)
             from sqlmodel import select
-            stmt = select(ChatSession).where(ChatSession.user_id == "test_user_123")
+            stmt = select(ChatSession).where(ChatSession.user_id == 123)
             result = await session.execute(stmt)
             sessions = result.scalars().all()
             logger.info(f"✅ 조회된 세션 수: {len(sessions)}")

@@ -7,7 +7,8 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 from loguru import logger
-from app.models.extract_data import ExtractDataModel
+from app.models.extract_data import ExtractDataRequest
+from app.external.s3_service import download_html_from_s3
 from app.core.config import settings
 from app.utils.text_processing import (
     extract_main_text,
@@ -30,26 +31,26 @@ class NebulaNLPExtractor:  # pylint: disable=too-few-public-methods
         )
         self.session.headers.update({'User-Agent': user_agent})
 
-    async def extract_and_process(self, request: ExtractDataModel) -> Dict[str, Any]:
+    async def extract_and_process(self, request: ExtractDataRequest) -> Dict[str, Any]:
         """
         데이터 추출 및 처리
 
         Args:
-            request: 추출 요청 모델
+            request: 추출 요청 모델 (url, s3_key 포함)
 
         Returns:
             처리 결과 딕셔너리
         """
-        logger.info(f"🔍 데이터 추출 처리 시작 - user_id: {request.user_id}, url: {request.url}")
+        logger.info(f"🔍 데이터 추출 처리 시작 - user_id: {request.user_id}, url: {request.url}, s3_key: {request.s3_key}")
 
         try:
-            # HTML 컨텐츠 가져오기
-            html_content = await self._fetch_html_content(request.url)
+            # S3에서 HTML 컨텐츠 가져오기
+            html_content = await self._fetch_html_from_s3(request.s3_key)
 
             # HTML 파싱
             soup = BeautifulSoup(html_content, 'html.parser')
 
-            # 이미지 추출 및 썸네일 생성
+            # 이미지 추출 및 썸네일 생성 (원본 URL 사용)
             thumbnail = self._extract_thumbnail(soup, request.url)
 
             # 텍스트 추출
@@ -62,6 +63,7 @@ class NebulaNLPExtractor:  # pylint: disable=too-few-public-methods
             result = {
                 "user_id": request.user_id,
                 "url": request.url,
+                "s3_key": request.s3_key,
                 "documents": [{
                     "content": text_content[:1000] if text_content else "",  # 첫 1000자만
                     "keywords": keywords,
@@ -71,11 +73,12 @@ class NebulaNLPExtractor:  # pylint: disable=too-few-public-methods
                 "status": "processed"
             }
 
-        except (requests.RequestException, ValueError, TypeError) as e:
+        except (requests.RequestException, ValueError, TypeError, Exception) as e:
             logger.error(f"❌ 데이터 추출 처리 중 오류 발생 - user_id: {request.user_id}, error: {str(e)}")
             result = {
                 "user_id": request.user_id,
                 "url": request.url,
+                "s3_key": request.s3_key,
                 "documents": [],
                 "status": "error",
                 "error": str(e)
@@ -84,8 +87,18 @@ class NebulaNLPExtractor:  # pylint: disable=too-few-public-methods
         logger.info(f"✅ 데이터 추출 처리 완료 - user_id: {request.user_id}")
         return result
 
+    async def _fetch_html_from_s3(self, s3_key: str) -> str:
+        """S3에서 HTML 컨텐츠 가져오기"""
+        try:
+            html_content = download_html_from_s3(s3_key)
+            logger.info(f"✅ S3에서 HTML 다운로드 성공: {s3_key}")
+            return html_content
+        except Exception as e:
+            logger.error(f"❌ S3에서 HTML 다운로드 실패: {s3_key}, error: {str(e)}")
+            raise
+
     async def _fetch_html_content(self, url: str) -> str:
-        """HTML 컨텐츠 가져오기"""
+        """HTML 컨텐츠 가져오기 (기존 URL 방식, 필요시 사용)"""
         try:
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
@@ -94,14 +107,15 @@ class NebulaNLPExtractor:  # pylint: disable=too-few-public-methods
             logger.error(f"HTML 컨텐츠 가져오기 실패: {url}, error: {str(e)}")
             raise
 
-    def _extract_thumbnail(self, soup: BeautifulSoup, base_url: str) -> str:
+    def _extract_thumbnail(self, soup: BeautifulSoup, base_url: str = None) -> str:
         """이미지 URL 추출"""
         # 우선순위에 따른 이미지 추출
         # 1. Open Graph 이미지
         og_image = soup.find('meta', attrs={'property': 'og:image'})
         if og_image and og_image.get('content'):
             img_url = og_image.get('content')
-            if not img_url.startswith('http'):
+            # base_url이 있을 때만 절대 URL 변환
+            if base_url and not img_url.startswith('http'):
                 img_url = urljoin(base_url, img_url)
             return img_url
 
@@ -110,8 +124,8 @@ class NebulaNLPExtractor:  # pylint: disable=too-few-public-methods
         if first_img:
             img_url = first_img.get('src')
             if img_url:
-                # 상대 URL을 절대 URL로 변환
-                if not img_url.startswith('http'):
+                # base_url이 있을 때만 상대 URL을 절대 URL로 변환
+                if base_url and not img_url.startswith('http'):
                     img_url = urljoin(base_url, img_url)
                 return img_url
 

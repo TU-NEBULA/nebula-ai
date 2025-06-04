@@ -23,7 +23,7 @@ from app.core.config import settings
 # 비동기 엔진 생성
 async_engine = create_async_engine(
     str(settings.ASYNC_DATABASE_URL),
-    echo=settings.DEBUG,
+    echo=False,  # SQLAlchemy 자세한 로그 비활성화 (필요시에만 True)
     # 연결 풀 설정
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,

@@ -17,6 +17,8 @@ from app.routers import init_routers
 from app.core.database import init_db
 from app.core.config import settings
 from app.services.message_handlers import RabbitMQConsumer
+from app.consumers.bookmark_save_rmq import start_bookmark_save_consumer
+from app.consumers.extract_data_rmq import start_extract_consumer
 
 # 로그 설정
 logger.add(
@@ -47,18 +49,20 @@ async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
             global RABBITMQ_CONSUMER  # pylint: disable=global-statement
             RABBITMQ_CONSUMER = RabbitMQConsumer(rabbitmq_url)
 
-            # 백그라운드에서 컨슈머 실행
+            # 백그라운드에서 모든 컨슈머들 실행
             asyncio.create_task(RABBITMQ_CONSUMER.setup_queues_and_consumers())
-            print("RabbitMQ 컨슈머 설정 완료")
+            asyncio.create_task(start_bookmark_save_consumer())
+            asyncio.create_task(start_extract_consumer())
+            logger.info("🚀 모든 RabbitMQ 컨슈머 설정 완료")
         else:
-            print("RabbitMQ URL이 설정되지 않음 - MQ 기능 비활성화")
+            logger.warning("RabbitMQ URL이 설정되지 않음 - MQ 기능 비활성화")
     except Exception as e:
-        print(f"RabbitMQ 설정 오류 - MQ 기능 비활성화: {e}")
+        logger.error(f"RabbitMQ 설정 오류 - MQ 기능 비활성화: {e}")
 
     yield
 
     # 종료 시
-    print("애플리케이션 종료")
+    logger.info("애플리케이션 종료")
 
 
 # FastAPI 애플리케이션 초기화

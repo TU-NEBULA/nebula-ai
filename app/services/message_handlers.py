@@ -352,25 +352,52 @@ class RabbitMQConsumer:  # pylint: disable=too-few-public-methods
         connection = await aio_pika.connect_robust(self.connection_url)
         channel = await connection.channel()
 
-        # 프로필 업데이트 큐
-        profile_update_queue = await channel.declare_queue(
-            "profile.update.queue",
-            durable=True,
-            arguments={"x-message-ttl": 3600000}  # 1시간 TTL
-        )
+        try:
+            # 프로필 업데이트 큐
+            profile_update_queue = await channel.declare_queue(
+                "profile.update.queue",
+                durable=True,
+                arguments={"x-message-ttl": 3600000}  # 1시간 TTL
+            )
+        except aio_pika.exceptions.ChannelPreconditionFailed:
+            # 이미 존재하는 큐 사용 (설정 충돌 시)
+            logger.warning("profile.update.queue 이미 존재함 - 기존 설정 사용")
+            profile_update_queue = await channel.declare_queue(
+                "profile.update.queue",
+                durable=True,
+                passive=True  # 기존 큐 사용
+            )
 
-        # 프로필 재생성 큐
-        profile_refresh_queue = await channel.declare_queue(
-            "profile.refresh.queue",
-            durable=True,
-            arguments={"x-message-ttl": 7200000}  # 2시간 TTL
-        )
+        try:
+            # 프로필 재생성 큐
+            profile_refresh_queue = await channel.declare_queue(
+                "profile.refresh.queue",
+                durable=True,
+                arguments={"x-message-ttl": 3600000}  # 1시간 TTL (기존과 동일)
+            )
+        except aio_pika.exceptions.ChannelPreconditionFailed:
+            # 이미 존재하는 큐 사용 (설정 충돌 시)
+            logger.warning("profile.refresh.queue 이미 존재함 - 기존 설정 사용")
+            profile_refresh_queue = await channel.declare_queue(
+                "profile.refresh.queue",
+                durable=True,
+                passive=True  # 기존 큐 사용
+            )
 
-        # 추천 갱신 큐
-        recommendation_refresh_queue = await channel.declare_queue(
-            "recommendation.refresh.queue",
-            durable=True
-        )
+        try:
+            # 추천 갱신 큐
+            recommendation_refresh_queue = await channel.declare_queue(
+                "recommendation.refresh.queue",
+                durable=True
+            )
+        except aio_pika.exceptions.ChannelPreconditionFailed:
+            # 이미 존재하는 큐 사용 (설정 충돌 시)
+            logger.warning("recommendation.refresh.queue 이미 존재함 - 기존 설정 사용")
+            recommendation_refresh_queue = await channel.declare_queue(
+                "recommendation.refresh.queue",
+                durable=True,
+                passive=True  # 기존 큐 사용
+            )
 
         # 컨슈머 등록
         await profile_update_queue.consume(self._handle_profile_update_message)
