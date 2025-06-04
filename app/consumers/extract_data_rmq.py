@@ -48,18 +48,61 @@ async def on_extract_message(ch, message: IncomingMessage):
 
         try:
             extractor = NebulaNLPExtractor()
+            
+            # 🔍 추가: 추출 과정 상세 로깅
+            logger.info(f"📋 추출 요청 상세 정보 - uid={request.user_id}")
+            logger.debug(f"  - URL: {request.url}")
+            logger.debug(f"  - S3 Key: {request.s3_key}")
+            
             result = await extractor.extract_and_process(request)
-            document_count = len(result.get('documents', []))
+            
+            # 🔍 추가: 추출 결과 상세 분석
+            logger.info(f"📊 추출 결과 분석 - uid={request.user_id}")
+            logger.debug(f"  - 전체 결과 키들: {list(result.keys()) if result else 'None'}")
+            
+            keywords = result.get('keywords', [])
+            image_url = result.get('image_url', '')
+            documents = result.get('documents', [])
+            
+            logger.info(f"  - 키워드 수: {len(keywords)}")
+            logger.info(f"  - 이미지 URL: {'있음' if image_url else '없음'}")
+            logger.info(f"  - 문서 수: {len(documents)}")
+            
+            # 🔍 추가: 키워드가 0개인 경우 경고
+            if len(keywords) == 0:
+                logger.warning(f"⚠️ 키워드 추출 실패 - uid={request.user_id}")
+                logger.debug(f"  - 추출 결과 상세: {result}")
+                
+                # HTML 내용이 있는지 확인
+                if documents:
+                    logger.debug(f"  - 첫 번째 문서 길이: {len(documents[0].get('content', '')) if documents[0] else 0}")
+                else:
+                    logger.warning(f"  - 문서가 전혀 추출되지 않음")
+            else:
+                # 키워드가 있는 경우 첫 몇 개만 로깅 (개인정보 주의)
+                logger.info(f"  - 추출된 키워드 예시: {keywords[:3]}...")
+
+            document_count = len(documents)
             logger.info(
                 f"✅ 데이터 추출 완료 - uid={request.user_id}, "
                 f"처리된 문서 수: {document_count}"
             )
 
+            # 🔧 수정: documents 구조에서 올바르게 데이터 추출
+            if documents and len(documents) > 0:
+                first_doc = documents[0]
+                response_keywords = first_doc.get('keywords', [])
+                response_image_url = first_doc.get('thumbnail', '')
+            else:
+                response_keywords = []
+                response_image_url = ''
+                logger.warning(f"⚠️ 문서가 없어 빈 응답 생성 - uid={request.user_id}")
+
             # 추출 결과를 응답 모델로 변환
             response = ExtractDataResponse(
                 id=request.user_id,
-                image_url=result.get('image_url', ''),
-                keywords=result.get('keywords', [])
+                image_url=response_image_url,
+                keywords=response_keywords
             )
 
             # Spring Boot로 응답 전송

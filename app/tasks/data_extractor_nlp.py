@@ -136,21 +136,48 @@ class NebulaNLPExtractor:  # pylint: disable=too-few-public-methods
         """텍스트 컨텐츠 추출"""
         # HTML을 문자열로 변환하여 extract_main_text 함수 사용
         html_content = str(soup)
-        return extract_main_text(html_content)
+        logger.debug(f"📄 HTML 길이: {len(html_content)}")
+        
+        text_content = extract_main_text(html_content)
+        logger.info(f"📝 추출된 텍스트 길이: {len(text_content) if text_content else 0}")
+        
+        if text_content and len(text_content) > 100:
+            logger.debug(f"📝 텍스트 샘플 (첫 200자): {text_content[:200]}...")
+        elif text_content:
+            logger.debug(f"📝 전체 텍스트: {text_content}")
+        else:
+            logger.warning("⚠️ 텍스트 추출 실패 - 빈 결과")
+            
+        return text_content
 
     async def _extract_keywords_tfidf(
         self, text: str, user_id: str, max_keywords: int = 3
     ) -> List[str]:
         """TF-IDF를 사용한 키워드 추출"""
+        logger.info(f"🔍 키워드 추출 시작 - user_id: {user_id}, 텍스트 길이: {len(text) if text else 0}")
+        
         if not text:
+            logger.warning(f"⚠️ 빈 텍스트로 인한 키워드 추출 불가 - user_id: {user_id}")
+            return []
+
+        if len(text.strip()) < 10:
+            logger.warning(f"⚠️ 텍스트가 너무 짧음 (길이: {len(text.strip())}) - user_id: {user_id}")
             return []
 
         try:
+            logger.debug(f"📝 텍스트 샘플 (첫 200자) - user_id: {user_id}: {text[:200]}...")
             keywords = await smart_keyword_extraction(text, user_id, max_keywords)
+            
+            if keywords:
+                logger.info(f"✅ 키워드 추출 성공 - user_id: {user_id}, 키워드 수: {len(keywords)}, 키워드: {keywords}")
+            else:
+                logger.warning(f"⚠️ smart_keyword_extraction에서 빈 결과 반환 - user_id: {user_id}")
+                
             return keywords
 
-        except (ValueError, TypeError) as e:
-            logger.error(f"키워드 추출 실패: {str(e)}")
+        except Exception as e:
+            logger.error(f"❌ 키워드 추출 중 예외 발생 - user_id: {user_id}, 오류: {str(e)}")
+            logger.exception(f"키워드 추출 예외 상세 - user_id: {user_id}")
             return []
 
     def _extract_meta_description(self, soup: BeautifulSoup) -> str:
