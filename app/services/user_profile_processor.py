@@ -1,18 +1,14 @@
 """
-User Profile Processor Service
+User Profile Processing Service
 
-사용자 프로필 벡터 업데이트, 유사도 계산, 추천 생성을 담당하는 통합 서비스
-- 전체 프로필 재생성
-- 증분 벡터 업데이트
-- 사용자 유사도 계산
-- 개인화 추천 생성
-- 성능 최적화
+사용자 활동 기반 프로필 벡터 생성 및 업데이트 서비스
 """
 
 import asyncio
 import time
 from datetime import datetime
-from typing import Dict, Any, List, Optional
+from typing import Dict, List, Any, Optional
+from urllib.parse import urlparse
 
 from loguru import logger
 
@@ -23,16 +19,18 @@ from app.external.openai_service import OpenAIService
 class UserProfileProcessor:
     """사용자 프로필 처리 통합 서비스"""
 
-    def __init__(self, repositories: Dict[str, Any]):
+    def __init__(self, repositories: Dict[str, Any], redis_client=None):
         """
         UserProfileProcessor 초기화
 
         Args:
             repositories: 필요한 리포지토리들의 딕셔너리
+            redis_client: Redis 클라이언트 (선택사항)
         """
         self.repositories = repositories
         self.openai_service = OpenAIService()
         self.vector_generator = VectorGenerator(self.openai_service)
+        self.redis_client = redis_client
 
         # 유사도 임계값
         self.similarity_threshold = 0.7
@@ -848,3 +846,180 @@ class UserProfileProcessor:
             "declining_interests": declining_interests,
             "preference_shift_score": preference_shift_score
         }
+
+    async def handle_bookmark_event(
+        self,
+        user_id: int,
+        bookmark_data: Dict[str, Any],
+        use_redis_cache: bool = True
+    ) -> Dict[str, Any]:
+        """
+        북마크 이벤트를 처리하여 사용자 프로필을 실시간으로 업데이트합니다.
+
+        Args:
+            user_id: 사용자 ID
+            bookmark_data: 북마크 데이터 (title, url, content, category 등)
+            use_redis_cache: Redis 캐시 사용 여부
+
+        Returns:
+            업데이트 결과 메타데이터
+        """
+        logger.info(f"🔖 북마크 이벤트 처리 시작 - User ID: {user_id}")
+
+        try:
+            # 1. 북마크 데이터에서 활동 정보 추출
+            bookmark_content = self._extract_bookmark_content(bookmark_data)
+
+            # 2. ActivityData 형식으로 변환
+            activity_data = ActivityData(
+                activity_type=ActivityType.BOOKMARK,
+                content=bookmark_content,
+                created_at=datetime.now(),
+                metadata={
+                    "url": bookmark_data.get("url", ""),
+                    "category": bookmark_data.get("category", "general"),
+                    "tags": bookmark_data.get("tags", []),
+                    "source": "bookmark_event"
+                },
+                weight=1.5  # 북마크는 높은 가중치
+            )
+
+            # 3. Redis에 임시 저장 (원자적 연산을 위해)
+            if use_redis_cache:
+                await self._cache_bookmark_update(user_id, activity_data)
+
+            # 4. 증분 벡터 업데이트 실행
+            result = await self.update_vector_incrementally(
+                user_id=user_id,
+                new_activities=[{
+                    "activity_type": "bookmark",
+                    "content": bookmark_content,
+                    "timestamp": datetime.now(),
+                    "metadata": activity_data.metadata,
+                    "weight": activity_data.weight
+                }]
+            )
+
+            # 5. Redis 캐시 정리
+            if use_redis_cache:
+                await self._cleanup_bookmark_cache(user_id)
+
+            logger.info(f"✅ 북마크 이벤트 처리 완료 - User ID: {user_id}")
+
+            return {
+                **result,
+                "event_type": "bookmark",
+                "bookmark_url": bookmark_data.get("url", ""),
+                "update_timestamp": datetime.now()
+            }
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.error(f"❌ 북마크 이벤트 처리 실패 - User ID: {user_id}, 오류: {e}")
+            return {
+                "error": str(e),
+                "event_type": "bookmark",
+                "user_id": user_id,
+                "timestamp": datetime.now()
+            }
+
+    def _extract_bookmark_content(self, bookmark_data: Dict[str, Any]) -> str:
+        """
+        북마크 데이터에서 분석 가능한 콘텐츠를 추출합니다.
+
+        Args:
+            bookmark_data: 북마크 데이터
+
+        Returns:
+            분석용 콘텐츠 문자열
+        """
+        content_parts = []
+
+        # 제목 추가
+        if title := bookmark_data.get("title"):
+            content_parts.append(f"Title: {title}")
+
+        # 설명 추가
+        if description := bookmark_data.get("description"):
+            content_parts.append(f"Description: {description}")
+
+        # 카테고리 추가
+        if category := bookmark_data.get("category"):
+            content_parts.append(f"Category: {category}")
+
+        # 태그 추가
+        if tags := bookmark_data.get("tags"):
+            if isinstance(tags, list):
+                content_parts.append(f"Tags: {', '.join(tags)}")
+            else:
+                content_parts.append(f"Tags: {tags}")
+
+        # URL 도메인 추가 (관심 영역 파악용)
+        if url := bookmark_data.get("url"):
+            try:
+                domain = urlparse(url).netloc
+                if domain:
+                    content_parts.append(f"Domain: {domain}")
+            except Exception:  # pylint: disable=broad-exception-caught
+                pass
+
+        # 콘텐츠 추가 (있는 경우)
+        if content := bookmark_data.get("content"):
+            # 너무 긴 콘텐츠는 요약
+            if len(content) > 500:
+                content = content[:500] + "..."
+            content_parts.append(f"Content: {content}")
+
+        return " | ".join(content_parts) if content_parts else "Empty bookmark"
+
+    async def _cache_bookmark_update(self, user_id: int, activity_data: ActivityData):
+        """
+        Redis에 북마크 업데이트 정보를 임시 저장합니다.
+
+        Args:
+            user_id: 사용자 ID
+            activity_data: 활동 데이터
+        """
+        try:
+            # Redis 연결이 있는 경우에만 실행
+            if hasattr(self, 'redis_client') and self.redis_client:
+                cache_key = f"bookmark_update:{user_id}:{int(datetime.now().timestamp())}"
+                cache_data = {
+                    "activity_type": activity_data.activity_type.value,
+                    "content": activity_data.content,
+                    "timestamp": activity_data.created_at.isoformat(),
+                    "metadata": activity_data.metadata,
+                    "weight": activity_data.weight
+                }
+
+                # 5분 TTL로 저장
+                await self.redis_client.setex(
+                    cache_key,
+                    300,  # 5분
+                    str(cache_data)
+                )
+
+                logger.debug(f"📝 Redis에 북마크 업데이트 캐시됨 - Key: {cache_key}")
+            else:
+                logger.debug("Redis 클라이언트가 없어 캐시를 건너뜁니다")
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning(f"⚠️ Redis 캐시 저장 실패 - User ID: {user_id}, 오류: {e}")
+
+    async def _cleanup_bookmark_cache(self, user_id: int):
+        """
+        처리 완료된 북마크 업데이트 캐시를 정리합니다.
+
+        Args:
+            user_id: 사용자 ID
+        """
+        try:
+            if hasattr(self, 'redis_client') and self.redis_client:
+                pattern = f"bookmark_update:{user_id}:*"
+                keys = await self.redis_client.keys(pattern)
+
+                if keys:
+                    await self.redis_client.delete(*keys)
+                    logger.debug(f"🧹 Redis 캐시 정리 완료 - {len(keys)}개 키 삭제")
+
+        except Exception as e:  # pylint: disable=broad-exception-caught
+            logger.warning(f"⚠️ Redis 캐시 정리 실패 - User ID: {user_id}, 오류: {e}")
