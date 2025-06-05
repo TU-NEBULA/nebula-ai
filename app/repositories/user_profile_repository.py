@@ -59,7 +59,6 @@ class UserProfileRepository:
             if hasattr(profile, key):
                 setattr(profile, key, value)
 
-        profile.last_vector_update = datetime.utcnow()
         session.add(profile)
         await session.commit()
         await session.refresh(profile)

@@ -6,6 +6,7 @@
 2. 유사도 계산 및 관계 데이터 생성
 3. 관계 메시지 발행 (Spring Boot로 전송)
 4. PostgreSQL 벡터 데이터베이스에 저장
+5. 사용자 프로필 업데이트 이벤트 트리거
 
 모든 무거운 작업을 백그라운드에서 처리하여 Consumer의 성능을 최적화합니다.
 """
@@ -15,6 +16,7 @@ from typing import List, Dict
 import asyncio
 import logging
 import concurrent.futures
+from datetime import datetime
 
 from loguru import logger
 from app.core.celery_worker import celery
@@ -25,10 +27,13 @@ from app.services.similarity_service import SimilarityService
 from app.services.message_publisher import message_publisher
 from app.utils.text_processing import extract_main_text, prepare_content_for_rag
 from app.utils.async_utils import run_async_safely
+from app.tasks.user_profile_tasks import create_repositories
+from app.services.vector_generator import ActivityData, ActivityType
+from app.services.vector_generator import VectorGenerator
+from app.external.openai_service import OpenAIService
 
 # 서비스 인스턴스들
 similarity_service = SimilarityService()
-
 
 # pylint: disable=too-many-instance-attributes
 @dataclass
@@ -378,6 +383,102 @@ async def _save_summary_if_exists(session, bookmark_data: BookmarkData,
     return summary_vectors
 
 
+async def _trigger_profile_update_event(bookmark_data: BookmarkData) -> Dict:
+    """
+    북마크 저장 완료 후 사용자 프로필 업데이트를 직접 처리합니다.
+    
+    Args:
+        bookmark_data: 북마크 데이터
+        
+    Returns:
+        프로필 업데이트 결과
+    """
+    try:
+        logger.info("🔄 사용자 프로필 업데이트 처리 시작 - user_id: {}, star_id: {}", 
+                   bookmark_data.user_id, bookmark_data.star_id)
+        
+        # 세션을 직접 가져와서 처리
+        async for session in get_async_session():
+            try:
+                # Repository 인스턴스 생성
+                repos = create_repositories()
+                
+                # 1. 기존 프로필 조회 또는 생성
+                profile = await repos['user_profile_repo'].get_or_create_profile(
+                    session, bookmark_data.user_id
+                )
+                
+                # 2. 간단한 활동 데이터 생성 (메모리 최적화)
+                content = f"{bookmark_data.title}. {bookmark_data.summary}"[:500]  # 길이 제한
+                
+                activity_data = ActivityData(
+                    activity_type=ActivityType.BOOKMARK,
+                    content=content,
+                    created_at=datetime.now(),
+                    metadata={
+                        "url": bookmark_data.url,
+                        "category": "bookmark",
+                        "source": "bookmark_save_task"
+                    },
+                    weight=1.5
+                )
+                
+                # 3. 메모리 효율적인 벡터 업데이트
+                openai_service = OpenAIService()
+                vector_generator = VectorGenerator(openai_service)
+                
+                if profile.profile_vector is not None and len(profile.profile_vector) > 0:
+                    logger.info("🔄 기존 벡터 증분 업데이트 - user_id: {}", bookmark_data.user_id)
+                    updated_vector, update_metadata = await vector_generator.update_vector_incrementally(
+                        profile.profile_vector, [activity_data]
+                    )
+                else:
+                    logger.info("🆕 새 벡터 생성 - user_id: {}", bookmark_data.user_id)
+                    updated_vector, update_metadata = await vector_generator.generate_profile_vector(
+                        [activity_data]
+                    )
+                
+                # 4. 프로필 저장 (필수 필드만)
+                await repos['user_profile_repo'].update_profile(
+                    session,
+                    bookmark_data.user_id,
+                    profile_vector=updated_vector,
+                    vector_strength=update_metadata.get('vector_strength', 0.0),
+                    last_activity_at=datetime.now()
+                )
+                
+                await session.commit()
+                
+                # 5. 메모리 정리
+                del activity_data, updated_vector, update_metadata, openai_service, vector_generator
+                
+                logger.info("✅ 사용자 프로필 업데이트 완료 - user_id: {}", bookmark_data.user_id)
+                
+                return {
+                    "success": True,
+                    "method": "optimized_update",
+                    "user_id": bookmark_data.user_id,
+                    "timestamp": datetime.now()
+                }
+                
+            except Exception as session_error:
+                await session.rollback()
+                raise session_error
+                
+    except Exception as e:
+        logger.error("❌ 사용자 프로필 업데이트 실패 - user_id: {}, 오류: {}", 
+                    bookmark_data.user_id, e)
+        
+        return {
+            "success": False,
+            "method": "optimized_update",
+            "error": str(e),
+            "user_id": bookmark_data.user_id,
+            "error_type": type(e).__name__,
+            "timestamp": datetime.now()
+        }
+
+
 def _save_bookmark_logic(bookmark_data: BookmarkData) -> dict:
     """
     북마크의 완전한 처리 워크플로우를 수행하는 핵심 로직 함수
@@ -458,6 +559,9 @@ def _save_bookmark_logic(bookmark_data: BookmarkData) -> dict:
 
             logger.info("✅ 벡터 데이터베이스 저장 완료 - 벡터 수: {}", len(saved_vectors))
             
+            # 프로필 업데이트 이벤트 트리거
+            result = await _trigger_profile_update_event(bookmark_data)
+            
             return {
                 "status": "success",
                 "inserted": len(saved_vectors),
@@ -472,7 +576,8 @@ def _save_bookmark_logic(bookmark_data: BookmarkData) -> dict:
                 "is_update": total_deleted > 0,
                 "similar_bookmarks_found": len(similar_bookmarks),
                 "relationship_published": True,
-                "content_length": len(body_text)
+                "content_length": len(body_text),
+                "profile_update_result": result
             }
 
         except Exception as e:

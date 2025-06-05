@@ -68,9 +68,9 @@ celery.conf.update(
     task_always_eager=False,  # 프로덕션에서는 False
     task_eager_propagates=True,
     
-    # 워커 프로세스 관리 - 이벤트 루프 문제 방지
-    worker_max_tasks_per_child=1000,  # 1000개 태스크 후 워커 재시작
-    worker_max_memory_per_child=200000,  # 200MB 메모리 제한
+    # 워커 프로세스 관리 - 메모리 제한 대폭 완화
+    worker_max_tasks_per_child=300,  # 300개 태스크 후 워커 재시작 (이전: 500)
+    worker_max_memory_per_child=1000000,  # 1GB 메모리 제한 (이전: 500MB)
     
     # 비동기 태스크 처리 최적화
     task_reject_on_worker_lost=True,  # 워커 손실 시 태스크 거부
