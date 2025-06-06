@@ -198,6 +198,7 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
     user_message_id: uuid.UUID
 ):
     """OpenAI 스트림을 SSE 형식으로 변환하면서 PostgreSQL에 저장"""
+    start_time = datetime.now(timezone.utc)
     try:
         logger.info(f"🚀 채팅 스트림 시작 - user_id: {request.user_id}, session_id: {session_id}")
 
@@ -209,13 +210,13 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
                 "user_message_id": str(user_message_id)
             }
         }
-        yield f"data: {json.dumps(session_info)}\n\n"
+        yield f"data: {json.dumps(session_info, ensure_ascii=False)}\n\n"
 
         # API 키 확인
         if not settings.OPENAI_API_KEY:
             logger.error("❌ OpenAI API 키가 설정되지 않았습니다")
             error_msg = "OpenAI API 키가 설정되지 않았습니다"
-            yield f"data: {json.dumps({'type': 'error', 'data': error_msg})}\n\n"
+            yield f"data: {json.dumps({'type': 'error', 'data': error_msg}, ensure_ascii=False)}\n\n"
             return
 
         # TODO: 대화 히스토리 조회 추가
@@ -251,14 +252,62 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
         messages = _build_messages(request.message, ctx_blocks)
         # TODO: messages = _build_messages(request.message, ctx_blocks, conversation_history)
         
-        # 스트리밍 시작 알림
-        yield f"data: {json.dumps({'type': 'stream_start', 'data': 'AI가 응답을 생성 중입니다...'})}\n\n"
-        logger.info("📨 OpenAI 스트림 호출 시작...")
+        # 응답 스트리밍 시작
+        logger.info("🚀 OpenAI 스트리밍 시작")
+        yield f"data: {json.dumps({'type': 'stream_start', 'data': {'timestamp': datetime.now(timezone.utc).isoformat()}}, ensure_ascii=False)}\n\n"
+        
+        # 시각화 데이터 전송 (RAG 검색 결과가 있을 때)
+        if ctx_blocks:
+            visualization_data = _create_bookmark_visualization(ctx_blocks, request.message)
+            viz_message = {
+                "type": "visualization",
+                "data": {
+                    "graph_payload": visualization_data,
+                    "context_info": {
+                        "total_documents": len(ctx_blocks),
+                        "search_successful": True,
+                        "avg_similarity": visualization_data['statistics']['avg_similarity'],
+                        "search_query": request.message,
+                        "timestamp": datetime.now(timezone.utc).isoformat()
+                    },
+                    "filter_options": {
+                        "by_source_type": visualization_data['statistics']['source_types'],
+                        "by_similarity": ["high", "medium", "low"],
+                        "by_keywords": list(visualization_data['statistics']['keyword_distribution'].keys())
+                    },
+                    "sort_options": {
+                        "similarity_desc": "유사도 높은순",
+                        "similarity_asc": "유사도 낮은순", 
+                        "title_asc": "제목 가나다순",
+                        "keywords_desc": "키워드 많은순"
+                    }
+                }
+            }
+            yield f"data: {json.dumps(viz_message, ensure_ascii=False)}\n\n"
+            logger.info(f"📊 시각화 데이터 전송 완료 - 노드: {len(visualization_data['nodes'])}개, 엣지: {len(visualization_data['edges'])}개")
+        else:
+            # 검색 결과가 없을 때의 기본 시각화
+            empty_viz = {
+                "type": "visualization", 
+                "data": {
+                    "graph_payload": {
+                        "nodes": [],
+                        "edges": [],
+                        "layout": "empty",
+                        "message": "관련 북마크를 찾지 못했습니다"
+                    },
+                    "context_info": {
+                        "total_documents": 0,
+                        "search_successful": False,
+                        "message": "검색 결과가 없습니다"
+                    }
+                }
+            }
+            yield f"data: {json.dumps(empty_viz, ensure_ascii=False)}\n\n"
 
         # AI 응답 수집 및 스트림
         ai_response = ""
         token_count = 0
-        start_time = datetime.now(timezone.utc)
         chunk_buffer = ""
         buffer_size = 5  # 5개 토큰마다 전송
 
@@ -277,12 +326,12 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
                 
                 if should_send:
                     logger.debug(f"📝 토큰 {token_count}: 청크 전송 - {chunk_buffer[:20]}...")
-                    yield f"data: {json.dumps({'type': 'chunk', 'data': chunk_buffer})}\n\n"
+                    yield f"data: {json.dumps({'type': 'chunk', 'data': chunk_buffer}, ensure_ascii=False)}\n\n"
                     chunk_buffer = ""
                     
                     # 10토큰마다 진행 상황 전송
                     if token_count % 10 == 0:
-                        yield f"data: {json.dumps({'type': 'progress', 'data': {'token_count': token_count, 'status': 'generating'}})}\n\n"
+                        yield f"data: {json.dumps({'type': 'progress', 'data': {'token_count': token_count, 'status': 'generating'}}, ensure_ascii=False)}\n\n"
                     
                     # 약간의 지연으로 스트리밍 효과 보장
                     import asyncio
@@ -291,10 +340,10 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
         # 남은 버퍼 내용 전송
         if chunk_buffer:
             logger.debug(f"📝 마지막 청크 전송: {chunk_buffer}")
-            yield f"data: {json.dumps({'type': 'chunk', 'data': chunk_buffer})}\n\n"
+            yield f"data: {json.dumps({'type': 'chunk', 'data': chunk_buffer}, ensure_ascii=False)}\n\n"
         
         # 스트리밍 완료 알림
-        yield f"data: {json.dumps({'type': 'stream_complete', 'data': '응답 생성 완료'})}\n\n"
+        yield f"data: {json.dumps({'type': 'stream_complete', 'data': '응답 생성 완료'}, ensure_ascii=False)}\n\n"
 
         end_time = datetime.now(timezone.utc)
         response_time_ms = int((end_time - start_time).total_seconds() * 1000)
@@ -326,7 +375,7 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
                             "title": metadata.get("title", ""),
                             "url": metadata.get("url", ""),
                             "source_id": metadata.get("source_id", ""),
-                            "score": 0.0  # similarity_search_with_score에서 점수 추출 필요
+                            "score": float(metadata.get("score", 0.0))  # 유사도 점수
                         })
 
                     await ChatRepository.save_rag_references(
@@ -344,19 +393,207 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
             ai_message = type('TempMessage', (), {'id': uuid.uuid4()})()
 
         # 완료 메시지 (그래프 데이터 + 메시지 ID 포함)
-        graph_payload = {"nodes": [], "edges": [], "layout": "force-3d"}
+        graph_payload = _create_bookmark_visualization(ctx_blocks, request.message)
         completion_data = {
             "type": "session_end",
-            "data": graph_payload,
-            "session_id": str(session_id),
-            "ai_message_id": str(ai_message.id),
-            "user_message_id": str(user_message_id)
+            "data": {
+                "message_id": str(ai_message.id),
+                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "graph_payload": graph_payload,
+                "session_info": {
+                    "user_id": request.user_id,
+                    "session_id": str(request.session_id),
+                    "total_messages": 2,  # 사용자 메시지 + AI 응답
+                                         "processing_time": f"{(datetime.now(timezone.utc) - start_time).total_seconds():.2f}s"
+                },
+                "rag_summary": {
+                    "documents_found": len(ctx_blocks),
+                    "search_successful": len(ctx_blocks) > 0,
+                    "avg_similarity": graph_payload['statistics']['avg_similarity'] if ctx_blocks else 0
+                }
+            }
         }
-        yield f"data: {json.dumps(completion_data)}\n\n"
+        yield f"data: {json.dumps(completion_data, ensure_ascii=False)}\n\n"
 
     except Exception as e:  # pylint: disable=broad-exception-caught
         logger.error(f"❌ 스트림 생성 실패: {e}")
-        yield f"data: {json.dumps({'type': 'error', 'data': str(e)})}\n\n"
+        yield f"data: {json.dumps({'type': 'error', 'data': str(e)}, ensure_ascii=False)}\n\n"
+
+
+def _create_bookmark_visualization(
+    ctx_blocks: List[Tuple[str, Dict[str, Any]]],
+    search_query: str
+) -> Dict[str, Any]:
+    """
+    RAG 검색 결과를 북마크 시각화용 그래프 데이터로 변환합니다.
+    
+    Args:
+        ctx_blocks: RAG 검색 결과 [(snippet, metadata), ...]
+        search_query: 검색 쿼리
+        
+    Returns:
+        시각화용 그래프 데이터 (nodes, edges, layout 정보 포함)
+    """
+    if not ctx_blocks:
+        return {
+            "nodes": [],
+            "edges": [],
+            "layout": "force-3d",
+            "total_bookmarks": 0,
+            "search_query": "",
+            "visualization_type": "bookmark_network"
+        }
+
+    # 노드 생성 (각 북마크를 노드로 표현)
+    nodes = []
+    for i, (snippet, metadata) in enumerate(ctx_blocks):
+        # 유사도 점수에 따른 노드 크기 계산
+        score = metadata.get('score', 0)
+        node_size = max(10, min(30, int(score * 40)))  # 10-30 범위
+        
+        # 소스 타입에 따른 색상 구분
+        source_type = metadata.get('source_type', 'bookmark')
+        color_map = {
+            'bookmark': '#4F46E5',     # 보라색
+            'document': '#059669',     # 초록색  
+            'article': '#DC2626',      # 빨간색
+            'note': '#D97706',         # 주황색
+            'webpage': '#0891B2'       # 파란색
+        }
+        node_color = color_map.get(source_type, '#6B7280')
+        
+        node = {
+            "id": f"bookmark_{metadata.get('source_id', i)}",
+            "label": metadata.get('title', '(제목없음)')[:30],
+            "title": metadata.get('title', '(제목없음)'),
+            "url": metadata.get('url', ''),
+            "snippet": snippet,
+            "keywords": metadata.get('keywords', []),
+            "source_type": source_type,
+            "similarity_score": float(score),
+            "size": int(node_size),
+            "color": node_color,
+            "x": i * 100,  # 기본 배치
+            "y": score * 100,
+            "z": i * 50
+        }
+        nodes.append(node)
+
+    # 엣지 생성 (북마크 간 관계 표현)
+    edges = []
+    
+    # 1. 키워드 기반 연결
+    for i in range(len(nodes)):
+        for j in range(i + 1, len(nodes)):
+            node_a = nodes[i]
+            node_b = nodes[j]
+            
+            # 공통 키워드 찾기
+            keywords_a = set(node_a.get('keywords', []))
+            keywords_b = set(node_b.get('keywords', []))
+            shared_keywords = keywords_a & keywords_b
+            
+            if shared_keywords:
+                # 공통 키워드 수에 따른 연결 강도
+                connection_weight = len(shared_keywords)
+                edge_width = max(1, min(5, connection_weight))
+                
+                edge = {
+                    "id": f"edge_{node_a['id']}_{node_b['id']}",
+                    "source": node_a['id'],
+                    "target": node_b['id'],
+                    "weight": connection_weight,
+                    "width": edge_width,
+                    "color": "#94A3B8",
+                    "shared_keywords": list(shared_keywords),
+                    "connection_type": "keyword_similarity"
+                }
+                edges.append(edge)
+    
+    # 2. 유사도 점수 기반 연결 (고유사도 북마크들 연결)
+    high_similarity_nodes = [node for node in nodes if node['similarity_score'] > 0.8]
+    if len(high_similarity_nodes) > 1:
+        for i in range(len(high_similarity_nodes)):
+            for j in range(i + 1, len(high_similarity_nodes)):
+                node_a = high_similarity_nodes[i]
+                node_b = high_similarity_nodes[j]
+                
+                # 이미 키워드로 연결되어 있으면 건너뛰기
+                existing_edge = any(
+                    edge['source'] == node_a['id'] and edge['target'] == node_b['id']
+                    for edge in edges
+                )
+                
+                if not existing_edge:
+                    edge = {
+                        "id": f"edge_similarity_{node_a['id']}_{node_b['id']}",
+                        "source": node_a['id'],
+                        "target": node_b['id'],
+                        "weight": 0.5,
+                        "width": 2,
+                        "color": "#F59E0B",
+                        "connection_type": "high_similarity"
+                    }
+                    edges.append(edge)
+
+    # 레이아웃 결정 (노드 수와 연결 관계에 따라)
+    layout_type = _determine_layout(nodes, edges)
+    
+    return {
+        "nodes": nodes,
+        "edges": edges,
+        "layout": layout_type,
+        "total_bookmarks": len(nodes),
+        "search_query": search_query,
+        "visualization_type": "bookmark_network",
+        "statistics": {
+            "total_connections": int(len(edges)),
+            "avg_similarity": float(sum(node['similarity_score'] for node in nodes) / len(nodes)) if nodes else 0.0,
+            "source_types": list(set(node['source_type'] for node in nodes)),
+            "keyword_distribution": _get_keyword_distribution(nodes),
+            "similarity_range": {
+                "min": float(min(node['similarity_score'] for node in nodes)) if nodes else 0.0,
+                "max": float(max(node['similarity_score'] for node in nodes)) if nodes else 0.0
+            }
+        },
+        "interaction_hints": {
+            "node_hover": "북마크 상세 정보 확인",
+            "node_click": "북마크 링크로 이동",
+            "edge_hover": "연결 관계 확인",
+            "layout_options": ["force-3d", "circular", "hierarchical", "grid"]
+        }
+    }
+
+
+def _determine_layout(nodes: List[Dict], edges: List[Dict]) -> str:
+    """노드와 엣지 수에 따라 최적의 레이아웃을 결정합니다."""
+    node_count = len(nodes)
+    edge_count = len(edges)
+    
+    if node_count <= 3:
+        return "linear"
+    elif node_count <= 6:
+        return "circular" 
+    elif edge_count > node_count * 0.7:
+        return "force-3d"  # 연결이 많으면 3D 포스 레이아웃
+    elif edge_count < node_count * 0.3:
+        return "grid"      # 연결이 적으면 그리드 레이아웃
+    else:
+        return "force-2d"  # 기본 2D 포스 레이아웃
+
+
+def _get_keyword_distribution(nodes: List[Dict]) -> Dict[str, int]:
+    """노드들의 키워드 분포를 계산합니다."""
+    keyword_count = {}
+    
+    for node in nodes:
+        keywords = node.get('keywords', [])
+        for keyword in keywords:
+            keyword_count[keyword] = keyword_count.get(keyword, 0) + 1
+    
+    # 상위 10개 키워드만 반환
+    sorted_keywords = sorted(keyword_count.items(), key=lambda x: x[1], reverse=True)
+    return dict(sorted_keywords[:10])
 
 
 # TODO: 대화 히스토리 조회 함수 추가 필요
