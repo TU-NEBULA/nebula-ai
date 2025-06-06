@@ -78,7 +78,7 @@ class VectorRepository:
             content_hash = VectorRepository._generate_content_hash(chunk)
             
             document_vector = DocumentVector(
-                user_id=user_id,
+                user_id=int(user_id),
                 source_id=source_id,
                 source_type=source_type,
                 chunk_index=i,
@@ -149,7 +149,7 @@ class VectorRepository:
         content_hash = VectorRepository._generate_content_hash(content)
         
         document_vector = DocumentVector(
-            user_id=user_id,
+            user_id=int(user_id),
             source_id=source_id,
             source_type=source_type,
             chunk_index=chunk_index,
@@ -207,9 +207,10 @@ class VectorRepository:
             (1 - DocumentVector.embedding.cosine_distance(query_embedding)) >= similarity_threshold
         )
         
-        # 사용자별 필터링
-        if user_id:
-            query = query.where(DocumentVector.user_id == user_id)
+        # 사용자별 필터링 - 정수 타입 명시적 사용
+        if user_id is not None:
+            # user_id를 명시적으로 정수로 처리
+            query = query.where(DocumentVector.user_id == int(user_id))
         
         # 소스 타입별 필터링
         if source_types:
@@ -278,8 +279,9 @@ class VectorRepository:
         )
         
         # 필터링 조건들
-        if user_id:
-            query = query.where(DocumentVector.user_id == user_id)
+        if user_id is not None:
+            # user_id를 명시적으로 정수로 처리
+            query = query.where(DocumentVector.user_id == int(user_id))
         
         if source_types:
             query = query.where(DocumentVector.source_type.in_(source_types))
@@ -308,7 +310,7 @@ class VectorRepository:
         """특정 소스의 모든 문서 벡터를 조회합니다."""
         stmt = select(DocumentVector).where(
             and_(
-                DocumentVector.user_id == user_id,
+                DocumentVector.user_id == int(user_id),
                 DocumentVector.source_id == source_id,
                 DocumentVector.source_type == source_type
             )
@@ -336,7 +338,7 @@ class VectorRepository:
         Returns:
             DocumentVector 객체들의 리스트
         """
-        stmt = select(DocumentVector).where(DocumentVector.user_id == user_id)
+        stmt = select(DocumentVector).where(DocumentVector.user_id == int(user_id))
         
         if source_type:
             stmt = stmt.where(DocumentVector.source_type == source_type)
@@ -382,7 +384,7 @@ class VectorRepository:
         source_type: Optional[str] = None
     ) -> int:
         """사용자의 문서 수를 조회합니다."""
-        query = select(DocumentVector).where(DocumentVector.user_id == user_id)
+        query = select(DocumentVector).where(DocumentVector.user_id == int(user_id))
         
         if source_type:
             query = query.where(DocumentVector.source_type == source_type)

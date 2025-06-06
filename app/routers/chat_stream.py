@@ -35,40 +35,43 @@ TOP_K = 10  # 검색 문서 수
 
 
 async def _retrieve_context(
-    user_id: int, query: str, session: AsyncSession = None
+    user_id: int, query: str
 ) -> List[Tuple[str, Dict[str, Any]]]:
     """PostgreSQL 벡터 데이터베이스에서 컨텍스트 검색"""
     logger.info(f"🔍 컨텍스트 검색 시작 - user_id: {user_id}, query: {query[:50]}...")
 
-    if session is None:
+    try:
+        # 독립적인 세션으로 벡터 검색 수행
         async for db_session in get_async_session():
-            return await _retrieve_context(user_id, query, db_session)
+            # PostgreSQL 벡터 검색 수행 - user_id를 정수로 전달
+            search_results = await vector_service.similarity_search(
+                session=db_session,
+                query=query,
+                user_id=user_id,  # 정수 타입 그대로 전달
+                limit=TOP_K,
+                similarity_threshold=0.7
+            )
 
-    # PostgreSQL 벡터 검색 수행
-    search_results = await vector_service.similarity_search(
-        session=session,
-        query=query,
-        user_id=str(user_id),
-        limit=TOP_K,
-        similarity_threshold=0.7
-    )
+            # 검색 결과를 기존 포맷으로 변환
+            results = []
+            for document, score in search_results:
+                snippet = document.content[:160].replace("\n", " ")
+                metadata = {
+                    "title": document.title or "(제목없음)",
+                    "url": document.url or "",
+                    "source_id": document.source_id,
+                    "source_type": document.source_type,
+                    "keywords": document.keywords or [],
+                    "score": score
+                }
+                results.append((snippet, metadata))
 
-    # 검색 결과를 기존 포맷으로 변환
-    results = []
-    for document, score in search_results:
-        snippet = document.content[:160].replace("\n", " ")
-        metadata = {
-            "title": document.title or "(제목없음)",
-            "url": document.url or "",
-            "source_id": document.source_id,
-            "source_type": document.source_type,
-            "keywords": document.keywords or [],
-            "score": score
-        }
-        results.append((snippet, metadata))
-
-    logger.info(f"📊 검색 결과: {len(results)}개 문서 발견")
-    return results
+            logger.info(f"📊 검색 결과: {len(results)}개 문서 발견")
+            return results
+            
+    except Exception as e:
+        logger.error(f"❌ 컨텍스트 검색 중 오류: {e}")
+        return []  # 검색 실패시 빈 결과 반환
 
 
 def _build_messages(prompt: str, ctx_blocks: List[Tuple[str, Dict[str, Any]]]):
@@ -105,7 +108,6 @@ def _build_messages(prompt: str, ctx_blocks: List[Tuple[str, Dict[str, Any]]]):
 
 async def _generate_chat_stream(  # pylint: disable=too-many-locals
     request: ChatRequestModel,
-    db_session: AsyncSession,
     session_id: uuid.UUID,
     user_message_id: uuid.UUID
 ):
@@ -140,7 +142,7 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
 
         # RAG 검색
         try:
-            ctx_blocks = await _retrieve_context(request.user_id, request.message, db_session)
+            ctx_blocks = await _retrieve_context(request.user_id, request.message)
         except Exception as e:  # pylint: disable=broad-exception-caught
             logger.error(f"❌ 컨텍스트 검색 실패: {e}")
             ctx_blocks = []
@@ -153,61 +155,107 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
             temperature=0.7,
             timeout=30,
             max_retries=1,
+            # 스트리밍 최적화를 위한 설정
+            model_kwargs={
+                "stream_options": {"include_usage": False},  # 사용량 정보 제외로 응답 속도 향상
+            }
         )
 
         # 메시지 구성 (TODO: 히스토리 포함)
         messages = _build_messages(request.message, ctx_blocks)
         # TODO: messages = _build_messages(request.message, ctx_blocks, conversation_history)
+        
+        # 스트리밍 시작 알림
+        yield f"data: {json.dumps({'type': 'stream_start', 'data': 'AI가 응답을 생성 중입니다...'})}\n\n"
         logger.info("📨 OpenAI 스트림 호출 시작...")
 
         # AI 응답 수집 및 스트림
         ai_response = ""
         token_count = 0
         start_time = datetime.now(timezone.utc)
+        chunk_buffer = ""
+        buffer_size = 5  # 5개 토큰마다 전송
 
         for chunk in llm.stream(messages):
             if chunk.content:
                 token_count += 1
                 ai_response += chunk.content
-                logger.debug(f"📝 토큰 {token_count}: {chunk.content[:20]}...")
-                yield f"data: {json.dumps({'type': 'chunk', 'data': chunk.content})}\n\n"
+                chunk_buffer += chunk.content
+                
+                # 버퍼가 찼거나 문장 끝 표시가 있으면 전송
+                should_send = (
+                    len(chunk_buffer) >= buffer_size or
+                    chunk.content in ['.', '!', '?', '\n', '。', '！', '？'] or
+                    token_count % 3 == 0  # 3토큰마다 강제 전송
+                )
+                
+                if should_send:
+                    logger.debug(f"📝 토큰 {token_count}: 청크 전송 - {chunk_buffer[:20]}...")
+                    yield f"data: {json.dumps({'type': 'chunk', 'data': chunk_buffer})}\n\n"
+                    chunk_buffer = ""
+                    
+                    # 10토큰마다 진행 상황 전송
+                    if token_count % 10 == 0:
+                        yield f"data: {json.dumps({'type': 'progress', 'data': {'token_count': token_count, 'status': 'generating'}})}\n\n"
+                    
+                    # 약간의 지연으로 스트리밍 효과 보장
+                    import asyncio
+                    await asyncio.sleep(0.01)  # 10ms 지연
+        
+        # 남은 버퍼 내용 전송
+        if chunk_buffer:
+            logger.debug(f"📝 마지막 청크 전송: {chunk_buffer}")
+            yield f"data: {json.dumps({'type': 'chunk', 'data': chunk_buffer})}\n\n"
+        
+        # 스트리밍 완료 알림
+        yield f"data: {json.dumps({'type': 'stream_complete', 'data': '응답 생성 완료'})}\n\n"
 
         end_time = datetime.now(timezone.utc)
         response_time_ms = int((end_time - start_time).total_seconds() * 1000)
 
         logger.info(f"✅ 스트림 완료 - {token_count}개 토큰 생성, 응답시간: {response_time_ms}ms")
 
-        # AI 응답 메시지 저장
-        ai_message = await ChatRepository.save_message(
-            session=db_session,
-            session_id=session_id,
-            content=ai_response,
-            role="assistant",
-            user_id=request.user_id,
-            metadata={
-                "response_time_ms": response_time_ms,
-                "token_count": token_count,
-                "model": settings.OPENAI_MODEL
-            }
-        )
-
-        # RAG 참조 저장
-        if ctx_blocks:
-            rag_references = []
-            for snippet, metadata in ctx_blocks:
-                rag_references.append({
-                    "snippet": snippet,
-                    "title": metadata.get("title", ""),
-                    "url": metadata.get("url", ""),
-                    "source_id": metadata.get("source_id", ""),
-                    "score": 0.0  # similarity_search_with_score에서 점수 추출 필요
-                })
-
-            await ChatRepository.save_rag_references(
-                session=db_session,
-                message_id=ai_message.id,
-                references=rag_references
+        # AI 응답 메시지 저장 (독립적인 트랜잭션)
+        try:
+            ai_message = await ChatRepository.save_message(
+                session=None,  # Repository에서 독립적인 세션 사용
+                session_id=session_id,
+                content=ai_response,
+                role="assistant",
+                user_id=request.user_id,
+                metadata={
+                    "response_time_ms": response_time_ms,
+                    "token_count": token_count,
+                    "model": settings.OPENAI_MODEL
+                }
             )
+            
+            # RAG 참조 저장 (독립적인 트랜잭션)
+            if ctx_blocks:
+                try:
+                    rag_references = []
+                    for snippet, metadata in ctx_blocks:
+                        rag_references.append({
+                            "snippet": snippet,
+                            "title": metadata.get("title", ""),
+                            "url": metadata.get("url", ""),
+                            "source_id": metadata.get("source_id", ""),
+                            "score": 0.0  # similarity_search_with_score에서 점수 추출 필요
+                        })
+
+                    await ChatRepository.save_rag_references(
+                        session=None,  # Repository에서 독립적인 세션 사용
+                        message_id=ai_message.id,
+                        references=rag_references
+                    )
+                except Exception as rag_error:
+                    logger.error(f"❌ RAG 참조 저장 실패: {rag_error}")
+                    # RAG 참조 저장 실패해도 메시지는 저장된 상태이므로 계속 진행
+        
+        except Exception as save_error:
+            logger.error(f"❌ AI 메시지 저장 실패: {save_error}")
+            # 메시지 저장 실패 시 임시 메시지 ID 생성하여 응답 완료
+            ai_message = type('TempMessage', (), {'id': uuid.uuid4()})()
 
         # 완료 메시지 (그래프 데이터 + 메시지 ID 포함)
         graph_payload = {"nodes": [], "edges": [], "layout": "force-3d"}
@@ -259,8 +307,7 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
 )
 async def chat_stream_direct(
     request: ChatRequestModel,
-    idempotency_key: Optional[str] = Header(None),
-    db_session: AsyncSession = Depends(get_async_session)
+    idempotency_key: Optional[str] = Header(None)
 ):
     """
     직접 스트리밍 방식의 채팅 API with PostgreSQL 연동
@@ -282,7 +329,7 @@ async def chat_stream_direct(
         if hasattr(request, 'session_id') and request.session_id:
             # 기존 세션 사용
             chat_session = await ChatRepository.get_session(
-                session=db_session,
+                session=None,  # Repository에서 독립적인 세션 사용
                 session_id=uuid.UUID(request.session_id),
                 user_id=request.user_id
             )
@@ -290,30 +337,38 @@ async def chat_stream_direct(
         if not chat_session:
             # 새로운 세션 생성
             chat_session = await ChatRepository.create_session(
-                session=db_session,
+                session=None,  # Repository에서 독립적인 세션 사용
                 user_id=request.user_id,
                 title=f"대화 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
             )
 
         # 사용자 메시지 저장
-        user_message = await ChatRepository.save_message(
-            session=db_session,
-            session_id=chat_session.id,
-            content=request.message,
-            role="user",
-            user_id=request.user_id
-        )
-
-        logger.info(f"💾 세션 및 사용자 메시지 저장 완료 - session_id: {chat_session.id}")
+        try:
+            user_message = await ChatRepository.save_message(
+                session=None,  # Repository에서 독립적인 세션 사용
+                session_id=chat_session.id,
+                content=request.message,
+                role="user",
+                user_id=request.user_id
+            )
+            logger.info(f"💾 세션 및 사용자 메시지 저장 완료 - session_id: {chat_session.id}")
+        except Exception as user_msg_error:
+            logger.error(f"❌ 사용자 메시지 저장 실패: {user_msg_error}")
+            # 사용자 메시지 저장 실패시 임시 ID 생성
+            user_message = type('TempMessage', (), {'id': uuid.uuid4()})()
 
         headers = {
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0",
             "Connection": "keep-alive",
             "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Cache-Control",
+            "X-Accel-Buffering": "no",  # Nginx 버퍼링 비활성화
         }
 
         return StreamingResponse(
-            _generate_chat_stream(request, db_session, chat_session.id, user_message.id),
+            _generate_chat_stream(request, chat_session.id, user_message.id),
             media_type="text/event-stream",
             headers=headers
         )
@@ -334,14 +389,13 @@ async def chat_stream_direct(
 )
 async def create_chat_session(
     user_id: int,
-    title: Optional[str] = None,
-    db_session: AsyncSession = Depends(get_async_session)
+    title: Optional[str] = None
 ):
     """새로운 채팅 세션을 생성합니다."""
     try:
         default_title = f"새 대화 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
         chat_session = await ChatRepository.create_session(
-            session=db_session,
+            session=None,  # Repository에서 독립적인 세션 사용
             user_id=user_id,
             title=title or default_title
         )
@@ -369,13 +423,12 @@ async def create_chat_session(
 async def get_user_sessions(
     user_id: int,
     limit: int = 20,
-    offset: int = 0,
-    db_session: AsyncSession = Depends(get_async_session)
+    offset: int = 0
 ):
     """사용자의 채팅 세션 목록을 조회합니다."""
     try:
         sessions = await ChatRepository.get_user_sessions(
-            session=db_session,
+            session=None,  # Repository에서 독립적인 세션 사용
             user_id=user_id,
             limit=limit,
             offset=offset
@@ -419,14 +472,13 @@ async def get_user_sessions(
 )
 async def get_session_messages(
     session_id: str,
-    user_id: int,
-    db_session: AsyncSession = Depends(get_async_session)
+    user_id: int
 ):
     """특정 채팅 세션의 메시지 목록을 조회합니다."""
     try:
         session_uuid = uuid.UUID(session_id)
         messages = await ChatRepository.get_session_messages(
-            session=db_session,
+            session=None,  # Repository에서 독립적인 세션 사용
             session_id=session_uuid,
             user_id=user_id
         )

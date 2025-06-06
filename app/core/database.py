@@ -64,11 +64,25 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
-        except SQLAlchemyError:
-            await session.rollback()
+        except SQLAlchemyError as e:
+            logger.error(f"❌ 데이터베이스 세션 오류: {e}")
+            try:
+                await session.rollback()
+            except Exception as rollback_error:
+                logger.error(f"❌ 세션 롤백 실패: {rollback_error}")
+            raise
+        except Exception as e:
+            logger.error(f"❌ 예상치 못한 세션 오류: {e}")
+            try:
+                await session.rollback()
+            except Exception as rollback_error:
+                logger.error(f"❌ 세션 롤백 실패: {rollback_error}")
             raise
         finally:
-            await session.close()
+            try:
+                await session.close()
+            except Exception as close_error:
+                logger.error(f"❌ 세션 종료 실패: {close_error}")
 
 # 데이터베이스 초기화
 async def init_db() -> None:
