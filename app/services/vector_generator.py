@@ -211,22 +211,27 @@ class VectorGenerator:
 
         try:
             # AI를 사용한 정교한 관심사 분석
-            prompt = f"""
-            다음 {activity_type} 활동 데이터를 분석하여 사용자의 관심사를 4개 레벨로 추출해주세요:
+            prompt = f"""다음 {activity_type} 활동 데이터를 분석하여 사용자의 관심사를 추출해주세요.
 
-            데이터: {combined_content[:3000]}
+활동 데이터:
+{combined_content[:3000]}
 
-            다음 JSON 형식으로 반환해주세요:
-            {{
-                "keywords": {{"키워드1": 0.9, "키워드2": 0.8, ...}},  // 구체적 키워드 (최대 20개)
-                "topics": {{"주제1": 0.9, "주제2": 0.7, ...}},        // 중간 수준 주제 (최대 15개)
-                "categories": {{"카테고리1": 0.8, "카테고리2": 0.6, ...}}, // 넓은 카테고리 (최대 10개)
-                "concepts": {{"개념1": 0.7, "개념2": 0.5, ...}}       // 추상적 개념 (최대 8개)
-            }}
+반드시 아래 JSON 형식으로만 응답해주세요 (다른 설명이나 텍스트 없이):
 
-            가중치는 0.0-1.0 사이로, 해당 관심사의 중요도를 나타냅니다.
-            더 구체적이고 빈번한 것일수록 높은 가중치를 부여하세요.
-            """
+{{
+    "keywords": {{"키워드1": 0.9, "키워드2": 0.8}},
+    "topics": {{"주제1": 0.9, "주제2": 0.7}},
+    "categories": {{"카테고리1": 0.8, "카테고리2": 0.6}},
+    "concepts": {{"개념1": 0.7, "개념2": 0.5}}
+}}
+
+규칙:
+- keywords: 구체적 키워드 (최대 10개)
+- topics: 중간 수준 주제 (최대 8개)  
+- categories: 넓은 카테고리 (최대 5개)
+- concepts: 추상적 개념 (최대 5개)
+- 가중치는 0.1~1.0 사이
+- 순수 JSON만 응답"""
 
             response = await self.openai_service.generate_completion(
                 messages=[{"role": "user", "content": prompt}],
@@ -235,20 +240,45 @@ class VectorGenerator:
             )
 
             try:
-                interests = json.loads(response.choices[0].message.content)
+                # 응답 내용 정리 및 JSON 추출
+                content = response.choices[0].message.content.strip()
+                logger.debug(f"OpenAI 응답 내용 ({activity_type}): {content[:200]}...")
+                
+                # JSON 부분만 추출 (```json ... ``` 형태인 경우)
+                if "```json" in content:
+                    start = content.find("```json") + 7
+                    end = content.find("```", start)
+                    if end != -1:
+                        content = content[start:end].strip()
+                elif "```" in content:
+                    start = content.find("```") + 3
+                    end = content.find("```", start)
+                    if end != -1:
+                        content = content[start:end].strip()
+                
+                # JSON으로 시작하지 않는 부분 제거
+                if content.startswith("{"):
+                    brace_end = content.rfind("}")
+                    if brace_end != -1:
+                        content = content[:brace_end + 1]
+                
+                interests = json.loads(content)
+                logger.debug(f"JSON 파싱 성공 - {activity_type}: {list(interests.keys())}")
 
                 # 활동 가중치 적용
                 total_activity_weight = sum(activity.weight for activity in activities)
                 weight_multiplier = total_activity_weight / len(activities) if activities else 1.0
 
                 for layer in interests:
-                    for interest in interests[layer]:
-                        interests[layer][interest] *= weight_multiplier
+                    if isinstance(interests[layer], dict):
+                        for interest in interests[layer]:
+                            interests[layer][interest] *= weight_multiplier
 
                 return interests
 
-            except json.JSONDecodeError:
-                logger.warning(f"JSON 파싱 실패 - {activity_type}")
+            except (json.JSONDecodeError, KeyError, TypeError) as e:
+                logger.warning(f"JSON 파싱 실패 - {activity_type}: {e}")
+                logger.debug(f"파싱 실패한 내용: {response.choices[0].message.content[:500]}")
                 return {"keywords": {}, "topics": {}, "categories": {}, "concepts": {}}
 
         except (ConnectionError, TimeoutError) as e:
