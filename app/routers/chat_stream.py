@@ -28,6 +28,7 @@ from app.schemas.chat import (
 from app.schemas.base import BaseResponse, IDResponse
 from app.repositories.chat_repository import ChatRepository
 from app.services.vector_service import vector_service
+from app.repositories.vector_repository import VectorRepository
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
@@ -43,18 +44,94 @@ async def _retrieve_context(
     try:
         # 독립적인 세션으로 벡터 검색 수행
         async for db_session in get_async_session():
+            # 먼저 사용자의 벡터 문서 수 확인
+            total_docs = await VectorRepository.get_user_document_count(
+                session=db_session,
+                user_id=user_id
+            )
+            logger.info(f"📊 사용자 {user_id}의 총 벡터 문서 수: {total_docs}")
+            
+            # 전체 데이터베이스 상태 확인 (디버깅용)
+            try:
+                all_users_docs = await VectorRepository.get_user_document_count(
+                    session=db_session,
+                    user_id=None  # 전체 사용자
+                )
+                logger.info(f"📊 전체 데이터베이스 벡터 문서 수: {all_users_docs}")
+                
+                # 샘플 문서 확인
+                if total_docs > 0:
+                    sample_docs = await VectorRepository.get_documents_by_user(
+                        session=db_session,
+                        user_id=user_id,
+                        limit=3
+                    )
+                    logger.info(f"📄 샘플 문서들:")
+                    for i, doc in enumerate(sample_docs):
+                        logger.info(f"  {i+1}. {doc.title[:50]} (타입: {doc.source_type})")
+                        logger.info(f"     키워드: {doc.keywords}")
+                        
+            except Exception as e:
+                logger.warning(f"⚠️ 데이터베이스 상태 확인 실패: {e}")
+            
+            if total_docs == 0:
+                logger.warning(f"⚠️ 사용자 {user_id}의 벡터 문서가 없습니다!")
+                return []
+            
+            # 검색 임계값을 낮춰서 더 많은 결과 포함
+            low_threshold = 0.3  # 기존 0.7에서 0.3으로 낮춤
+            
             # PostgreSQL 벡터 검색 수행 - user_id를 정수로 전달
+            logger.info(f"🔍 벡터 검색 실행 - threshold: {low_threshold}, limit: {TOP_K}")
             search_results = await vector_service.similarity_search(
                 session=db_session,
                 query=query,
                 user_id=user_id,  # 정수 타입 그대로 전달
-                limit=TOP_K,
-                similarity_threshold=0.7
+                limit=TOP_K * 2,  # 더 많은 결과 요청
+                similarity_threshold=low_threshold
             )
+            
+            logger.info(f"📊 벡터 검색 결과: {len(search_results)}개 문서 발견")
+            
+            # 검색 결과가 없으면 전체 사용자 대상으로 재검색
+            if not search_results:
+                logger.info("🔍 사용자별 검색 결과 없음, 전체 검색으로 재시도...")
+                search_results = await vector_service.similarity_search(
+                    session=db_session,
+                    query=query,
+                    user_id=None,  # 전체 사용자 대상
+                    limit=TOP_K,
+                    similarity_threshold=low_threshold
+                )
+                logger.info(f"📊 전체 검색 결과: {len(search_results)}개 문서 발견")
+            
+            # 벡터 검색 결과가 여전히 부족하면 하이브리드 검색 시도
+            if len(search_results) < 3:
+                logger.info("🔍 벡터 검색 결과 부족, 하이브리드 검색 시도...")
+                try:
+                    hybrid_results = await vector_service.hybrid_search(
+                        session=db_session,
+                        query=query,
+                        user_id=user_id,  # 사용자별 하이브리드 검색
+                        limit=TOP_K,
+                        similarity_threshold=0.2,  # 더 낮은 임계값
+                        keyword_boost=0.2
+                    )
+                    logger.info(f"📊 하이브리드 검색 결과: {len(hybrid_results)}개 문서 발견")
+                    
+                    # 기존 결과와 합치되, 중복 제거
+                    existing_ids = {doc.id for doc, _ in search_results}
+                    for doc, score in hybrid_results:
+                        if doc.id not in existing_ids:
+                            search_results.append((doc, score))
+                            existing_ids.add(doc.id)
+                            
+                except Exception as e:
+                    logger.warning(f"⚠️ 하이브리드 검색 실패: {e}")
 
             # 검색 결과를 기존 포맷으로 변환
             results = []
-            for document, score in search_results:
+            for i, (document, score) in enumerate(search_results[:TOP_K]):
                 snippet = document.content[:160].replace("\n", " ")
                 metadata = {
                     "title": document.title or "(제목없음)",
@@ -65,8 +142,9 @@ async def _retrieve_context(
                     "score": score
                 }
                 results.append((snippet, metadata))
+                logger.debug(f"📄 문서 {i+1}: {metadata['title'][:30]} (점수: {score:.3f})")
 
-            logger.info(f"📊 검색 결과: {len(results)}개 문서 발견")
+            logger.info(f"✅ 컨텍스트 검색 완료 - 최종 결과: {len(results)}개 문서")
             return results
             
     except Exception as e:
@@ -82,19 +160,27 @@ def _build_messages(prompt: str, ctx_blocks: List[Tuple[str, Dict[str, Any]]]):
 
     if ctx_blocks:
         joined = "\n".join(
-            f"{i+1}. {m.get('title','(제목없음)')} | {m.get('url','')}\n{snip}"
+            f"{i+1}. {m.get('title','(제목없음)')} | {m.get('url','')}\n{snip}\n(유사도: {m.get('score', 0):.3f})"
             for i, (snip, m) in enumerate(ctx_blocks[:5])
         )
-        ctx = f"[CONTEXT]\n{joined}\n"
+        ctx = f"[CONTEXT - 사용자의 북마크된 문서들]\n{joined}\n"
         logger.info(f"📝 컨텍스트 구성 완료: {len(ctx_blocks)}개 블록")
+        
+        system_prompt = (
+            "너는 NEBULA AI 비서야. 사용자의 북마크된 문서들을 활용해 한국어로 정확하고 도움이 되는 답변을 해줘. "
+            "제공된 CONTEXT 정보를 바탕으로 답변하되, 출처 문서는 번호로 표시해줘. "
+            "문서의 내용을 바탕으로 구체적이고 상세한 정보를 제공해줘."
+        )
     else:
-        ctx = "[CONTEXT]\n(관련 문서를 찾지 못했습니다)\n"
+        ctx = "[CONTEXT]\n(사용자의 북마크에서 관련 문서를 찾지 못했습니다)\n"
         logger.warning("⚠️ 관련 문서를 찾지 못했습니다")
-
-    system_prompt = (
-        "너는 NEBULA AI 비서야. CONTEXT 정보를 활용해 한국어로 간결하고 정확하게 답변해. "
-        "출처 문서는 괄호로 번호를 표시해."
-    )
+        
+        system_prompt = (
+            "너는 NEBULA AI 비서야. 사용자의 북마크에서 관련 문서를 찾지 못했지만, "
+            "일반적인 지식을 바탕으로 한국어로 도움이 되는 답변을 제공해줘. "
+            "사용자가 원하는 정보에 대해 북마크에 관련 문서가 없다는 것을 알리고, "
+            "대신 일반적인 정보나 추천사항을 제공해줘."
+        )
 
     return [
         {"role": "system", "content": system_prompt},

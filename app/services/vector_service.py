@@ -196,23 +196,44 @@ class VectorService:
         limit = kwargs.get('limit', 10)
         similarity_threshold = kwargs.get('similarity_threshold', 0.7)
 
-        logger.info(f"🔍 벡터 검색 시작 - query: {query[:50]}...")
+        logger.info(f"🔍 벡터 검색 시작 - query: '{query[:50]}...', user_id: {user_id}")
+        logger.info(f"📊 검색 설정 - limit: {limit}, threshold: {similarity_threshold}")
 
-        # 쿼리를 임베딩으로 변환
-        query_embedding = await self.embeddings.aembed_query(query)
+        try:
+            # 쿼리를 임베딩으로 변환
+            logger.info("🧠 쿼리 임베딩 생성 중...")
+            query_embedding = await self.embeddings.aembed_query(query)
+            
+            # 임베딩 검증
+            embedding_magnitude = sum(abs(x) for x in query_embedding)
+            logger.info(f"✅ 쿼리 임베딩 생성 완료 - 차원: {len(query_embedding)}, 크기: {embedding_magnitude:.6f}")
+            
+            if embedding_magnitude < 0.001:
+                logger.warning("⚠️ 쿼리 임베딩이 너무 작습니다 (거의 0 벡터)")
+                
+            # 벡터 유사도 검색 수행
+            logger.info("🔍 데이터베이스 벡터 검색 수행 중...")
+            results = await VectorRepository.similarity_search(
+                session=session,
+                query_embedding=query_embedding,
+                user_id=user_id,
+                source_types=source_types,
+                limit=limit,
+                similarity_threshold=similarity_threshold
+            )
 
-        # 벡터 유사도 검색 수행
-        results = await VectorRepository.similarity_search(
-            session=session,
-            query_embedding=query_embedding,
-            user_id=user_id,
-            source_types=source_types,
-            limit=limit,
-            similarity_threshold=similarity_threshold
-        )
-
-        logger.info(f"✅ 벡터 검색 완료 - 결과 수: {len(results)}")
-        return results
+            if results:
+                logger.info(f"✅ 벡터 검색 성공 - 결과 수: {len(results)}")
+                for i, (doc, score) in enumerate(results[:3]):  # 상위 3개만 로깅
+                    logger.info(f"  🔍 {i+1}. '{doc.title[:30]}...' (점수: {score:.3f})")
+            else:
+                logger.warning("⚠️ 벡터 검색 결과가 없습니다")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"❌ 벡터 검색 중 오류 발생: {e}")
+            return []
 
     async def hybrid_search(
         self,

@@ -380,17 +380,24 @@ class VectorRepository:
     @staticmethod
     async def get_user_document_count(
         session: AsyncSession,
-        user_id: int,
+        user_id: Optional[int] = None,
         source_type: Optional[str] = None
     ) -> int:
-        """사용자의 문서 수를 조회합니다."""
-        query = select(DocumentVector).where(DocumentVector.user_id == int(user_id))
+        """사용자의 문서 수를 조회합니다. user_id가 None이면 전체 문서 수를 반환합니다."""
+        query = select(DocumentVector)
+        
+        if user_id is not None:
+            query = query.where(DocumentVector.user_id == int(user_id))
         
         if source_type:
             query = query.where(DocumentVector.source_type == source_type)
         
         result = await session.execute(query)
-        return len(list(result.scalars().all()))
+        documents = list(result.scalars().all())
+        count = len(documents)
+        
+        logger.debug(f"📊 문서 수 조회 - user_id: {user_id}, source_type: {source_type}, 결과: {count}")
+        return count
     
     @staticmethod
     async def get_vector_stats(session: AsyncSession) -> Dict[str, Any]:
