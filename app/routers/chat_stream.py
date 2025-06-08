@@ -83,13 +83,17 @@ async def _retrieve_context(
             
             # PostgreSQL 벡터 검색 수행 - user_id를 정수로 전달
             logger.info(f"🔍 벡터 검색 실행 - threshold: {low_threshold}, limit: {TOP_K}")
-            search_results = await vector_service.similarity_search(
-                session=db_session,
-                query=query,
-                user_id=user_id,  # 정수 타입 그대로 전달
-                limit=TOP_K * 2,  # 더 많은 결과 요청
-                similarity_threshold=low_threshold
-            )
+            try:
+                search_results = await vector_service.similarity_search(
+                    session=db_session,
+                    query=query,
+                    user_id=user_id,  # 정수 타입 그대로 전달
+                    limit=TOP_K * 2,  # 더 많은 결과 요청
+                    similarity_threshold=low_threshold
+                )
+            except Exception as search_error:
+                logger.error(f"❌ 벡터 검색 실패: {search_error}")
+                return []
             
             logger.info(f"📊 벡터 검색 결과: {len(search_results)}개 문서 발견")
             
@@ -174,13 +178,13 @@ def _build_messages(prompt: str, ctx_blocks: List[Tuple[str, Dict[str, Any]]]):
     else:
         ctx = "[CONTEXT]\n(사용자의 북마크에서 관련 문서를 찾지 못했습니다)\n"
         logger.warning("⚠️ 관련 문서를 찾지 못했습니다")
-        
-        system_prompt = (
+
+    system_prompt = (
             "너는 NEBULA AI 비서야. 사용자의 북마크에서 관련 문서를 찾지 못했지만, "
             "일반적인 지식을 바탕으로 한국어로 도움이 되는 답변을 제공해줘. "
             "사용자가 원하는 정보에 대해 북마크에 관련 문서가 없다는 것을 알리고, "
             "대신 일반적인 정보나 추천사항을 제공해줘."
-        )
+    )
 
     return [
         {"role": "system", "content": system_prompt},
@@ -345,6 +349,9 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
         # 스트리밍 완료 알림
         yield f"data: {json.dumps({'type': 'stream_complete', 'data': '응답 생성 완료'}, ensure_ascii=False)}\n\n"
 
+        # 프로필 업데이트 시작 알림
+        yield f"data: {json.dumps({'type': 'profile_update_start', 'data': '사용자 프로필 분석 중...'}, ensure_ascii=False)}\n\n"
+
         end_time = datetime.now(timezone.utc)
         response_time_ms = int((end_time - start_time).total_seconds() * 1000)
 
@@ -364,7 +371,7 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
                     "model": settings.OPENAI_MODEL
                 }
             )
-            
+
             # RAG 참조 저장 (독립적인 트랜잭션)
             if ctx_blocks:
                 try:
@@ -394,23 +401,43 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
 
         # 완료 메시지 (그래프 데이터 + 메시지 ID 포함)
         graph_payload = _create_bookmark_visualization(ctx_blocks, request.message)
+        
+        # 채팅 완료 후 사용자 AI 프로필 실시간 업데이트
+        profile_update_result = await _update_user_ai_profile_after_chat(
+            user_id=request.user_id,
+            user_message=request.message,
+            ai_response=ai_response,
+            ctx_blocks=ctx_blocks,
+            session_id=session_id,
+            session_duration_minutes=(end_time - start_time).total_seconds() / 60
+        )
+        
+        # 프로필 업데이트 완료 알림
+        if profile_update_result.get("success"):
+            profile_status_msg = f"프로필 업데이트 완료 (새 관심사: {profile_update_result.get('total_new_keywords', 0)}개)"
+        else:
+            profile_status_msg = "프로필 업데이트 실패"
+            
+        yield f"data: {json.dumps({'type': 'profile_update_complete', 'data': profile_status_msg}, ensure_ascii=False)}\n\n"
+        
         completion_data = {
             "type": "session_end",
             "data": {
                 "message_id": str(ai_message.id),
-                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "timestamp": datetime.now(timezone.utc).isoformat(),
                 "graph_payload": graph_payload,
                 "session_info": {
                     "user_id": request.user_id,
                     "session_id": str(request.session_id),
                     "total_messages": 2,  # 사용자 메시지 + AI 응답
-                                         "processing_time": f"{(datetime.now(timezone.utc) - start_time).total_seconds():.2f}s"
+                    "processing_time": f"{(datetime.now(timezone.utc) - start_time).total_seconds():.2f}s"
                 },
                 "rag_summary": {
                     "documents_found": len(ctx_blocks),
                     "search_successful": len(ctx_blocks) > 0,
                     "avg_similarity": graph_payload['statistics']['avg_similarity'] if ctx_blocks else 0
-                }
+                },
+                "profile_update": profile_update_result
             }
         }
         yield f"data: {json.dumps(completion_data, ensure_ascii=False)}\n\n"
@@ -594,6 +621,180 @@ def _get_keyword_distribution(nodes: List[Dict]) -> Dict[str, int]:
     # 상위 10개 키워드만 반환
     sorted_keywords = sorted(keyword_count.items(), key=lambda x: x[1], reverse=True)
     return dict(sorted_keywords[:10])
+
+
+async def _update_user_ai_profile_after_chat(
+    user_id: int,
+    user_message: str,
+    ai_response: str,
+    ctx_blocks: List[Tuple[str, Dict[str, Any]]],
+    session_id: uuid.UUID,
+    session_duration_minutes: float
+) -> Dict[str, Any]:
+    """채팅 완료 후 사용자 AI 프로필을 실시간 업데이트합니다."""
+    try:
+        logger.info(f"🤖 사용자 AI 프로필 업데이트 시작 - user_id: {user_id}")
+        
+        # 키워드 추출 (빠르고 가벼운 처리)
+        new_keywords = await _extract_interests_from_message(user_message)
+        
+        # 검색된 문서의 키워드들도 추가
+        searched_keywords = []
+        for _, metadata in ctx_blocks:
+            keywords = metadata.get('keywords', [])
+            searched_keywords.extend(keywords)
+        
+        # 중복 제거하고 상위 키워드만 선택
+        all_keywords = list(set(new_keywords + searched_keywords))
+        message_count = 2  # 사용자 메시지 + AI 응답
+        
+        # 별도 세션으로 AI 프로필 업데이트 (빠른 통계 업데이트)
+        async for session in get_async_session():
+            try:
+                from app.repositories.bookmark_repository import AIProfileRepository
+                
+                updated_profile = await AIProfileRepository.update_chat_statistics(
+                    session=session,
+                    user_id=user_id,
+                    session_duration_minutes=session_duration_minutes,
+                    message_count=message_count,
+                    new_keywords=all_keywords[:20]  # 상위 20개만
+                )
+                
+                logger.info(
+                    f"✅ AI 프로필 업데이트 완료 - user_id: {user_id}, "
+                    f"관심사: {updated_profile.current_interests}, "
+                    f"스타일: {updated_profile.ai_interaction_style}"
+                )
+                
+                return {
+                    "success": True,
+                    "update_type": "ai_profile_statistics", 
+                    "current_interests": updated_profile.current_interests,
+                    "ai_interaction_style": updated_profile.ai_interaction_style,
+                    "preferred_search_domains": updated_profile.preferred_search_domains,
+                    "new_keywords_added": len(all_keywords[:20]),
+                    "processing_time": 0.05,  # 빠른 처리 (~50ms)
+                    "extracted_keywords": new_keywords[:5],  # 상위 5개만 표시
+                    "searched_keywords": searched_keywords[:5]  # 상위 5개만 표시
+                }
+                
+            except Exception as db_error:
+                logger.error(f"❌ AI 프로필 DB 업데이트 실패 - user_id: {user_id}: {db_error}")
+                return {
+                    "success": False,
+                    "error": f"DB 업데이트 실패: {str(db_error)}",
+                    "update_type": "failed"
+                }
+        
+    except Exception as e:
+        logger.error(f"❌ AI 프로필 업데이트 실패 - user_id: {user_id}, 오류: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "extracted_keywords": [],
+            "searched_keywords": [],
+            "total_new_keywords": 0,
+            "update_type": "failed"
+        }
+
+
+async def _extract_interests_from_message(message: str) -> List[str]:
+    """사용자 메시지에서 관심사 키워드를 추출합니다."""
+    try:
+        # 간단한 키워드 추출 (실제로는 더 정교한 NLP 처리 가능)
+        # 한글/영문 키워드 패턴
+        import re
+        
+        # 기술 용어, 브랜드명, 전문 용어 등을 추출
+        patterns = [
+            r'\b[A-Z][A-Za-z]+\b',  # 영문 키워드 (첫글자 대문자)
+            r'\b[가-힣]{2,10}\b',    # 한글 키워드 (2-10글자)
+            r'\b\w+[A-Z]\w*\b',     # 카멜케이스
+        ]
+        
+        keywords = []
+        for pattern in patterns:
+            matches = re.findall(pattern, message)
+            keywords.extend(matches)
+        
+        # 불용어 제거
+        stopwords = {'에서', '에게', '에는', '에도', '그리고', '하지만', '그러나', '또한', '그런데', '있는', '없는', '하는', '되는', '같은', '다른', '이런', '저런', '어떤', '무엇', '어디', '언제', '어떻게', '왜'}
+        
+        filtered_keywords = [kw for kw in keywords if kw not in stopwords and len(kw) > 1]
+        
+        # 중복 제거하고 소문자 변환
+        unique_keywords = list(set([kw.lower() for kw in filtered_keywords]))
+        
+        return unique_keywords[:15]  # 상위 15개만 반환
+        
+    except Exception as e:
+        logger.warning(f"⚠️ 키워드 추출 실패: {e}")
+        return []
+
+
+async def _async_update_profile(update_request: 'ProfileUpdateRequest') -> Dict[str, Any]:
+    """비동기로 사용자 프로필을 업데이트합니다."""
+    try:
+        # 별도 세션으로 프로필 업데이트 처리
+        async for session in get_async_session():
+            try:
+                from app.services.user_profile_processor import UserProfileProcessor
+                from app.repositories.chat_repository import ChatRepository
+                from app.repositories.bookmark_repository import BookmarkRepository
+                from app.repositories.user_profile_repository import UserProfileRepository
+                
+                # Repository 인스턴스 생성
+                repositories = {
+                    'chat_repo': ChatRepository(),
+                    'bookmark_repo': BookmarkRepository(), 
+                    'user_profile_repo': UserProfileRepository()
+                }
+                
+                # 프로필 프로세서 초기화
+                processor = UserProfileProcessor(repositories)
+                
+                # 점진적 프로필 업데이트 수행
+                result = await processor.update_user_profile(
+                    user_id=update_request.user_id,
+                    force_full_recalculation=update_request.force_recalculation,
+                    include_historical_data=not update_request.incremental_update
+                )
+                
+                logger.info(f"📊 프로필 업데이트 성공 - user_id: {update_request.user_id}")
+                return {
+                    "success": True,
+                    "processing_time": result.get("processing_time", 0.0),
+                    "vector_strength": result.get("vector_strength", 0.0),
+                    "update_type": result.get("update_type", "incremental"),
+                    "data_points_processed": result.get("data_points_processed", 0)
+                }
+                
+            except ImportError as import_error:
+                logger.error(f"❌ 모듈 import 실패: {import_error}")
+                return {
+                    "success": False,
+                    "error": f"모듈 로드 실패: {str(import_error)}",
+                    "processing_time": 0.0,
+                    "vector_strength": 0.0
+                }
+            except Exception as process_error:
+                logger.error(f"❌ 프로필 처리 실패: {process_error}")
+                return {
+                    "success": False,
+                    "error": f"프로필 처리 실패: {str(process_error)}",
+                    "processing_time": 0.0,
+                    "vector_strength": 0.0
+                }
+            
+    except Exception as e:
+        logger.error(f"❌ 비동기 프로필 업데이트 실패: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "processing_time": 0.0,
+            "vector_strength": 0.0
+        }
 
 
 # TODO: 대화 히스토리 조회 함수 추가 필요

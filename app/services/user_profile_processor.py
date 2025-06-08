@@ -399,6 +399,153 @@ class UserProfileProcessor:
         shared = list(interests1.intersection(interests2))
         return shared[:10]  # 최대 10개
 
+    async def sync_from_ai_profile(
+        self,
+        user_id: int,
+        interests: List[str],
+        activity_patterns: Dict[str, Any],
+        ai_profile_data: Any
+    ) -> Dict[str, Any]:
+        """
+        AI Profile 데이터로부터 User Profile을 동기화합니다.
+        
+        Args:
+            user_id: 사용자 ID
+            interests: AI Profile에서 추출한 관심사 키워드
+            activity_patterns: 활동 패턴 정보
+            ai_profile_data: AI Profile 원본 데이터
+            
+        Returns:
+            동기화 결과 정보
+        """
+        start_time = time.time()
+        logger.info(f"🔄 AI Profile → User Profile 동기화 시작 - User ID: {user_id}")
+        
+        try:
+            # 1. 기존 User Profile 조회
+            existing_profile = await self.repositories['user_profile_repo'].get_profile(user_id)
+            
+            # 2. AI Profile 데이터로부터 관심사 텍스트 구성
+            interests_text = " ".join(interests[:50])  # 상위 50개 키워드
+            
+            # 3. 벡터 생성 (간단하고 빠르게)
+            embedding = await self.openai_service.create_embedding(
+                text=interests_text,
+                model="text-embedding-3-small"
+            )
+            profile_vector = embedding.data[0].embedding
+            
+            # 4. 메타데이터 구성
+            vector_metadata = {
+                "generation_method": "ai_profile_sync",
+                "sync_timestamp": datetime.now().isoformat(),
+                "keywords_frequency": {kw: 1.0 for kw in interests[:20]},
+                "activity_patterns": activity_patterns,
+                "categories_distribution": self._extract_categories_from_keywords(interests),
+                "vector_strength": min(len(interests) / 30.0, 1.0),  # 키워드 수에 따른 강도
+                "data_sources": ["ai_profile"],
+                "total_activities_processed": activity_patterns.get("total_sessions", 0),
+                "completeness_score": self._calculate_completeness_score(interests, activity_patterns)
+            }
+            
+            # 5. User Profile 저장
+            await self._save_profile(user_id, profile_vector, vector_metadata)
+            
+            processing_time = time.time() - start_time
+            
+            result = {
+                "success": True,
+                "user_id": user_id,
+                "sync_method": "ai_profile_to_user_profile",
+                "processing_time": processing_time,
+                "vector_dimensions": len(profile_vector),
+                "vector_strength": vector_metadata["vector_strength"],
+                "keywords_count": len(interests),
+                "completeness_score": vector_metadata["completeness_score"],
+                "activity_summary": {
+                    "total_sessions": activity_patterns.get("total_sessions", 0),
+                    "total_messages": activity_patterns.get("total_messages", 0),
+                    "avg_session_duration": activity_patterns.get("avg_session_duration", 0)
+                }
+            }
+            
+            logger.info(
+                f"✅ AI Profile 동기화 완료 - User ID: {user_id}, "
+                f"키워드: {len(interests)}개, 강도: {vector_metadata['vector_strength']:.3f}, "
+                f"소요시간: {processing_time:.2f}s"
+            )
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ AI Profile 동기화 실패 - User ID: {user_id}, 오류: {e}")
+            return {
+                "success": False,
+                "user_id": user_id,
+                "error": str(e),
+                "sync_method": "ai_profile_to_user_profile",
+                "processing_time": time.time() - start_time
+            }
+    
+    def _extract_categories_from_keywords(self, keywords: List[str]) -> Dict[str, float]:
+        """키워드에서 카테고리를 추출하고 분포를 계산합니다."""
+        
+        # 카테고리 매핑 (간단한 규칙 기반)
+        category_mapping = {
+            'technology': ['AI', '인공지능', '머신러닝', '딥러닝', '개발', '프로그래밍', 'Python', 'JavaScript', '웹개발', '앱개발'],
+            'business': ['비즈니스', '경영', '창업', '마케팅', '투자', '금융', '경제', 'MBA', '전략', '리더십'],
+            'science': ['과학', '연구', '논문', '실험', '데이터', '분석', '통계', '수학', '물리학', '화학'],
+            'education': ['교육', '학습', '강의', '수업', '대학', '학교', '공부', '시험', '자격증', '온라인강의'],
+            'entertainment': ['영화', '음악', '게임', '드라마', 'K-pop', '엔터테인먼트', '문화', '예술', '취미', '여행'],
+            'health': ['건강', '운동', '다이어트', '의학', '병원', '약물', '정신건강', '요가', '헬스', '영양'],
+            'lifestyle': ['라이프스타일', '일상', '요리', '패션', '뷰티', '인테리어', '반려동물', '가족', '연애', '결혼']
+        }
+        
+        category_scores = {}
+        
+        for category, category_keywords in category_mapping.items():
+            score = 0.0
+            for keyword in keywords:
+                # 완전 일치 또는 부분 일치 확인
+                for cat_keyword in category_keywords:
+                    if (keyword.lower() == cat_keyword.lower() or 
+                        cat_keyword.lower() in keyword.lower() or 
+                        keyword.lower() in cat_keyword.lower()):
+                        score += 1.0
+                        break
+            
+            if score > 0:
+                category_scores[category] = score / len(keywords)  # 정규화
+        
+        # 상위 5개 카테고리만 반환
+        sorted_categories = sorted(category_scores.items(), key=lambda x: x[1], reverse=True)
+        return dict(sorted_categories[:5])
+    
+    def _calculate_completeness_score(self, interests: List[str], activity_patterns: Dict[str, Any]) -> int:
+        """프로필 완성도 점수를 계산합니다 (0-100)."""
+        score = 0
+        
+        # 키워드 개수 (최대 40점)
+        keyword_score = min(len(interests) * 2, 40)  # 키워드 당 2점, 최대 40점
+        score += keyword_score
+        
+        # 활동 세션 수 (최대 30점)
+        sessions = activity_patterns.get("total_sessions", 0)
+        session_score = min(sessions * 3, 30)  # 세션 당 3점, 최대 30점
+        score += session_score
+        
+        # 메시지 수 (최대 20점)
+        messages = activity_patterns.get("total_messages", 0)
+        message_score = min(messages, 20)  # 메시지 당 1점, 최대 20점
+        score += message_score
+        
+        # 세션 지속시간 (최대 10점)
+        avg_duration = activity_patterns.get("avg_session_duration", 0)
+        duration_score = min(avg_duration * 2, 10)  # 분당 2점, 최대 10점
+        score += duration_score
+        
+        return min(int(score), 100)  # 최대 100점
+
     async def _generate_content_based_recommendations(
         self,
         user_id: int,  # pylint: disable=unused-argument

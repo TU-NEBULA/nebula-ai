@@ -154,6 +154,152 @@ class AIProfileRepository:
         return profiles
 
     @staticmethod
+    async def get_or_create_ai_profile(
+        session: AsyncSession,
+        user_id: int
+    ) -> UserAIProfile:
+        """사용자의 AI 프로필을 조회하거나 생성합니다."""
+        stmt = select(UserAIProfile).where(UserAIProfile.user_id == str(user_id))
+        result = await session.execute(stmt)
+        profile = result.scalar_one_or_none()
+        
+        if not profile:
+            profile = UserAIProfile(
+                user_id=str(user_id),
+                preferred_search_domains=None,
+                ai_interaction_style="detailed",
+                current_interests=None,
+                learning_preferences=None,
+                notification_settings=None,
+                profile_vector=None
+            )
+            session.add(profile)
+            await session.commit()
+            await session.refresh(profile)
+            logger.info(f"🆕 새 AI 프로필 생성 - user_id: {user_id}")
+        
+        return profile
+
+    @staticmethod
+    async def update_chat_statistics(
+        session: AsyncSession,
+        user_id: int,
+        session_duration_minutes: float,
+        message_count: int,
+        new_keywords: List[str] = None
+    ) -> UserAIProfile:
+        """채팅 통계를 업데이트합니다."""
+        try:
+            # 기존 프로필 조회 또는 생성
+            profile = await AIProfileRepository.get_or_create_ai_profile(session, user_id)
+            
+            # 키워드를 current_interests에 저장 (임시 호환성)
+            if new_keywords:
+                current_interests = profile.current_interests or ""
+                # 키워드들을 쉼표로 구분해서 저장
+                new_interests_text = ", ".join(new_keywords)
+                
+                if current_interests:
+                    # 기존 관심사에 새 키워드 추가
+                    combined_interests = f"{current_interests}, {new_interests_text}"
+                    # 중복 제거하고 최대 길이 제한
+                    unique_interests = list(set(combined_interests.split(", ")))
+                    profile.current_interests = ", ".join(unique_interests[-20:])  # 최대 20개
+                else:
+                    profile.current_interests = new_interests_text
+            
+            session.add(profile)
+            await session.commit()
+            await session.refresh(profile)
+            
+            logger.info(
+                f"📊 AI 프로필 업데이트 완료 - user_id: {user_id}, "
+                f"관심사: {profile.current_interests}"
+            )
+            
+            return profile
+            
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"❌ AI 프로필 통계 업데이트 실패 - user_id: {user_id}: {e}")
+            raise
+
+    @staticmethod
+    async def update_user_preferences(
+        session: AsyncSession,
+        user_id: int,
+        preferred_response_style: str = None,
+        preferred_language: str = None,
+        preferred_content_types: List[str] = None
+    ) -> UserAIProfile:
+        """사용자 선호도를 업데이트합니다."""
+        try:
+            profile = await AIProfileRepository.get_or_create_ai_profile(session, user_id)
+            
+            if preferred_response_style:
+                profile.ai_interaction_style = preferred_response_style
+            
+            if preferred_language:
+                # 언어 설정을 learning_preferences에 저장
+                profile.learning_preferences = f"language:{preferred_language}"
+                
+            if preferred_content_types:
+                # 콘텐츠 타입을 preferred_search_domains에 저장
+                profile.preferred_search_domains = ", ".join(preferred_content_types)
+            
+            session.add(profile)
+            await session.commit()
+            await session.refresh(profile)
+            
+            logger.info(f"⚙️ AI 프로필 선호도 업데이트 완료 - user_id: {user_id}")
+            return profile
+            
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"❌ AI 프로필 선호도 업데이트 실패 - user_id: {user_id}: {e}")
+            raise
+
+    @staticmethod
+    async def record_feedback(
+        session: AsyncSession,
+        user_id: int,
+        is_positive: bool
+    ) -> UserAIProfile:
+        """사용자 피드백을 기록합니다."""
+        try:
+            profile = await AIProfileRepository.get_or_create_ai_profile(session, user_id)
+            
+            # 피드백을 notification_settings에 JSON 형태로 저장
+            import json
+            current_settings = profile.notification_settings or "{}"
+            try:
+                settings_dict = json.loads(current_settings)
+            except:
+                settings_dict = {}
+                
+            if 'feedback' not in settings_dict:
+                settings_dict['feedback'] = {'positive': 0, 'negative': 0}
+                
+            if is_positive:
+                settings_dict['feedback']['positive'] += 1
+            else:
+                settings_dict['feedback']['negative'] += 1
+                
+            profile.notification_settings = json.dumps(settings_dict)
+            
+            session.add(profile)
+            await session.commit()
+            await session.refresh(profile)
+            
+            logger.info(f"👍👎 피드백 기록 완료 - user_id: {user_id}, positive: {is_positive}")
+            return profile
+            
+        except Exception as e:
+            await session.rollback()
+            logger.error(f"❌ 피드백 기록 실패 - user_id: {user_id}: {e}")
+            raise
+
+    @staticmethod
     async def get_ai_profile_interests(
         session: AsyncSession,
         user_id: int

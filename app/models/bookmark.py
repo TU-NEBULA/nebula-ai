@@ -116,37 +116,18 @@ class DocumentChunkRead(DocumentChunkBase):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-# 사용자 AI 프로필 모델
+# 사용자 AI 프로필 모델 (실제 데이터베이스 구조에 맞춤)
 class UserAIProfileBase(SQLModel):
     """사용자 AI 프로필 기본 스키마"""
     user_id: str = Field(primary_key=True, max_length=255)
 
-    # 검색 선호도
-    preferred_search_domains: Optional[List[str]] = Field(
-        default=None,
-        sa_column=Column(JSONB)
-    )
-    preferred_content_types: Optional[List[str]] = Field(
-        default=None,
-        sa_column=Column(JSONB)
-    )
-    frequent_keywords: Optional[List[str]] = Field(
-        default=None,
-        sa_column=Column(JSONB)
-    )
-
-    # 사용 패턴
-    total_chat_sessions: int = Field(default=0)
-    total_messages: int = Field(default=0)
-    avg_session_duration_minutes: Optional[float] = Field(default=None)
-
-    # AI 설정
-    preferred_response_style: str = Field(default="detailed", max_length=50)
-    preferred_language: str = Field(default="ko", max_length=10)
-
-    # 피드백 통계
-    positive_feedback_count: int = Field(default=0)
-    negative_feedback_count: int = Field(default=0)
+    # 실제 데이터베이스 구조에 맞는 필드들
+    preferred_search_domains: Optional[str] = Field(default=None)
+    ai_interaction_style: Optional[str] = Field(default=None, max_length=255)
+    current_interests: Optional[str] = Field(default=None)
+    learning_preferences: Optional[str] = Field(default=None)
+    notification_settings: Optional[str] = Field(default=None)
+    profile_vector: Optional[str] = Field(default=None)
 
 class UserAIProfile(UserAIProfileBase, table=True):
     """사용자 AI 프로필 테이블"""
@@ -162,10 +143,10 @@ class UserAIProfile(UserAIProfileBase, table=True):
         sa_column=Column(DateTime(timezone=True), onupdate=text("CURRENT_TIMESTAMP"))
     )
 
-    # 인덱스 정의
+    # 인덱스 정의 (실제 데이터베이스 구조에 맞춤)
     __table_args__ = (
-        Index("idx_user_ai_profiles_activity", "total_chat_sessions", "total_messages"),
-        Index("idx_user_ai_profiles_keywords_gin", "frequent_keywords", postgresql_using="gin"),
+        Index("idx_user_ai_profiles_interests", "current_interests"),
+        Index("idx_user_ai_profiles_style", "ai_interaction_style"),
     )
 
 class UserAIProfileCreate(UserAIProfileBase):
@@ -178,13 +159,9 @@ class UserAIProfileRead(UserAIProfileBase):
 
 class UserAIProfileUpdate(SQLModel):
     """사용자 AI 프로필 업데이트 스키마"""
-    preferred_search_domains: Optional[List[str]] = None
-    preferred_content_types: Optional[List[str]] = None
-    frequent_keywords: Optional[List[str]] = None
-    total_chat_sessions: Optional[int] = None
-    total_messages: Optional[int] = None
-    avg_session_duration_minutes: Optional[float] = None
-    preferred_response_style: Optional[str] = None
-    preferred_language: Optional[str] = None
-    positive_feedback_count: Optional[int] = None
-    negative_feedback_count: Optional[int] = None
+    preferred_search_domains: Optional[str] = None
+    ai_interaction_style: Optional[str] = None
+    current_interests: Optional[str] = None
+    learning_preferences: Optional[str] = None
+    notification_settings: Optional[str] = None
+    profile_vector: Optional[str] = None
