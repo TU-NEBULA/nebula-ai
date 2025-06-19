@@ -14,16 +14,16 @@ from sqlalchemy.ext.asyncio import (
     async_sessionmaker,
     create_async_engine,
 )
-from sqlalchemy.pool import NullPool
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import SQLModel
 from loguru import logger
-from .config import settings
+from app.core.config import settings
 
 # 비동기 엔진 생성
 async_engine = create_async_engine(
     str(settings.ASYNC_DATABASE_URL),
-    echo=settings.DEBUG,
+    echo=False,  # SQLAlchemy 자세한 로그 비활성화 (필요시에만 True)
     # 연결 풀 설정
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=settings.DB_MAX_OVERFLOW,
@@ -31,11 +31,15 @@ async_engine = create_async_engine(
     pool_recycle=settings.DB_POOL_RECYCLE,
     # RDS 최적화 설정
     pool_pre_ping=True,  # 연결 상태 확인
+    # Celery 워커 환경에서 안전한 연결 종료를 위한 설정
+    pool_reset_on_return='commit',  # 연결 반환 시 트랜잭션 정리
     connect_args={
         "server_settings": {
             "jit": "off",  # JIT 비활성화 (RDS에서 권장)
         },
         "command_timeout": 60,
+        # asyncpg 관련 설정 - 연결 종료 시 이벤트 루프 문제 방지
+        "loop": None,  # 외부 이벤트 루프 사용하지 않음
     },
 )
 
@@ -60,11 +64,25 @@ async def get_async_session() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
         try:
             yield session
-        except Exception:
-            await session.rollback()
+        except SQLAlchemyError as e:
+            logger.error(f"❌ 데이터베이스 세션 오류: {e}")
+            try:
+                await session.rollback()
+            except Exception as rollback_error:
+                logger.error(f"❌ 세션 롤백 실패: {rollback_error}")
+            raise
+        except Exception as e:
+            logger.error(f"❌ 예상치 못한 세션 오류: {e}")
+            try:
+                await session.rollback()
+            except Exception as rollback_error:
+                logger.error(f"❌ 세션 롤백 실패: {rollback_error}")
             raise
         finally:
-            await session.close()
+            try:
+                await session.close()
+            except Exception as close_error:
+                logger.error(f"❌ 세션 종료 실패: {close_error}")
 
 # 데이터베이스 초기화
 async def init_db() -> None:
@@ -74,12 +92,45 @@ async def init_db() -> None:
     """
     try:
         async with async_engine.begin() as conn:
-            # 모든 SQLModel 테이블 생성
-            await conn.run_sync(SQLModel.metadata.create_all)
-        logger.info("✅ 데이터베이스 테이블 초기화 완료")
-    except Exception as e:
+            # 각 테이블을 개별적으로 생성하여 중복 오류 방지
+            from sqlmodel import SQLModel
+            from sqlalchemy import DDL
+            from sqlalchemy.exc import ProgrammingError
+            
+            # 모든 테이블 생성 시도
+            try:
+                await conn.run_sync(SQLModel.metadata.create_all)
+                logger.info("✅ 데이터베이스 테이블 초기화 완료")
+            except ProgrammingError as pe:
+                # 인덱스나 테이블이 이미 존재하는 경우 처리
+                if "already exists" in str(pe):
+                    logger.warning(f"⚠️ 일부 데이터베이스 객체가 이미 존재함: {pe}")
+                    # 테이블만 생성하고 인덱스는 별도 처리
+                    try:
+                        # 테이블만 생성 (인덱스 제외)
+                        await conn.run_sync(_create_tables_only)
+                        logger.info("✅ 데이터베이스 테이블 생성 완료 (인덱스 제외)")
+                    except Exception as table_error:
+                        logger.warning(f"⚠️ 테이블 생성 중 일부 오류 (무시 가능): {table_error}")
+                else:
+                    raise pe
+                    
+    except SQLAlchemyError as e:
         logger.error(f"❌ 데이터베이스 테이블 초기화 실패: {e}")
         raise
+
+def _create_tables_only(bind):
+    """테이블만 생성하고 인덱스는 제외"""
+    from sqlmodel import SQLModel
+    from sqlalchemy.schema import CreateTable
+    
+    for table in SQLModel.metadata.tables.values():
+        try:
+            bind.execute(CreateTable(table, if_not_exists=True))
+        except Exception as e:
+            # 이미 존재하는 테이블은 무시
+            if "already exists" not in str(e):
+                raise
 
 # 연결 테스트
 async def test_connection() -> bool:
@@ -94,7 +145,7 @@ async def test_connection() -> bool:
             await conn.execute(text("SELECT 1"))
         logger.info(f"✅ PostgreSQL 연결 성공 - Host: {settings.POSTGRES_HOST}")
         return True
-    except Exception as e:
+    except SQLAlchemyError as e:
         logger.error(f"❌ PostgreSQL 연결 실패: {e}")
         return False
 
@@ -104,5 +155,5 @@ async def close_db() -> None:
     try:
         await async_engine.dispose()
         logger.info("✅ 데이터베이스 연결 종료 완료")
-    except Exception as e:
-        logger.error(f"❌ 데이터베이스 연결 종료 실패: {e}") 
+    except SQLAlchemyError as e:
+        logger.error(f"❌ 데이터베이스 연결 종료 실패: {e}")

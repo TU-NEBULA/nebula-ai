@@ -29,7 +29,7 @@ class VectorRepository:
     @staticmethod
     async def save_document_vectors(
         session: AsyncSession,
-        user_id: str,
+        user_id: int,
         source_id: str,
         source_type: str,
         chunks: List[str],
@@ -68,17 +68,17 @@ class VectorRepository:
         if len(chunks) != len(embeddings):
             raise ValueError("청크 수와 임베딩 수가 일치하지 않습니다")
         
-        # 기존 동일 소스 문서 삭제
-        await VectorRepository.delete_documents_by_source(
-            session, user_id, source_id, source_type
-        )
+        # 기존 동일 소스 문서 삭제 로직 제거 - 상위 레벨에서 관리
+        # await VectorRepository.delete_documents_by_source(
+        #     session, user_id, source_id, source_type
+        # )
         
         saved_vectors = []
         for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
             content_hash = VectorRepository._generate_content_hash(chunk)
             
             document_vector = DocumentVector(
-                user_id=user_id,
+                user_id=int(user_id),
                 source_id=source_id,
                 source_type=source_type,
                 chunk_index=i,
@@ -106,10 +106,78 @@ class VectorRepository:
         return saved_vectors
     
     @staticmethod
+    async def save_single_document_vector(
+        session: AsyncSession,
+        user_id: int,
+        source_id: str,
+        source_type: str,
+        chunk_index: int,
+        content: str,
+        embedding: List[float],
+        title: Optional[str] = None,
+        url: Optional[str] = None,
+        keywords: Optional[List[str]] = None,
+        summary: Optional[str] = None,
+        embedding_model: str = "text-embedding-3-small",
+        chunk_size: int = 1000,
+        chunk_overlap: int = 200,
+        extra_metadata: Optional[Dict[str, Any]] = None
+    ) -> List[DocumentVector]:
+        """
+        단일 문서 벡터를 저장합니다. (기존 삭제 없이)
+        
+        Args:
+            session: 데이터베이스 세션
+            user_id: 사용자 ID
+            source_id: 원본 문서 ID
+            source_type: 소스 타입
+            chunk_index: 청크 인덱스
+            content: 청크 내용
+            embedding: 임베딩 벡터
+            title: 문서 제목
+            url: 원본 URL
+            keywords: 키워드 목록
+            summary: 문서 요약
+            embedding_model: 사용된 임베딩 모델
+            chunk_size: 청크 크기
+            chunk_overlap: 청크 겹침
+            extra_metadata: 추가 메타데이터
+            
+        Returns:
+            저장된 DocumentVector 객체 리스트 (단일 요소)
+        """
+        content_hash = VectorRepository._generate_content_hash(content)
+        
+        document_vector = DocumentVector(
+            user_id=int(user_id),
+            source_id=source_id,
+            source_type=source_type,
+            chunk_index=chunk_index,
+            content=content,
+            content_hash=content_hash,
+            embedding=embedding,
+            title=title,
+            url=url,
+            keywords=keywords,
+            summary=summary,
+            embedding_model=embedding_model,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            extra_metadata=extra_metadata
+        )
+        
+        session.add(document_vector)
+        await session.commit()
+        await session.refresh(document_vector)
+        
+        logger.info(f"📝 단일 벡터 저장 완료 - user_id: {user_id}, source_id: {source_id}, chunk_index: {chunk_index}")
+        return [document_vector]
+    
+    @staticmethod
     async def similarity_search(
         session: AsyncSession,
         query_embedding: List[float],
-        user_id: Optional[str] = None,
+        user_id: Optional[int] = None,
         source_types: Optional[List[str]] = None,
         limit: int = 10,
         similarity_threshold: float = 0.7
@@ -139,9 +207,10 @@ class VectorRepository:
             (1 - DocumentVector.embedding.cosine_distance(query_embedding)) >= similarity_threshold
         )
         
-        # 사용자별 필터링
-        if user_id:
-            query = query.where(DocumentVector.user_id == user_id)
+        # 사용자별 필터링 - 정수 타입 명시적 사용
+        if user_id is not None:
+            # user_id를 명시적으로 정수로 처리
+            query = query.where(DocumentVector.user_id == int(user_id))
         
         # 소스 타입별 필터링
         if source_types:
@@ -163,7 +232,7 @@ class VectorRepository:
         session: AsyncSession,
         query_embedding: List[float],
         query_text: Optional[str] = None,
-        user_id: Optional[str] = None,
+        user_id: Optional[int] = None,
         source_types: Optional[List[str]] = None,
         keywords: Optional[List[str]] = None,
         limit: int = 10,
@@ -210,8 +279,9 @@ class VectorRepository:
         )
         
         # 필터링 조건들
-        if user_id:
-            query = query.where(DocumentVector.user_id == user_id)
+        if user_id is not None:
+            # user_id를 명시적으로 정수로 처리
+            query = query.where(DocumentVector.user_id == int(user_id))
         
         if source_types:
             query = query.where(DocumentVector.source_type.in_(source_types))
@@ -233,14 +303,14 @@ class VectorRepository:
     @staticmethod
     async def get_documents_by_source(
         session: AsyncSession,
-        user_id: str,
+        user_id: int,
         source_id: str,
         source_type: str
     ) -> List[DocumentVector]:
         """특정 소스의 모든 문서 벡터를 조회합니다."""
         stmt = select(DocumentVector).where(
             and_(
-                DocumentVector.user_id == user_id,
+                DocumentVector.user_id == int(user_id),
                 DocumentVector.source_id == source_id,
                 DocumentVector.source_type == source_type
             )
@@ -250,9 +320,45 @@ class VectorRepository:
         return list(result.scalars().all())
     
     @staticmethod
+    async def get_documents_by_user(
+        session: AsyncSession,
+        user_id: int,
+        source_type: Optional[str] = None,
+        limit: Optional[int] = None
+    ) -> List[DocumentVector]:
+        """
+        특정 사용자의 모든 문서 벡터를 조회합니다.
+        
+        Args:
+            session: 데이터베이스 세션
+            user_id: 사용자 ID (int)
+            source_type: 특정 소스 타입만 조회 (선택적)
+            limit: 최대 결과 수 (선택적)
+            
+        Returns:
+            DocumentVector 객체들의 리스트
+        """
+        stmt = select(DocumentVector).where(DocumentVector.user_id == int(user_id))
+        
+        if source_type:
+            stmt = stmt.where(DocumentVector.source_type == source_type)
+        
+        # 생성 시간 역순으로 정렬 (최신 순)
+        stmt = stmt.order_by(DocumentVector.created_at.desc())
+        
+        if limit:
+            stmt = stmt.limit(limit)
+        
+        result = await session.execute(stmt)
+        documents = list(result.scalars().all())
+        
+        logger.info(f"📚 사용자 문서 조회 완료 - user_id: {user_id}, source_type: {source_type}, 결과 수: {len(documents)}")
+        return documents
+    
+    @staticmethod
     async def delete_documents_by_source(
         session: AsyncSession,
-        user_id: str,
+        user_id: int,
         source_id: str,
         source_type: str
     ) -> int:
@@ -274,17 +380,24 @@ class VectorRepository:
     @staticmethod
     async def get_user_document_count(
         session: AsyncSession,
-        user_id: str,
+        user_id: Optional[int] = None,
         source_type: Optional[str] = None
     ) -> int:
-        """사용자의 문서 수를 조회합니다."""
-        query = select(DocumentVector).where(DocumentVector.user_id == user_id)
+        """사용자의 문서 수를 조회합니다. user_id가 None이면 전체 문서 수를 반환합니다."""
+        query = select(DocumentVector)
+        
+        if user_id is not None:
+            query = query.where(DocumentVector.user_id == int(user_id))
         
         if source_type:
             query = query.where(DocumentVector.source_type == source_type)
         
         result = await session.execute(query)
-        return len(list(result.scalars().all()))
+        documents = list(result.scalars().all())
+        count = len(documents)
+        
+        logger.debug(f"📊 문서 수 조회 - user_id: {user_id}, source_type: {source_type}, 결과: {count}")
+        return count
     
     @staticmethod
     async def get_vector_stats(session: AsyncSession) -> Dict[str, Any]:

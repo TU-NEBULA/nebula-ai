@@ -2,24 +2,21 @@
 Nebula NLP 데이터 추출기
 """
 
-import io
-import base64
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List
 from urllib.parse import urljoin
 import requests
-from PIL import Image
 from bs4 import BeautifulSoup
 from loguru import logger
-from app.models.extract_data import ExtractDataModel
+from app.models.extract_data import ExtractDataRequest
+from app.external.s3_service import download_html_from_s3
+from app.core.config import settings
 from app.utils.text_processing import (
-    extract_main_text, 
-    extract_keywords, 
-    smart_keyword_extraction,
-    generate_text_summary
+    extract_main_text,
+    smart_keyword_extraction
 )
 
 
-class NebulaNLPExtractor:
+class NebulaNLPExtractor:  # pylint: disable=too-few-public-methods
     """
     Nebula AI NLP 데이터 추출기
     """
@@ -27,56 +24,61 @@ class NebulaNLPExtractor:
     def __init__(self):
         """초기화"""
         self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        })
+        user_agent = (
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) '
+            'Chrome/91.0.4472.124 Safari/537.36'
+        )
+        self.session.headers.update({'User-Agent': user_agent})
 
-    async def extract_and_process(self, request: ExtractDataModel) -> Dict[str, Any]:
+    async def extract_and_process(self, request: ExtractDataRequest) -> Dict[str, Any]:
         """
         데이터 추출 및 처리
-        
+
         Args:
-            request: 추출 요청 모델
-            
+            request: 추출 요청 모델 (url, s3_key 포함)
+
         Returns:
             처리 결과 딕셔너리
         """
-        logger.info(f"🔍 데이터 추출 처리 시작 - user_id: {request.user_id}, url: {request.url}")
+        logger.info(f"🔍 데이터 추출 처리 시작 - user_id: {request.user_id}, url: {request.url}, s3_key: {request.s3_key}")
 
         try:
-            # HTML 컨텐츠 가져오기
-            html_content = await self._fetch_html_content(request.url)
-            
+            # S3에서 HTML 컨텐츠 가져오기
+            html_content = await self._fetch_html_from_s3(request.s3_key)
+
             # HTML 파싱
             soup = BeautifulSoup(html_content, 'html.parser')
-            
-            # 이미지 추출 및 썸네일 생성
-            thumbnails = await self._extract_thumbnails(soup, request.url)
-            
+
+            # 이미지 추출 및 썸네일 생성 (원본 URL 사용)
+            thumbnail = self._extract_thumbnail(soup, request.url)
+
             # 텍스트 추출
             text_content = self._extract_text_content(soup)
-            
+
             # TF-IDF를 사용한 키워드 추출
-            keywords = await self._extract_keywords_tfidf(text_content)
-            
+            keywords = await self._extract_keywords_tfidf(text_content, request.user_id)
+
             # 결과 구성
             result = {
                 "user_id": request.user_id,
                 "url": request.url,
+                "s3_key": request.s3_key,
                 "documents": [{
                     "content": text_content[:1000] if text_content else "",  # 첫 1000자만
                     "keywords": keywords,
-                    "thumbnails": thumbnails,
+                    "thumbnail": thumbnail,
                     "meta_description": self._extract_meta_description(soup)
                 }],
                 "status": "processed"
             }
 
-        except Exception as e:
+        except (requests.RequestException, ValueError, TypeError, Exception) as e:
             logger.error(f"❌ 데이터 추출 처리 중 오류 발생 - user_id: {request.user_id}, error: {str(e)}")
             result = {
                 "user_id": request.user_id,
                 "url": request.url,
+                "s3_key": request.s3_key,
                 "documents": [],
                 "status": "error",
                 "error": str(e)
@@ -85,107 +87,108 @@ class NebulaNLPExtractor:
         logger.info(f"✅ 데이터 추출 처리 완료 - user_id: {request.user_id}")
         return result
 
+    async def _fetch_html_from_s3(self, s3_key: str) -> str:
+        """S3에서 HTML 컨텐츠 가져오기"""
+        try:
+            html_content = download_html_from_s3(s3_key)
+            logger.info(f"✅ S3에서 HTML 다운로드 성공: {s3_key}")
+            return html_content
+        except Exception as e:
+            logger.error(f"❌ S3에서 HTML 다운로드 실패: {s3_key}, error: {str(e)}")
+            raise
+
     async def _fetch_html_content(self, url: str) -> str:
-        """HTML 컨텐츠 가져오기"""
+        """HTML 컨텐츠 가져오기 (기존 URL 방식, 필요시 사용)"""
         try:
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
             return response.text
-        except Exception as e:
+        except requests.RequestException as e:
             logger.error(f"HTML 컨텐츠 가져오기 실패: {url}, error: {str(e)}")
             raise
 
-    async def _extract_thumbnails(self, soup: BeautifulSoup, base_url: str) -> List[Dict[str, Any]]:
-        """이미지 추출 및 썸네일 생성"""
-        thumbnails = []
-        images = soup.find_all('img', src=True)
-        
-        # 최대 3개의 이미지만 처리
-        for img in images[:3]:
-            try:
-                img_url = img.get('src')
-                if not img_url:
-                    continue
-                
-                # 상대 URL을 절대 URL로 변환
+    def _extract_thumbnail(self, soup: BeautifulSoup, base_url: str = None) -> str:
+        """이미지 URL 추출"""
+        # 우선순위에 따른 이미지 추출
+        # 1. Open Graph 이미지
+        og_image = soup.find('meta', attrs={'property': 'og:image'})
+        if og_image and og_image.get('content'):
+            img_url = og_image.get('content')
+            # base_url이 있을 때만 절대 URL 변환
+            if base_url and not img_url.startswith('http'):
                 img_url = urljoin(base_url, img_url)
-                
-                # 이미지 다운로드 및 썸네일 생성
-                thumbnail_data = await self._create_thumbnail(img_url)
-                if thumbnail_data:
-                    thumbnails.append({
-                        "original_url": img_url,
-                        "alt_text": img.get('alt', ''),
-                        "thumbnail_base64": thumbnail_data,
-                        "width": 150,  # 썸네일 크기
-                        "height": 150
-                    })
-                    
-            except Exception as e:
-                logger.warning(f"이미지 처리 실패: {img_url}, error: {str(e)}")
-                continue
-        
-        return thumbnails
+            return img_url
 
-    async def _create_thumbnail(self, img_url: str) -> Optional[str]:
-        """이미지 썸네일 생성"""
-        try:
-            # 이미지 다운로드
-            response = self.session.get(img_url, timeout=5)
-            response.raise_for_status()
-            
-            # 이미지 열기
-            image = Image.open(io.BytesIO(response.content))
-            
-            # RGB로 변환 (RGBA나 다른 모드인 경우)
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-            
-            # 썸네일 생성 (150x150)
-            image.thumbnail((150, 150), Image.Resampling.LANCZOS)
-            
-            # Base64로 인코딩
-            buffer = io.BytesIO()
-            image.save(buffer, format='JPEG', quality=85)
-            image_base64 = base64.b64encode(buffer.getvalue()).decode()
-            
-            return image_base64
-            
-        except Exception as e:
-            logger.warning(f"썸네일 생성 실패: {img_url}, error: {str(e)}")
-            return None
+        # 2. 첫 번째 img 태그
+        first_img = soup.find('img', src=True)
+        if first_img:
+            img_url = first_img.get('src')
+            if img_url:
+                # base_url이 있을 때만 상대 URL을 절대 URL로 변환
+                if base_url and not img_url.startswith('http'):
+                    img_url = urljoin(base_url, img_url)
+                return img_url
+
+        # 3. 썸네일이 없는 경우 기본 이미지 사용
+        return settings.BASE_THUMBNAIL
 
     def _extract_text_content(self, soup: BeautifulSoup) -> str:
         """텍스트 컨텐츠 추출"""
         # HTML을 문자열로 변환하여 extract_main_text 함수 사용
         html_content = str(soup)
-        return extract_main_text(html_content)
-
-    async def _extract_keywords_tfidf(self, text: str, max_keywords: int = 3) -> List[str]:
-        """TF-IDF를 사용한 키워드 추출"""
-        if not text:
-            return []
+        logger.debug(f"📄 HTML 길이: {len(html_content)}")
         
-        try:
-            # text_processing.py의 extract_keywords 함수 사용
-            keywords = extract_keywords(text, max_keywords)
-            return keywords
+        text_content = extract_main_text(html_content)
+        logger.info(f"📝 추출된 텍스트 길이: {len(text_content) if text_content else 0}")
+        
+        if text_content and len(text_content) > 100:
+            logger.debug(f"📝 텍스트 샘플 (첫 200자): {text_content[:200]}...")
+        elif text_content:
+            logger.debug(f"📝 전체 텍스트: {text_content}")
+        else:
+            logger.warning("⚠️ 텍스트 추출 실패 - 빈 결과")
             
-        except Exception as e:
-            logger.error(f"키워드 추출 실패: {str(e)}")
+        return text_content
+
+    async def _extract_keywords_tfidf(
+        self, text: str, user_id: str, max_keywords: int = 3
+    ) -> List[str]:
+        """TF-IDF를 사용한 키워드 추출"""
+        logger.info(f"🔍 키워드 추출 시작 - user_id: {user_id}, 텍스트 길이: {len(text) if text else 0}")
+        
+        if not text:
+            logger.warning(f"⚠️ 빈 텍스트로 인한 키워드 추출 불가 - user_id: {user_id}")
             return []
 
+        if len(text.strip()) < 10:
+            logger.warning(f"⚠️ 텍스트가 너무 짧음 (길이: {len(text.strip())}) - user_id: {user_id}")
+            return []
+
+        try:
+            logger.debug(f"📝 텍스트 샘플 (첫 200자) - user_id: {user_id}: {text[:200]}...")
+            keywords = await smart_keyword_extraction(text, user_id, max_keywords)
+            
+            if keywords:
+                logger.info(f"✅ 키워드 추출 성공 - user_id: {user_id}, 키워드 수: {len(keywords)}, 키워드: {keywords}")
+            else:
+                logger.warning(f"⚠️ smart_keyword_extraction에서 빈 결과 반환 - user_id: {user_id}")
+                
+            return keywords
+
+        except Exception as e:
+            logger.error(f"❌ 키워드 추출 중 예외 발생 - user_id: {user_id}, 오류: {str(e)}")
+            logger.exception(f"키워드 추출 예외 상세 - user_id: {user_id}")
+            return []
 
     def _extract_meta_description(self, soup: BeautifulSoup) -> str:
         """메타 설명 추출"""
         meta_desc = soup.find('meta', attrs={'name': 'description'})
         if meta_desc and meta_desc.get('content'):
             return meta_desc.get('content').strip()
-        
+
         # Open Graph description 시도
         og_desc = soup.find('meta', attrs={'property': 'og:description'})
         if og_desc and og_desc.get('content'):
             return og_desc.get('content').strip()
-        
+
         return ""
-    

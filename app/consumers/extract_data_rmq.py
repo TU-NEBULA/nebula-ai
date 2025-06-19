@@ -5,15 +5,17 @@
 S3에 저장된 HTML에서 이미지와 키워드를 추출하고 그 결과를 응답으로 반환합니다.
 """
 import traceback
+import json
+import uuid
 
 from aio_pika import IncomingMessage, Message
-from pydantic import BaseModel, Field, ConfigDict
+from aio_pika.exceptions import AMQPException
+from pydantic import BaseModel, Field, ConfigDict, ValidationError
 from loguru import logger
 
 from app.core.rabbit import get_rabbit_connection
-from app.services.extract_data import extract_data_from_s3_async
 from app.core.config import settings
-from app.models.extract_data import ExtractDataModel
+from app.models.extract_data import ExtractDataRequest
 from app.tasks.data_extractor_nlp import NebulaNLPExtractor
 
 log = logger.bind(name=__name__)
@@ -28,19 +30,7 @@ class ExtractDataResponse(BaseModel):
     image_url: str
     keywords: list
 
-class ExtractDataRequest(BaseModel):
-    """
-    데이터 추출 요청 모델
-    
-    RabbitMQ를 통해 수신된 데이터 추출 요청을 검증하고 파싱하기 위한 모델입니다.
-    """
-    user_id: int = Field(..., alias="userId")
-    s3_key: str = Field(..., alias="s3Key")
-
-    model_config = ConfigDict(populate_by_name=True)
-
-
-async def on_extract_message(message: IncomingMessage):
+async def on_extract_message(ch, message: IncomingMessage):
     """
     추출 메시지를 처리하는 함수
     """
@@ -48,21 +38,96 @@ async def on_extract_message(message: IncomingMessage):
         logger.info(f"📨 추출 메시지 수신: correlation_id={message.correlation_id}")
 
         try:
-            request = ExtractDataModel.model_validate_json(message.body)
-            logger.info(f"✅ 메시지 파싱 성공: user_id={request.user_id}, url={request.url}")
-        except Exception as e:
+            request = ExtractDataRequest.model_validate_json(message.body)
+            logger.info(f"✅ 메시지 파싱 성공: user_id={request.user_id}, url={request.url}, s3_key={request.s3_key}")
+        except (ValidationError, json.JSONDecodeError, UnicodeDecodeError) as e:
             logger.error(f"❌ 메시지 파싱 실패: {e}")
             return
 
-        logger.info(f"🚀 데이터 추출 시작 - uid={request.user_id}, url={request.url}")
+        logger.info(f"🚀 데이터 추출 시작 - uid={request.user_id}, url={request.url}, s3_key={request.s3_key}")
 
         try:
             extractor = NebulaNLPExtractor()
+            
+            # 🔍 추가: 추출 과정 상세 로깅
+            logger.info(f"📋 추출 요청 상세 정보 - uid={request.user_id}")
+            logger.debug(f"  - URL: {request.url}")
+            logger.debug(f"  - S3 Key: {request.s3_key}")
+            
             result = await extractor.extract_and_process(request)
-            logger.info(f"✅ 데이터 추출 완료 - uid={request.user_id}, 처리된 문서 수: {len(result.get('documents', []))}")
-        except Exception:
+            
+            # 🔍 추가: 추출 결과 상세 분석
+            logger.info(f"📊 추출 결과 분석 - uid={request.user_id}")
+            logger.debug(f"  - 전체 결과 키들: {list(result.keys()) if result else 'None'}")
+            
+            keywords = result.get('keywords', [])
+            image_url = result.get('image_url', '')
+            documents = result.get('documents', [])
+            
+            logger.info(f"  - 키워드 수: {len(keywords)}")
+            logger.info(f"  - 이미지 URL: {'있음' if image_url else '없음'}")
+            logger.info(f"  - 문서 수: {len(documents)}")
+            
+            # 🔍 추가: 키워드가 0개인 경우 경고
+            if len(keywords) == 0:
+                logger.warning(f"⚠️ 키워드 추출 실패 - uid={request.user_id}")
+                logger.debug(f"  - 추출 결과 상세: {result}")
+                
+                # HTML 내용이 있는지 확인
+                if documents:
+                    logger.debug(f"  - 첫 번째 문서 길이: {len(documents[0].get('content', '')) if documents[0] else 0}")
+                else:
+                    logger.warning(f"  - 문서가 전혀 추출되지 않음")
+            else:
+                # 키워드가 있는 경우 첫 몇 개만 로깅 (개인정보 주의)
+                logger.info(f"  - 추출된 키워드 예시: {keywords[:3]}...")
+
+            document_count = len(documents)
+            logger.info(
+                f"✅ 데이터 추출 완료 - uid={request.user_id}, "
+                f"처리된 문서 수: {document_count}"
+            )
+
+            # 🔧 수정: documents 구조에서 올바르게 데이터 추출
+            if documents and len(documents) > 0:
+                first_doc = documents[0]
+                response_keywords = first_doc.get('keywords', [])
+                response_image_url = first_doc.get('thumbnail', '')
+            else:
+                response_keywords = []
+                response_image_url = ''
+                logger.warning(f"⚠️ 문서가 없어 빈 응답 생성 - uid={request.user_id}")
+
+            # 추출 결과를 응답 모델로 변환
+            response = ExtractDataResponse(
+                id=request.user_id,
+                image_url=response_image_url,
+                keywords=response_keywords
+            )
+
+            # Spring Boot로 응답 전송
+            if message.reply_to:
+                await ch.default_exchange.publish(
+                    Message(
+                        body=response.model_dump_json().encode(),
+                        correlation_id=message.correlation_id or str(uuid.uuid4())
+                    ),
+                    routing_key=message.reply_to
+                )
+                # 개인정보를 제외한 안전한 로깅
+                logger.info(
+                    f"📤 응답 전송 완료 - uid={request.user_id}, "
+                    f"reply_to={message.reply_to}, "
+                    f"키워드 수: {len(response.keywords)}, "
+                    f"이미지 URL 존재: {'예' if response.image_url else '아니오'}"
+                )
+            else:
+                logger.warning(f"⚠️ reply_to가 없어 응답을 전송할 수 없습니다 - uid={request.user_id}")
+
+        except Exception as e:
             tb = traceback.format_exc()
             logger.error(f"❌ 데이터 추출 실패: {tb}")
+            raise
 
 
 async def start_extract_consumer():
@@ -82,9 +147,12 @@ async def start_extract_consumer():
         queue = await channel.declare_queue(settings.EXTRACT_REQ_QUEUE, durable=True)
         logger.info(f"✅ 큐 선언 완료: {settings.EXTRACT_REQ_QUEUE}")
 
-        logger.info(f"🎯 Extract consumer 대기 중: {settings.EXTRACT_REQ_QUEUE}")
-        await queue.consume(on_extract_message)
+        async def handler(message: IncomingMessage):
+            await on_extract_message(channel, message)
 
-    except Exception as e:
+        logger.info(f"🎯 Extract consumer 대기 중: {settings.EXTRACT_REQ_QUEUE}")
+        await queue.consume(handler)
+
+    except AMQPException as e:
         logger.error(f"❌ Extract Data Consumer 시작 실패: {e}")
         raise

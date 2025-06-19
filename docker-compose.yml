@@ -5,27 +5,18 @@ services:
     image: wonjun0120/nebula-ai
     container_name: nebula-ai
     restart: always
-    build:
-      context: ./
-      dockerfile: Dockerfile
-    command: pipenv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: pipenv run uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
     env_file:
       - .env
-    volumes:
-      - chroma_data:/app/chroma_db 
 
   celery_worker:
-    build:
-      context: ./
-      dockerfile: Dockerfile
+    image: wonjun0120/nebula-ai
     container_name: celery_worker
-    command: pipenv run celery -A app.core.celery_worker worker --loglevel=info -Q embedding
+    command: pipenv run celery -A app.core.celery_worker worker --loglevel=info -Q bookmark_save,user_profile,user_analysis,recommendations,analytics,monitoring
     env_file:
       - .env
-    volumes:
-      - chroma_data:/app/chroma_db 
 
   flower:
     image: mher/flower
@@ -36,6 +27,3 @@ services:
       - CELERY_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
     ports:
       - "5555:5555"
-
-volumes:
-  chroma_data:

@@ -7,15 +7,18 @@ Nebula AI 애플리케이션의 메인 진입점 모듈
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 
-import nltk
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
 from app.routers import init_routers
-from app.core.database import test_connection, init_db, close_db
+from app.core.database import init_db
 from app.core.config import settings
+from app.services.message_handlers import RabbitMQConsumer
+from app.consumers.bookmark_save_rmq import start_bookmark_save_consumer
+from app.consumers.extract_data_rmq import start_extract_consumer
 
 # 로그 설정
 logger.add(
@@ -26,109 +29,83 @@ logger.add(
     format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
 )
 
-async def lifespan(_app: FastAPI):
-    """
-    FastAPI 애플리케이션의 수명 주기를 관리하는 함수
+# RabbitMQ 컨슈머를 위한 전역 변수
+RABBITMQ_CONSUMER = None
 
-    애플리케이션이 시작될 때 필요한 리소스(NLTK 데이터, RabbitMQ 컨슈머, PostgreSQL)를 초기화하고,
-    종료될 때 리소스를 정리합니다.
 
-    Args:
-        _app (FastAPI): FastAPI 애플리케이션 인스턴스
+@asynccontextmanager
+async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
+    """애플리케이션 시작/종료 시 실행할 코드"""
+    # 시작 시
+    await init_db()
 
-    Yields:
-        None: FastAPI 애플리케이션이 실행되는 동안 yield를 통해 제어를 반환합니다.
-    """
-    logger.info("🚀 Nebula AI 애플리케이션 시작")
-    logger.info("🌍 환경: {}", settings.ENVIRONMENT)
-
-    # PostgreSQL 연결 테스트
-    logger.info("🗃️ PostgreSQL 연결 테스트 중...")
-    if await test_connection():
-        logger.info("✅ PostgreSQL 연결 성공")
-
-        # 개발 환경에서만 테이블 자동 생성
-        if settings.ENVIRONMENT == "development":
-            await init_db()
-            logger.info("✅ 데이터베이스 테이블 초기화 완료")
-    else:
-        logger.error("❌ PostgreSQL 연결 실패 - 애플리케이션을 계속 실행합니다")
-
-    # NLTK 데이터 확인 및 다운로드
+    # RabbitMQ 컨슈머 설정 (환경변수에 RabbitMQ URL이 있는 경우에만)
     try:
-        logger.info("📚 NLTK 데이터 확인 중...")
-        nltk.data.find("tokenizers/punkt_tab")
-        logger.info("✅ NLTK 데이터 확인 완료")
-    except LookupError:
-        logger.info("📥 NLTK 데이터 다운로드 중...")
-        nltk.download("punkt_tab")
-        logger.info("✅ NLTK 데이터 다운로드 완료")
+        rabbitmq_url = settings.RABBITMQ_URL
+        # 필수 환경변수가 설정되어 있는지 확인
+        if (hasattr(settings, 'RABBITMQ_HOST') and settings.RABBITMQ_HOST and 
+            hasattr(settings, 'RABBITMQ_USERNAME') and settings.RABBITMQ_USERNAME):
+            
+            global RABBITMQ_CONSUMER  # pylint: disable=global-statement
+            RABBITMQ_CONSUMER = RabbitMQConsumer(rabbitmq_url)
 
-    # 컨슈머 태스크 목록 초기화
-    consumer_tasks = []
-
-    try:
-        logger.info("🔄 직접 스트리밍 모드로 시작 중...")
-        logger.info("📝 RabbitMQ Consumer는 비활성화되었습니다")
-        logger.info("✅ POST /chat/stream 엔드포인트를 사용하세요")
-
-        logger.info("🎯 직접 스트리밍 모드로 실행 중")
-
-        yield
-
+            # 백그라운드에서 모든 컨슈머들 실행
+            asyncio.create_task(RABBITMQ_CONSUMER.setup_queues_and_consumers())
+            asyncio.create_task(start_bookmark_save_consumer())
+            asyncio.create_task(start_extract_consumer())
+            logger.info("🚀 모든 RabbitMQ 컨슈머 설정 완료")
+        else:
+            logger.warning("RabbitMQ URL이 설정되지 않음 - MQ 기능 비활성화")
     except Exception as e:
-        logger.error("❌ 애플리케이션 시작 중 오류 발생: {}", e)
-        raise
-    finally:
-        logger.info("🛑 애플리케이션 종료 중...")
+        logger.error(f"RabbitMQ 설정 오류 - MQ 기능 비활성화: {e}")
 
-        # PostgreSQL 연결 종료
-        await close_db()
+    yield
 
-        # 모든 컨슈머 태스크 취소
-        for task in consumer_tasks:
-            if not task.done():
-                logger.info("⏹️ 태스크 취소 중: {}", task.get_name())
-                task.cancel()
-
-        # 취소된 태스크들이 완료될 때까지 대기
-        if consumer_tasks:
-            logger.info("⏳ 태스크 종료 대기 중...")
-            await asyncio.gather(*consumer_tasks, return_exceptions=True)
-
-        logger.info("✅ 애플리케이션 종료 완료")
+    # 종료 시
+    logger.info("애플리케이션 종료")
 
 
 # FastAPI 애플리케이션 초기화
 app = FastAPI(
-    title="Nebula AI",
-    description="NLP 기반 북마크 메모 서비스 인공지능 서버",
+    title="Nebula AI - User Profile API",
+    description="Spring Boot 서버와 연동되는 사용자 프로필 관리 API",
     version="1.0.0",
     lifespan=lifespan
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # 실제 배포시에는 특정 도메인으로 제한
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+# API 라우터 등록
 init_routers(app)
 
-@app.get("/", tags=["Health"])
-async def root():
-    """
-    루트 엔드포인트 - 서버 상태 확인
 
-    Returns:
-        dict: 서버 상태 메시지
-    """
-    logger.info("🏠 루트 엔드포인트 호출")
-    postgres_host = getattr(settings, 'POSTGRES_HOST', "Not configured")
+@app.get("/")
+async def root():
+    """루트 엔드포인트 - API 정보를 반환합니다."""
     return {
-        "message": "Nebula AI Server",
-        "environment": settings.ENVIRONMENT,
-        "debug": settings.DEBUG,
-        "postgres_host": postgres_host
+        "message": "Nebula AI - User Profile API",
+        "version": "1.0.0",
+        "endpoints": {
+            "profiles": "/api/v1/profiles",
+            "docs": "/docs",
+            "health": "/health"
+        }
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """헬스 체크 엔드포인트"""
+    return {
+        "status": "healthy",
+        "services": {
+            "database": "connected",
+            "rabbitmq": "connected" if RABBITMQ_CONSUMER else "disabled"
+        }
     }

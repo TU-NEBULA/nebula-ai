@@ -193,3 +193,54 @@ logs/*
 .DS_Store
 
 # End of https://www.toptal.com/developers/gitignore/api/python
+
+# Taskmaster AI Configuration and Files
+.taskmaster/
+# Keep only the templates directory for sharing
+!.taskmaster/templates/
+# But ignore any generated files in templates too
+.taskmaster/templates/*.json
+.taskmaster/templates/*.md
+!.taskmaster/templates/example_prd.txt
+
+# Task files - these are generated and shouldn't be in version control
+tasks.json
+# Only ignore tasks/ directory in project root, not app/tasks/
+/tasks/
+*.task.md
+
+# Taskmaster reports and logs
+.taskmaster/reports/
+.taskmaster/logs/
+scripts/prd.txt
+
+# Node.js related (for taskmaster)
+logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+# Dependency directories
+node_modules/
+# Environment variables
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# OS specific 
+
+# AI Development Tools & Editor Configurations
+# cursor
+.cursor
+
+# Roo AI assistant files
+.roo
+.roomodes
+.windsurfrules
+
+# Added by Task Master AI
+# Task files

@@ -30,7 +30,7 @@ class TestChatRepository:
         )
         
         assert session.id is not None
-        assert session.user_id == str(user_id)
+        assert session.user_id == user_id
         assert session.title == title
         assert session.session_type == "test"
         assert session.is_active is True
@@ -58,7 +58,7 @@ class TestChatRepository:
         
         assert retrieved_session is not None
         assert retrieved_session.id == created_session.id
-        assert retrieved_session.user_id == str(user_id)
+        assert retrieved_session.user_id == user_id
         assert retrieved_session.title == "조회 테스트 세션"
 
     @pytest.mark.asyncio
@@ -130,7 +130,7 @@ class TestChatRepository:
         assert user_message.session_id == chat_session.id
         assert user_message.content == "안녕하세요!"
         assert user_message.role == "user"
-        assert user_message.user_id == str(user_id)
+        assert user_message.user_id == user_id
         assert isinstance(user_message.created_at, datetime)
         
         # AI 응답 메시지 저장
@@ -377,7 +377,7 @@ class TestChatRepository:
         
         assert feedback.id is not None
         assert feedback.message_id == ai_message.id
-        assert feedback.user_id == str(user_id)
+        assert feedback.user_id == user_id
         assert feedback.feedback_type == "helpful"
         assert feedback.feedback_score == 5
         assert feedback.feedback_detail["comment"] == "매우 도움이 되었습니다" 

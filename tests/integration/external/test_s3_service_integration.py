@@ -1,4 +1,3 @@
-
 import os
 import boto3
 import pytest
@@ -7,7 +6,7 @@ from botocore.exceptions import ClientError
 from app.core.config import settings
 from app.external.s3_service import download_html_from_s3
 
-TEST_S3_KEY = os.getenv("TEST_S3_KEY", "html_files/(번역) 리액트 개발자를 위한 SSR 심층 분석/084f2539-b658-49c5-8b3d-ba302093bcaa_content.html")
+TEST_S3_KEY = getattr(settings, "TEST_S3_KEY", "html_files/(번역) 리액트 개발자를 위한 SSR 심층 분석/084f2539-b658-49c5-8b3d-ba302093bcaa_content.html")
 
 
 @pytest.mark.integration

@@ -33,6 +33,8 @@ asyncpg = "*"
 alembic = "*"
 greenlet = "*"
 aiohttp = "*"
+pgvector = "*"
+psutil = "*"
 
 [dev-packages]
 pytest-asyncio = "*"

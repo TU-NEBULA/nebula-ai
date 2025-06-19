@@ -43,14 +43,14 @@ class TestChatModels:
     def test_chat_session_create_schema(self):
         """ChatSessionCreate 스키마 테스트"""
         create_data = {
-            "user_id": "123",
+            "user_id": 123,
             "title": "새 세션",
             "session_type": "test"
         }
         
         session_create = ChatSessionCreate(**create_data)
         
-        assert session_create.user_id == "123"
+        assert session_create.user_id == 123
         assert session_create.title == "새 세션"
         assert session_create.session_type == "test"
 
