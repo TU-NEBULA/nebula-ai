@@ -2,48 +2,38 @@ version: '3.8'
 
 services:
   web:
-    image: wonjun0120/nebula-ai
-    container_name: nebula-ai
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: nebula-ai-dev
     restart: always
     command: pipenv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     env_file:
       - .env
     volumes:
-      - /mnt/extra/chroma_db:/app/chroma_db 
+      - ./app:/app/app
+      - ./tests:/app/tests
 
   celery_worker:
-    image: wonjun0120/nebula-ai
-    container_name: celery_worker
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: celery_worker-dev
     command: pipenv run celery -A app.core.celery_worker worker --loglevel=info -Q bookmark_save,user_profile,user_analysis,recommendations,analytics,monitoring
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
     env_file:
       - .env
     volumes:
-      - /mnt/extra/chroma_db:/app/chroma_db
+      - ./app:/app/app
 
   flower:
     image: mher/flower
-    container_name: flower
+    container_name: flower-dev
     restart: always
     environment:
       - FLOWER_PORT=5555
-      - CELERY_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
+    env_file:
+      - .env
     ports:
       - "5555:5555"
-
-volumes:
-  rabbitmq_data:

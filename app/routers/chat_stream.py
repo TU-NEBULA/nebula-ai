@@ -75,7 +75,7 @@ async def _retrieve_context(
                 logger.warning(f"⚠️ 데이터베이스 상태 확인 실패: {e}")
             
             if total_docs == 0:
-                logger.warning(f"⚠️ 사용자 {user_id}의 벡터 문서가 없습니다!")
+                logger.warning(f"⚠️ 사용자 {user_id}의 벡터 문서가 없습니다! 북마크를 먼저 저장해주세요.")
                 return []
             
             # 검색 임계값을 낮춰서 더 많은 결과 포함
@@ -97,17 +97,17 @@ async def _retrieve_context(
             
             logger.info(f"📊 벡터 검색 결과: {len(search_results)}개 문서 발견")
             
-            # 검색 결과가 없으면 전체 사용자 대상으로 재검색
+            # 검색 결과가 없으면 사용자별로 낮은 임계값으로 재검색
             if not search_results:
-                logger.info("🔍 사용자별 검색 결과 없음, 전체 검색으로 재시도...")
+                logger.info("🔍 사용자별 검색 결과 없음, 더 낮은 임계값으로 재시도...")
                 search_results = await vector_service.similarity_search(
                     session=db_session,
                     query=query,
-                    user_id=None,  # 전체 사용자 대상
+                    user_id=user_id,  # 사용자별 검색 유지
                     limit=TOP_K,
-                    similarity_threshold=low_threshold
+                    similarity_threshold=0.15  # 더 낮은 임계값으로 재시도
                 )
-                logger.info(f"📊 전체 검색 결과: {len(search_results)}개 문서 발견")
+                logger.info(f"📊 낮은 임계값 검색 결과: {len(search_results)}개 문서 발견")
             
             # 벡터 검색 결과가 여전히 부족하면 하이브리드 검색 시도
             if len(search_results) < 3:
@@ -133,9 +133,16 @@ async def _retrieve_context(
                 except Exception as e:
                     logger.warning(f"⚠️ 하이브리드 검색 실패: {e}")
 
-            # 검색 결과를 기존 포맷으로 변환
+            # 검색 결과를 기존 포맷으로 변환 (사용자별 검증 포함)
             results = []
+            filtered_count = 0
             for i, (document, score) in enumerate(search_results[:TOP_K]):
+                # 사용자 ID 검증: 현재 사용자의 북마크만 포함
+                if document.user_id != user_id:
+                    logger.warning(f"⚠️ 다른 사용자의 문서 필터링됨 - doc_user_id: {document.user_id}, current_user_id: {user_id}")
+                    filtered_count += 1
+                    continue
+                
                 snippet = document.content[:160].replace("\n", " ")
                 metadata = {
                     "title": document.title or "(제목없음)",
@@ -143,10 +150,14 @@ async def _retrieve_context(
                     "source_id": document.source_id,
                     "source_type": document.source_type,
                     "keywords": document.keywords or [],
-                    "score": score
+                    "score": score,
+                    "user_id": document.user_id  # 디버깅을 위해 user_id 추가
                 }
                 results.append((snippet, metadata))
-                logger.debug(f"📄 문서 {i+1}: {metadata['title'][:30]} (점수: {score:.3f})")
+                logger.debug(f"📄 문서 {len(results)}: {metadata['title'][:30]} (점수: {score:.3f}, user_id: {document.user_id})")
+            
+            if filtered_count > 0:
+                logger.warning(f"⚠️ 총 {filtered_count}개 다른 사용자 문서가 필터링되었습니다")
 
             logger.info(f"✅ 컨텍스트 검색 완료 - 최종 결과: {len(results)}개 문서")
             return results
@@ -162,37 +173,155 @@ def _build_messages(prompt: str, ctx_blocks: List[Tuple[str, Dict[str, Any]]]):
     # - 이전 대화 메시지들을 messages 배열에 포함
     # - 토큰 제한 고려하여 최근 N개 메시지만 포함
 
-    if ctx_blocks:
-        joined = "\n".join(
-            f"{i+1}. {m.get('title','(제목없음)')} | {m.get('url','')}\n{snip}\n(유사도: {m.get('score', 0):.3f})"
-            for i, (snip, m) in enumerate(ctx_blocks[:5])
-        )
-        ctx = f"[CONTEXT - 사용자의 북마크된 문서들]\n{joined}\n"
-        logger.info(f"📝 컨텍스트 구성 완료: {len(ctx_blocks)}개 블록")
-        
-        system_prompt = (
-            "너는 NEBULA AI 비서야. 사용자의 북마크된 문서들을 활용해 한국어로 정확하고 도움이 되는 답변을 해줘. "
-            "제공된 CONTEXT 정보를 바탕으로 답변하되, 출처 문서는 번호로 표시해줘. "
-            "문서의 내용을 바탕으로 구체적이고 상세한 정보를 제공해줘."
-        )
-    else:
-        ctx = "[CONTEXT]\n(사용자의 북마크에서 관련 문서를 찾지 못했습니다)\n"
-        logger.warning("⚠️ 관련 문서를 찾지 못했습니다")
+    # 새로운 NebulaBot v1.0 시스템 프롬프트 적용
+    system_prompt = """SYSTEM: 〈NebulaBot v1.0〉  
+너는 'NEBULA' 프로젝트의 지식 비서이다.  
+목표는 **사용자가 저장한 북마크와 그래프 메타데이터**를 활용해, 질문 의도에 맞춰 "찾기 → 요약 → 추천 → 그래프 → 로드맵 → 신규 요약" 6가지 업무를 처리하고 근거까지 제시하는 것이다.  
 
-    system_prompt = (
-            "너는 NEBULA AI 비서야. 사용자의 북마크에서 관련 문서를 찾지 못했지만, "
-            "일반적인 지식을 바탕으로 한국어로 도움이 되는 답변을 제공해줘. "
-            "사용자가 원하는 정보에 대해 북마크에 관련 문서가 없다는 것을 알리고, "
-            "대신 일반적인 정보나 추천사항을 제공해줘."
-    )
+---
+
+## 📥 입력 스키마
+```json
+{
+  "user_query": "string — 사용자 질문 원문",
+  "bookmarks": [
+    {
+      "title": "string",
+      "url": "string",
+      "snippet": "string (최대 300자 요약)",
+      "tags": ["string", ...],
+      "createdAt": "YYYY-MM-DD",
+      "score": float  // 임베딩 코사인 유사도 (0~1, 높을수록 유사)
+    },
+    …
+  ],
+  "graph": {          // S-4에서만 주어짐
+    "nodes": [...],
+    "edges": [...]
+  },
+  "intent": "FIND | SUMMARY | RECOMMEND | GRAPH | ROADMAP | RECENT_TLDR"
+}
+```
+
+* **bookmarks** 는 Top-k(≤8)만 전달된다.
+* **intent** 는 서버가 시나리오를 분류해 전달한 값이다.
+
+---
+
+## 🛠️ 공통 지침
+
+1. **한국어 설명형 문체**(존댓말 X) 사용.
+2. 핵심→세부 순서로 깔끔하게, 필요 시 소제목(`###`)·리스트 사용.
+3. 답변 끝에 **"📌 관련 북마크"** 섹션을 넣어 `- [제목](url) | 연관 키워드` 형식으로 최대 5개 나열.
+4. 북마크가 없으면 "관련 북마크를 찾지 못했다"고 명시하고, 대안(재검색·태그 추가)을 제안.
+5. 사실 여부가 불확실하면 추정 대신 "추가 확인이 필요하다"고 밝히기.
+
+---
+
+## 🎬 시나리오별 출력 규칙
+
+| intent           | 설명          | 응답 포맷 요약                             |
+| ---------------- | ----------- | ------------------------------------ |
+| **FIND**         | 특정 글·정보 회상  | *직접 답변* → 왜 이 북마크가 적합한지 근거 1-2줄      |
+| **SUMMARY**      | N개 문서 요약    | 각 문서 1줄 + 통합 TL;DR 3-5줄              |
+| **RECOMMEND**    | 유사·관련 문서 추천 | 문서 간 공통 키워드·주제 설명 + 추천 리스트           |
+| **GRAPH**        | 그래프 뷰 요청    | 전체 맥락 요약 후 `graph` 설명(노드 수, 연결 의미 등) |
+| **ROADMAP**      | 학습 순서 제안    | 단계(①-③…)별 읽기 순서 + 학습 포인트             |
+| **RECENT\_TLDR** | 방금 저장한 글 핵심 | 5줄 이하 TL;DR + 다음 읽을 문서 제안            |
+
+---
+
+## 💬 예시 템플릿
+
+### 1. FIND
+
+```
+### 원하는 정보
+OpenTelemetry Collector 설정 방법은 다음과 같다 …
+
+- **핵심 단계**  
+  1. …  
+  2. …
+
+🔍 *왜 이 북마크인가?*  
+해당 글은 Collector 버전 0.95 기준 설정 YAML 예시를 다룬다.
+
+📌 관련 북마크  
+- [Deep Dive into OTel](https://…) | tracing, collector  
+- …
+```
+
+### 2. SUMMARY
+
+```
+### 지난주 #RAG 북마크 요약
+**TL;DR**  
+1. …
+
+| 제목 | 핵심 한줄 |
+|------|-----------|
+| RAG Architecture Patterns | Retrieval-Augmented Generation 핵심 구성 3단계 … |
+| … | … |
+
+📌 관련 북마크
+- …
+```
+
+*(RECOMMEND·GRAPH·ROADMAP·RECENT\_TLDR 역시 같은 규칙으로 작성)*
+
+---
+
+## ⚠️ 금지 사항
+
+* URL 복사만 나열하고 설명을 생략하지 말 것.
+* 사용자가 제공하지 않은 개인 정보·추측 사실 생성 금지.
+* 광고·홍보성 멘트 삽입 금지.
+
+---
+
+### ✅ 최종 목표
+
+질문 의도(intent)를 만족하면서 **콘텐츠 근거가 명확한 답변**을 빠르게 스트리밍한다."""
+
+    # 북마크 데이터를 JSON 형식으로 구성
+    if ctx_blocks:
+        bookmarks_data = []
+        for i, (snippet, metadata) in enumerate(ctx_blocks[:8]):  # Top-8로 제한
+            bookmark = {
+                "title": metadata.get('title', '(제목없음)'),
+                "url": metadata.get('url', ''),
+                "snippet": snippet[:300],  # 최대 300자로 제한
+                "tags": metadata.get('keywords', []),
+                "createdAt": metadata.get('created_at', '2024-01-01'),
+                "score": float(metadata.get('score', 0.0))
+            }
+            bookmarks_data.append(bookmark)
+        
+        # FIND 의도로 기본 설정 (추후 의도 분류 로직 추가 가능)
+        user_context = {
+            "user_query": prompt,
+            "bookmarks": bookmarks_data,
+            "intent": "FIND"  # 기본값, 추후 의도 분류 로직으로 개선 가능
+        }
+        
+        context_json = json.dumps(user_context, ensure_ascii=False, indent=2)
+        logger.info(f"📝 컨텍스트 구성 완료: {len(bookmarks_data)}개 북마크")
+    else:
+        # 북마크가 없는 경우
+        user_context = {
+            "user_query": prompt,
+            "bookmarks": [],
+            "intent": "FIND"
+        }
+        context_json = json.dumps(user_context, ensure_ascii=False, indent=2)
+        logger.warning("⚠️ 관련 북마크를 찾지 못했습니다")
 
     return [
         {"role": "system", "content": system_prompt},
-        {"role": "system", "content": ctx},
+        {"role": "user", "content": f"사용자 입력 데이터:\n{context_json}"},
         # TODO: 여기에 conversation_history 메시지들 추가
         # for msg in conversation_history:
         #     messages.append({"role": msg["role"], "content": msg["content"]})
-        {"role": "user", "content": prompt},
     ]
 
 
