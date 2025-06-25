@@ -12,6 +12,7 @@ from loguru import logger
 from sqlmodel import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy import func
 
 from app.models.chat import (
     ChatSession, ChatMessage, RAGReference, UserFeedback
@@ -257,7 +258,8 @@ class ChatRepository:
         session: AsyncSession,
         session_id: uuid.UUID,
         user_id: int,
-        limit: int = 100
+        limit: int = 100,
+        offset: int = 0
     ) -> List[ChatMessage]:
         """채팅 세션의 메시지 목록을 조회합니다."""
         
@@ -275,6 +277,7 @@ class ChatRepository:
                         )
                     )
                     .order_by(ChatMessage.created_at.asc())  # pylint: disable=no-member
+                    .offset(offset)
                     .limit(limit)
                 )
                 result = await new_session.execute(stmt)
@@ -283,6 +286,36 @@ class ChatRepository:
             except Exception as e:
                 logger.error(f"❌ 세션 메시지 조회 실패: {e}")
                 return []
+
+    @staticmethod
+    async def get_session_messages_count(
+        session: AsyncSession,
+        session_id: uuid.UUID,
+        user_id: int
+    ) -> int:
+        """채팅 세션의 총 메시지 수를 조회합니다."""
+        
+        # 새로운 독립적인 트랜잭션으로 처리
+        from app.core.database import AsyncSessionLocal
+        
+        async with AsyncSessionLocal() as new_session:
+            try:
+                stmt = (
+                    select(func.count(ChatMessage.id))
+                    .where(
+                        and_(
+                            ChatMessage.session_id == session_id,
+                            ChatMessage.user_id == user_id
+                        )
+                    )
+                )
+                result = await new_session.execute(stmt)
+                total_count = result.scalar() or 0
+                return total_count
+                
+            except Exception as e:
+                logger.error(f"❌ 세션 메시지 수 조회 실패: {e}")
+                return 0
 
     @staticmethod
     async def save_rag_references(

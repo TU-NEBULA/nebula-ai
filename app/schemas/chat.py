@@ -127,6 +127,12 @@ class ChatSessionMessagesResponse(BaseModel):
     session_id: str = Field(description="세션 ID")
     messages: List[ChatMessageResponse] = Field(description="메시지 목록")
 
+class ChatSessionMessagesPaginatedResponse(BaseModel):
+    """페이지네이션이 적용된 채팅 세션 메시지 목록 응답 스키마"""
+    session_id: str = Field(description="세션 ID")
+    messages: List[ChatMessageResponse] = Field(description="메시지 목록")
+    pagination: Dict[str, Any] = Field(description="페이지네이션 정보")
+
 class ChatSessionListResponse(BaseModel):
     """채팅 세션 목록 응답 스키마"""
     sessions: List[ChatSessionResponse] = Field(description="세션 목록")

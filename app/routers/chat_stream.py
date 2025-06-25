@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException, Header, Query
 from fastapi.responses import StreamingResponse
 from loguru import logger
 
@@ -21,7 +21,8 @@ from app.schemas.chat import (
     ChatMessageResponse,
     ChatSessionMessagesResponse,
     ChatSessionListResponse,
-    ChatSessionUpdateRequest
+    ChatSessionUpdateRequest,
+    ChatSessionMessagesPaginatedResponse
 )
 from app.schemas.base import BaseResponse, IDResponse
 from app.repositories.chat_repository import ChatRepository
@@ -209,7 +210,7 @@ async def _generate_chat_stream(
 @router.post(
     "/stream",
     response_class=StreamingResponse,
-    summary="채팅 스트림 (PostgreSQL 연동)",
+    summary="채팅 스트림",
 )
 async def chat_stream_direct(
     request: ChatRequestModel,
@@ -341,17 +342,63 @@ async def chat_stream_direct(
         ) from e
 
 
-# 🆕 세션 생성 API 추가
 @router.post(
     "/sessions",
     response_model=BaseResponse[IDResponse],
-    summary="새 채팅 세션 생성"
+    summary="새 채팅 세션 생성 (legacy - 사용 안함)"
 )
 async def create_chat_session(
     user_id: int,
     title: Optional[str] = None
 ):
-    """새로운 채팅 세션을 생성합니다."""
+    """
+    새로운 채팅 세션을 생성합니다.
+    
+    ## 주요 기능
+    - **새 세션 생성**: 지정된 사용자를 위한 새로운 채팅 세션 생성
+    - **자동 제목**: 제목을 제공하지 않으면 기본 제목 자동 생성
+    - **세션 관리**: 생성된 세션은 향후 대화에서 재사용 가능
+    
+    ## 세션 생성 로직
+    1. **사용자 ID 확인**: 제공된 사용자 ID로 세션 생성
+    2. **제목 처리**: 
+       - 제목 제공시: 사용자가 지정한 제목 사용
+       - 제목 미제공시: "새 대화 YYYY-MM-DD HH:MM" 형식으로 자동 생성
+    3. **세션 설정**: 기본 세션 타입은 "general", 활성 상태로 생성
+    
+    ## 요청 예시
+    ### 제목을 지정한 새 세션 생성
+    ```http
+    POST /chat/sessions?user_id=123&title=프로젝트 기획 회의
+    ```
+    
+    ### 기본 제목으로 새 세션 생성
+    ```http
+    POST /chat/sessions?user_id=123
+    ```
+    ↳ 생성되는 제목: "새 대화 2024-01-15 14:30"
+    
+    ## 응답 형식
+    ```json
+    {
+        "success": true,
+        "message": "채팅 세션이 성공적으로 생성되었습니다",
+        "data": {
+            "id": "550e8400-e29b-41d4-a716-446655440000"
+        }
+    }
+    ```
+    
+    Args:
+        user_id: 세션을 생성할 사용자의 ID
+        title: 세션 제목 (선택적, 미제공시 자동 생성)
+        
+    Returns:
+        BaseResponse[IDResponse]: 생성된 세션의 ID를 포함한 응답
+        
+    Raises:
+        500: 세션 생성 실패시
+    """
     try:
         default_title = f"새 대화 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
         chat_session = await ChatRepository.create_session(
@@ -374,7 +421,6 @@ async def create_chat_session(
         ) from e
 
 
-# 채팅 세션 관리 API 추가
 @router.get(
     "/sessions",
     response_model=BaseResponse[ChatSessionListResponse],
@@ -385,7 +431,74 @@ async def get_user_sessions(
     limit: int = 20,
     offset: int = 0
 ):
-    """사용자의 채팅 세션 목록을 조회합니다."""
+    """
+    사용자의 채팅 세션 목록을 조회합니다.
+    
+    ## 주요 기능
+    - **세션 목록 조회**: 사용자가 생성한 모든 채팅 세션 조회
+    - **페이지네이션 지원**: limit/offset 방식으로 대용량 세션 목록 효율적 처리
+    - **최신순 정렬**: 가장 최근에 업데이트된 세션부터 반환
+    - **세션 상태 포함**: 각 세션의 활성 상태 및 메타데이터 제공
+    
+    ## 정렬 및 필터링
+    1. **정렬 순서**: 최근 업데이트 시간 기준 내림차순 (최신 → 과거)
+    2. **활성/비활성**: 모든 세션 반환 (활성 상태 정보 포함)
+    3. **페이지네이션**: offset + limit 방식으로 메모리 효율적 조회
+    
+    ## 요청 예시
+    ### 기본 조회 (최근 20개)
+    ```http
+    GET /chat/sessions?user_id=123
+    ```
+    
+    ### 페이지네이션 조회
+    ```http
+    GET /chat/sessions?user_id=123&limit=10&offset=20
+    ```
+    ↳ 21번째부터 30번째 세션까지 조회
+    
+    ### 대용량 조회
+    ```http
+    GET /chat/sessions?user_id=123&limit=50&offset=0
+    ```
+    ↳ 최대 50개 세션을 한 번에 조회
+    
+    ## 응답 형식
+    ```json
+    {
+        "success": true,
+        "message": "채팅 세션 목록을 성공적으로 조회했습니다",
+        "data": {
+            "sessions": [
+                {
+                    "id": "550e8400-e29b-41d4-a716-446655440000",
+                    "title": "Python 리스트 정렬 방법",
+                    "session_type": "general",
+                    "created_at": "2024-01-15T10:30:00Z",
+                    "updated_at": "2024-01-15T11:45:00Z",
+                    "is_active": true
+                }
+            ],
+            "total": 1
+        }
+    }
+    ```
+    
+    Args:
+        user_id: 세션 목록을 조회할 사용자의 ID
+        limit: 한 번에 조회할 세션 수 (기본값: 20, 최대 권장: 50)
+        offset: 건너뛸 세션 수 (기본값: 0)
+        
+    Returns:
+        BaseResponse[ChatSessionListResponse]: 세션 목록과 총 개수를 포함한 응답
+        
+    Raises:
+        500: 세션 목록 조회 실패시
+        
+    Note:
+        - 대용량 데이터 처리를 위해 적절한 limit 값 사용 권장
+        - 실시간 업데이트가 필요한 경우 주기적 폴링 또는 WebSocket 고려
+    """
     try:
         sessions = await ChatRepository.get_user_sessions(
             session=None,
@@ -427,20 +540,130 @@ async def get_user_sessions(
 
 @router.get(
     "/sessions/{session_id}/messages",
-    response_model=BaseResponse[ChatSessionMessagesResponse],
-    summary="채팅 세션 메시지 조회"
+    response_model=BaseResponse[ChatSessionMessagesPaginatedResponse],
+    summary="채팅 세션 메시지 조회 (페이지네이션)"
 )
 async def get_session_messages(
     session_id: str,
-    user_id: int
+    user_id: int,
+    page: int = Query(1, ge=1, description="페이지 번호 (1부터 시작)"),
+    size: int = Query(20, ge=1, le=100, description="페이지 크기 (1-100)")
 ):
-    """특정 채팅 세션의 메시지 목록을 조회합니다."""
+    """
+    채팅 세션의 메시지를 페이지네이션으로 조회합니다.
+    
+    ## 주요 기능
+    - **메시지 페이지네이션**: 대화 내역을 효율적으로 페이지 단위로 조회
+    - **권한 검증**: 세션 소유자만 메시지 조회 가능
+    - **시간순 정렬**: 가장 오래된 메시지부터 반환 (대화 흐름 순서)
+    - **메타데이터 제공**: 총 메시지 수, 페이지 정보 등 포함
+    
+    ## 페이지네이션 로직
+    1. **정렬 순서**: 메시지 생성 시간 기준 오름차순 (과거 → 최신)
+    2. **페이지 계산**: (page - 1) * size로 offset 자동 계산
+    3. **권한 확인**: 요청한 사용자가 세션 소유자인지 검증
+    4. **성능 최적화**: 별도 COUNT 쿼리로 총 개수 효율적 조회
+    
+    ## 요청 예시
+    ### 기본 조회 (첫 페이지, 20개)
+    ```http
+    GET /chat/sessions/550e8400-e29b-41d4-a716-446655440000/messages?user_id=123
+    ```
+    
+    ### 특정 페이지 조회
+    ```http
+    GET /chat/sessions/550e8400-e29b-41d4-a716-446655440000/messages?user_id=123&page=3&size=10
+    ```
+    ↳ 3페이지, 페이지당 10개 메시지 조회
+    
+    ### 대용량 페이지 조회
+    ```http
+    GET /chat/sessions/550e8400-e29b-41d4-a716-446655440000/messages?user_id=123&page=1&size=100
+    ```
+    ↳ 첫 페이지에 최대 100개 메시지 조회
+    
+    ## 응답 형식
+    ```json
+    {
+        "success": true,
+        "message": "채팅 세션 메시지를 성공적으로 조회했습니다",
+        "data": {
+            "messages": [
+                {
+                    "id": "msg-001",
+                    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "sender_type": "user",
+                    "content": "Python 리스트 정렬 방법을 알려주세요",
+                    "metadata": {},
+                    "created_at": "2024-01-15T10:30:00Z"
+                }
+            ],
+            "pagination": {
+                "current_page": 1,
+                "page_size": 20,
+                "total_count": 45,
+                "total_pages": 3,
+                "has_next": true,
+                "has_prev": false,
+                "next_page": 2,
+                "prev_page": null
+            }
+        }
+    }
+    ```
+    
+    Args:
+        session_id: 조회할 채팅 세션의 UUID
+        user_id: 요청하는 사용자의 ID (권한 검증용)
+        page: 조회할 페이지 번호 (1부터 시작, 기본값: 1)
+        size: 페이지당 메시지 수 (1-100, 기본값: 20)
+        
+    Returns:
+        BaseResponse[ChatSessionMessagesPaginatedResponse]: 
+            메시지 목록과 페이지네이션 정보를 포함한 응답
+        
+    Raises:
+        400: 잘못된 UUID 형식의 세션 ID
+        404: 세션이 존재하지 않거나 접근 권한이 없음
+        422: 잘못된 페이지 번호 또는 크기 (음수 값 등)
+        500: 메시지 조회 실패시
+        
+    Note:
+        - 대화 내역이 많은 경우 적절한 페이지 크기 사용 권장
+        - 실시간 메시지 수신은 WebSocket 스트림 API 사용
+        - 메시지 순서는 대화 흐름을 유지하기 위해 시간순 정렬
+    """
     try:
+        # 파라미터 검증
+        if page < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="페이지 번호는 1 이상이어야 합니다"
+            )
+            
+        if size < 1 or size > 100:
+            raise HTTPException(
+                status_code=400,
+                detail="페이지 크기는 1-100 사이여야 합니다"
+            )
+        
         session_uuid = uuid.UUID(session_id)
-        messages = await ChatRepository.get_session_messages(
+        offset = (page - 1) * size
+        
+        # 총 메시지 수 조회
+        total_count = await ChatRepository.get_session_messages_count(
             session=None,
             session_id=session_uuid,
             user_id=user_id
+        )
+        
+        # 메시지 목록 조회
+        messages = await ChatRepository.get_session_messages(
+            session=None,
+            session_id=session_uuid,
+            user_id=user_id,
+            limit=size,
+            offset=offset
         )
 
         message_responses = [
@@ -453,15 +676,32 @@ async def get_session_messages(
             )
             for message in messages
         ]
+        
+        # 페이지네이션 정보 계산
+        total_pages = (total_count + size - 1) // size  # 올림 계산
+        has_next = page < total_pages
+        has_prev = page > 1
 
-        session_messages_response = ChatSessionMessagesResponse(
+        pagination_info = {
+            "current_page": page,
+            "page_size": size,
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "has_next": has_next,
+            "has_prev": has_prev,
+            "next_page": page + 1 if has_next else None,
+            "prev_page": page - 1 if has_prev else None
+        }
+
+        session_messages_response = ChatSessionMessagesPaginatedResponse(
             session_id=session_id,
-            messages=message_responses
+            messages=message_responses,
+            pagination=pagination_info
         )
 
-        return BaseResponse[ChatSessionMessagesResponse](
+        return BaseResponse[ChatSessionMessagesPaginatedResponse](
             success=True,
-            message="채팅 메시지 목록을 성공적으로 조회했습니다",
+            message=f"채팅 메시지 목록을 성공적으로 조회했습니다 (페이지 {page}/{total_pages})",
             data=session_messages_response
         )
 
@@ -489,26 +729,92 @@ async def update_chat_session(
     request: ChatSessionUpdateRequest
 ):
     """
-    채팅 세션의 제목을 업데이트합니다.
+    채팅 세션의 정보를 업데이트합니다.
+    
+    ## 주요 기능
+    - **세션 제목 변경**: 채팅 세션의 제목을 사용자가 원하는 이름으로 수정
+    - **권한 검증**: 세션 소유자만 수정 가능
+    - **즉시 반영**: 변경 사항이 즉시 적용되어 업데이트된 정보 반환
+    - **안전한 수정**: 트랜잭션 기반으로 데이터 일관성 보장
+    
+    ## 업데이트 로직
+    1. **세션 존재 확인**: 요청된 세션 ID가 유효한지 검증
+    2. **권한 검증**: 요청한 사용자가 세션 소유자인지 확인
+    3. **제목 업데이트**: 새로운 제목으로 변경 및 업데이트 시간 갱신
+    4. **응답 반환**: 수정된 세션 정보 전체 반환
+    
+    ## 요청 예시
+    ### 세션 제목 변경
+    ```http
+    PUT /chat/sessions/550e8400-e29b-41d4-a716-446655440000?user_id=123
+    Content-Type: application/json
+    
+    {
+        "title": "Python 프로젝트 개발 회의"
+    }
+    ```
+    
+    ### 긴 제목으로 변경
+    ```http
+    PUT /chat/sessions/550e8400-e29b-41d4-a716-446655440000?user_id=123
+    Content-Type: application/json
+    
+    {
+        "title": "머신러닝 모델 성능 개선을 위한 데이터 전처리 및 하이퍼파라미터 튜닝 논의"
+    }
+    ```
+    
+    ## 응답 형식
+    ```json
+    {
+        "success": true,
+        "message": "채팅 세션 정보가 성공적으로 업데이트되었습니다",
+        "data": {
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "title": "Python 프로젝트 개발 회의",
+            "session_type": "general",
+            "created_at": "2024-01-15T10:30:00Z",
+            "updated_at": "2024-01-15T14:45:00Z",
+            "is_active": true
+        }
+    }
+    ```
+    
+    ## 에러 응답 예시
+    ### 권한 없음 (404)
+    ```json
+    {
+        "success": false,
+        "message": "채팅 세션을 찾을 수 없거나 접근 권한이 없습니다"
+    }
+    ```
+    
+    ### 잘못된 UUID (400)
+    ```json
+    {
+        "success": false,
+        "message": "잘못된 세션 ID 형식입니다"
+    }
+    ```
     
     Args:
-        session_id: 업데이트할 세션의 UUID
-        user_id: 세션 소유자의 사용자 ID
-        request: 업데이트할 정보가 담긴 요청 객체
+        session_id: 업데이트할 채팅 세션의 UUID
+        user_id: 요청하는 사용자의 ID (권한 검증용)
+        request: 업데이트할 세션 정보 (현재는 title만 지원)
         
     Returns:
-        업데이트된 세션 정보를 포함한 응답
+        BaseResponse[ChatSessionResponse]: 업데이트된 세션 정보를 포함한 응답
         
     Raises:
-        400: 잘못된 세션 ID 형식
-        404: 세션을 찾을 수 없거나 권한 없음
-        500: 서버 오류
+        400: 잘못된 UUID 형식의 세션 ID
+        404: 세션이 존재하지 않거나 접근 권한이 없음
+        422: 잘못된 요청 데이터 (제목이 너무 긴 경우 등)
+        500: 세션 업데이트 실패시
         
-    Example:
-        PUT /chat/sessions/550e8400-e29b-41d4-a716-446655440000?user_id=123
-        {
-            "title": "새로운 세션 제목"
-        }
+    Note:
+        - 제목은 빈 문자열이 아닌 의미있는 내용으로 설정 권장
+        - 세션 타입이나 활성 상태는 별도 API를 통해 변경
+        - 업데이트 시간은 자동으로 현재 시간으로 갱신
     """
     try:
         session_uuid = uuid.UUID(session_id)
