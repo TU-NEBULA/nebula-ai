@@ -27,7 +27,7 @@ class MessageBuilderService:
         Args:
             prompt: 사용자 질문
             ctx_blocks: RAG 검색 결과
-            conversation_history: 이전 대화 히스토리 (구현 예정)
+            conversation_history: 이전 대화 히스토리
             
         Returns:
             LLM에 전달할 메시지 배열
@@ -38,15 +38,18 @@ class MessageBuilderService:
         
         # 기본 메시지 구성
         messages = [
-            {"role": "system", "content": self.system_prompt},
-            {"role": "user", "content": f"사용자 입력 데이터:\n{context_json}"}
+            {"role": "system", "content": self.system_prompt}
         ]
         
-        # TODO: 대화 히스토리 추가
+        # 대화 히스토리 추가 (시스템 메시지 다음, 현재 사용자 메시지 이전)
         if conversation_history:
-            messages.extend(self._add_conversation_history(conversation_history))
+            history_messages = self._add_conversation_history(conversation_history)
+            messages.extend(history_messages)
             
-        logger.info(f"📝 메시지 구성 완료 - 컨텍스트: {len(ctx_blocks)}개 북마크")
+        # 현재 사용자 메시지 추가
+        messages.append({"role": "user", "content": f"사용자 입력 데이터:\n{context_json}"})
+            
+        logger.info(f"📝 메시지 구성 완료 - 컨텍스트: {len(ctx_blocks)}개 북마크, 히스토리: {len(conversation_history) if conversation_history else 0}개")
         return messages
 
     def _build_user_context(
@@ -57,11 +60,11 @@ class MessageBuilderService:
         """사용자 컨텍스트 데이터 구성"""
         if ctx_blocks:
             bookmarks_data = []
-            for i, (snippet, metadata) in enumerate(ctx_blocks[:8]):  # Top-8로 제한
+            for i, (content, metadata) in enumerate(ctx_blocks[:8]):  # Top-8로 제한
                 bookmark = {
                     "title": metadata.get('title', '(제목없음)'),
                     "url": metadata.get('url', ''),
-                    "snippet": snippet[:300],  # 최대 300자로 제한
+                    "snippet": content,
                     "tags": metadata.get('keywords', []),
                     "createdAt": metadata.get('created_at', '2024-01-01'),
                     "score": float(metadata.get('score', 0.0))
@@ -112,13 +115,59 @@ class MessageBuilderService:
         """
         대화 히스토리를 메시지에 추가합니다.
         
-        TODO: 구현 필요
-        - 토큰 제한 고려하여 최근 N개 메시지만 포함
-        - 중요도에 따른 메시지 필터링
+        토큰 제한을 고려하여 최근 N개 메시지만 포함하고,
+        시스템 메시지와 현재 사용자 메시지는 제외합니다.
+        
+        Args:
+            conversation_history: [{"role": "user/assistant", "content": "..."}, ...]
+            
+        Returns:
+            필터링된 대화 히스토리 메시지 리스트
         """
-        # 현재는 단순히 모든 히스토리를 추가
-        # 추후 토큰 제한과 중요도를 고려한 필터링 로직 추가 필요
-        return conversation_history
+        if not conversation_history:
+            return []
+        
+        # 토큰 제한 설정 (대략적인 추정: 1 토큰 ≈ 4자)
+        MAX_HISTORY_TOKENS = 4000  # 히스토리용 토큰 제한
+        MAX_HISTORY_PAIRS = 5      # 최대 대화 쌍 수 (user + assistant = 1쌍)
+        
+        filtered_history = []
+        total_tokens = 0
+        pair_count = 0
+        
+        # 최신 메시지부터 역순으로 처리
+        for message in reversed(conversation_history):
+            content = message.get("content", "")
+            role = message.get("role", "")
+            
+            # 빈 메시지나 시스템 메시지는 제외
+            if not content.strip() or role == "system":
+                continue
+                
+            # 토큰 수 추정 (한글 기준: 1글자 ≈ 1.5토큰)
+            estimated_tokens = len(content) * 1.5
+            
+            # 토큰 제한 확인
+            if total_tokens + estimated_tokens > MAX_HISTORY_TOKENS:
+                logger.info(f"📝 히스토리 토큰 제한 도달 - 총 {len(filtered_history)}개 메시지 포함")
+                break
+                
+            # 대화 쌍 수 제한 확인 (user 메시지 기준으로 카운트)
+            if role == "user":
+                pair_count += 1
+                if pair_count > MAX_HISTORY_PAIRS:
+                    logger.info(f"📝 히스토리 대화 쌍 제한 도달 - 최대 {MAX_HISTORY_PAIRS}쌍")
+                    break
+            
+            # 메시지 추가 (역순이므로 앞에 삽입)
+            filtered_history.insert(0, {
+                "role": role,
+                "content": content
+            })
+            total_tokens += estimated_tokens
+        
+        logger.info(f"📝 대화 히스토리 추가 - {len(filtered_history)}개 메시지, 예상 토큰: {int(total_tokens)}")
+        return filtered_history
 
     def _get_nebula_system_prompt(self) -> str:
         """NebulaBot v1.0 시스템 프롬프트"""
@@ -175,7 +224,7 @@ class MessageBuilderService:
 | **RECOMMEND**    | 유사·관련 문서 추천 | 문서 간 공통 키워드·주제 설명 + 추천 리스트           |
 | **GRAPH**        | 그래프 뷰 요청    | 전체 맥락 요약 후 `graph` 설명(노드 수, 연결 의미 등) |
 | **ROADMAP**      | 학습 순서 제안    | 단계(①-③…)별 읽기 순서 + 학습 포인트             |
-| **RECENT\_TLDR** | 방금 저장한 글 핵심 | 5줄 이하 TL;DR + 다음 읽을 문서 제안            |
+| **RECENT_TLDR** | 방금 저장한 글 핵심 | 5줄 이하 TL;DR + 다음 읽을 문서 제안            |
 
 ---
 
@@ -215,7 +264,7 @@ OpenTelemetry Collector 설정 방법은 다음과 같다 …
 - …
 ```
 
-*(RECOMMEND·GRAPH·ROADMAP·RECENT\_TLDR 역시 같은 규칙으로 작성)*
+*(RECOMMEND·GRAPH·ROADMAP·RECENT_TLDR 역시 같은 규칙으로 작성)*
 
 ---
 

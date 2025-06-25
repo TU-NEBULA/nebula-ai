@@ -3,6 +3,36 @@
 
 PostgreSQL pgvector를 사용하여 ChromaDB를 대체하는 벡터 검색 서비스입니다.
 임베딩 생성, 벡터 저장, 유사도 검색 등의 기능을 제공합니다.
+
+## 주요 기능
+
+### 기본 검색
+- similarity_search: 기본 벡터 유사도 검색 (청크별 개별 결과)
+
+### 중복 제거 검색
+- similarity_search_with_deduplication: 문서별 중복 제거된 검색 결과
+  같은 문서의 여러 청크 중 가장 높은 유사도를 가진 청크만 반환
+
+### 청크 집계 검색  
+- similarity_search_with_chunk_aggregation: 문서별 청크 집계 검색
+  같은 문서의 상위 청크들을 결합하여 더 풍부한 컨텍스트 제공
+
+## 사용 예시
+
+```python
+# 기본 검색 (청크별 개별 결과)
+results = await vector_service.similarity_search(session, query, user_id=user_id)
+
+# 중복 제거 검색 (문서별 최고 점수 청크만)
+results = await vector_service.similarity_search_with_deduplication(
+    session, query, user_id=user_id, limit=10
+)
+
+# 청크 집계 검색 (문서별 여러 청크 결합)
+results = await vector_service.similarity_search_with_chunk_aggregation(
+    session, query, user_id=user_id, limit=5, max_chunks_per_doc=3
+)
+```
 """
 from typing import List, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -235,6 +265,330 @@ class VectorService:
             logger.error(f"❌ 벡터 검색 중 오류 발생: {e}")
             return []
 
+    async def similarity_search_with_deduplication(
+        self,
+        session: AsyncSession,
+        query: str,
+        **kwargs
+    ) -> List[Tuple[DocumentVector, float]]:
+        """
+        벡터 유사도 검색을 수행하고 문서별 중복을 제거합니다.
+        같은 source_id의 청크들 중 가장 높은 유사도를 가진 청크만 반환합니다.
+
+        Args:
+            session: 데이터베이스 세션
+            query: 검색 쿼리
+            **kwargs: 검색 옵션들
+                user_id: 특정 사용자의 문서만 검색
+                source_types: 특정 소스 타입만 검색
+                limit: 최대 결과 수 (기본값: 10)
+                similarity_threshold: 유사도 임계값 (기본값: 0.7)
+                search_limit_multiplier: 검색 확장 배수 (기본값: 3)
+
+        Returns:
+            (DocumentVector, similarity_score) 튜플들의 리스트 (문서별 중복 제거됨)
+        """
+        # 중복 제거를 위해 더 많은 결과를 가져옴
+        search_limit_multiplier = kwargs.get('search_limit_multiplier', 3)
+        original_limit = kwargs.get('limit', 10)
+        expanded_limit = original_limit * search_limit_multiplier
+        
+        # 확장된 검색 수행
+        expanded_kwargs = kwargs.copy()
+        expanded_kwargs['limit'] = expanded_limit
+        
+        logger.info(f"🔍 중복 제거 벡터 검색 시작 - 확장 검색 limit: {expanded_limit}")
+        
+        # 기본 검색 수행
+        raw_results = await self.similarity_search(session, query, **expanded_kwargs)
+        
+        if not raw_results:
+            return []
+        
+        # 문서별 중복 제거 (가장 높은 점수의 청크만 유지)
+        deduplicated_results = self._deduplicate_by_source(raw_results)
+        
+        # 원래 요청된 limit까지만 반환
+        final_results = deduplicated_results[:original_limit]
+        
+        logger.info(f"✅ 중복 제거 완료 - 원본: {len(raw_results)}, 중복제거 후: {len(deduplicated_results)}, 최종: {len(final_results)}")
+        
+        return final_results
+
+    def _deduplicate_by_source(
+        self, 
+        results: List[Tuple[DocumentVector, float]]
+    ) -> List[Tuple[DocumentVector, float]]:
+        """
+        검색 결과에서 source_id별로 중복을 제거합니다.
+        같은 source_id의 청크들 중 가장 높은 유사도를 가진 청크만 유지합니다.
+
+        Args:
+            results: 원본 검색 결과
+
+        Returns:
+            중복이 제거된 검색 결과
+        """
+        source_best = {}  # source_id -> (DocumentVector, score)
+        
+        for doc, score in results:
+            source_key = f"{doc.source_type}:{doc.source_id}"
+            
+            if source_key not in source_best or score > source_best[source_key][1]:
+                source_best[source_key] = (doc, score)
+        
+        # 점수 순으로 정렬하여 반환
+        deduplicated_results = list(source_best.values())
+        deduplicated_results.sort(key=lambda x: x[1], reverse=True)
+        
+        logger.info(f"📝 문서별 중복 제거 - 고유 문서 수: {len(deduplicated_results)}")
+        
+        return deduplicated_results
+
+    async def similarity_search_with_chunk_aggregation(
+        self,
+        session: AsyncSession,
+        query: str,
+        **kwargs
+    ) -> List[Dict[str, Any]]:
+        """
+        벡터 유사도 검색을 수행하고 같은 문서의 청크들을 집계합니다.
+        
+        Args:
+            session: 데이터베이스 세션
+            query: 검색 쿼리
+            **kwargs: 검색 옵션들
+                user_id: 특정 사용자의 문서만 검색
+                source_types: 특정 소스 타입만 검색
+                limit: 최대 결과 수 (기본값: 10)
+                similarity_threshold: 유사도 임계값 (기본값: 0.7)
+                search_limit_multiplier: 검색 확장 배수 (기본값: 5)
+                max_chunks_per_doc: 문서당 최대 청크 수 (기본값: 3)
+
+        Returns:
+            문서별로 집계된 결과 리스트
+        """
+        # 청크 집계를 위해 더 많은 결과를 가져옴
+        search_limit_multiplier = kwargs.get('search_limit_multiplier', 5)
+        original_limit = kwargs.get('limit', 10)
+        max_chunks_per_doc = kwargs.get('max_chunks_per_doc', 3)
+        expanded_limit = original_limit * search_limit_multiplier
+        
+        # 확장된 검색 수행
+        expanded_kwargs = kwargs.copy()
+        expanded_kwargs['limit'] = expanded_limit
+        
+        logger.info(f"🔍 청크 집계 벡터 검색 시작 - 확장 검색 limit: {expanded_limit}")
+        
+        # 기본 검색 수행
+        raw_results = await self.similarity_search(session, query, **expanded_kwargs)
+        
+        if not raw_results:
+            return []
+        
+        # 문서별로 청크들을 그룹화하고 집계
+        aggregated_results = self._aggregate_chunks_by_source(
+            raw_results, 
+            max_chunks_per_doc=max_chunks_per_doc
+        )
+        
+        # 원래 요청된 limit까지만 반환
+        final_results = aggregated_results[:original_limit]
+        
+        logger.info(f"✅ 청크 집계 완료 - 원본: {len(raw_results)}, 집계 후: {len(final_results)}")
+        
+        return final_results
+
+    def _aggregate_chunks_by_source(
+        self, 
+        results: List[Tuple[DocumentVector, float]],
+        max_chunks_per_doc: int = 3
+    ) -> List[Dict[str, Any]]:
+        """
+        검색 결과를 문서별로 그룹화하고 청크들을 집계합니다.
+        URL을 기반으로 그룹화하여 메모, 요약, 본문이 하나로 합쳐집니다.
+
+        Args:
+            results: 원본 검색 결과
+            max_chunks_per_doc: 문서당 최대 청크 수
+
+        Returns:
+            문서별로 집계된 결과 (요약과 메모 포함)
+        """
+        source_groups = {}  # group_key -> [(DocumentVector, score), ...]
+        
+        # 문서별로 그룹화 (URL 기반으로 그룹화)
+        for doc, score in results:
+            # URL이 있으면 URL을 기준으로, 없으면 source_type:source_id로 그룹화
+            if doc.url:
+                group_key = f"url:{doc.url}"
+            else:
+                group_key = f"{doc.source_type}:{doc.source_id}"
+            
+            if group_key not in source_groups:
+                source_groups[group_key] = []
+            
+            source_groups[group_key].append((doc, score))
+        
+        aggregated_results = []
+        
+        for group_key, chunks in source_groups.items():
+            # 점수 순으로 정렬하고 상위 청크들만 선택
+            chunks.sort(key=lambda x: x[1], reverse=True)
+            
+            # 많은 청크가 있을 때 로깅
+            if len(chunks) > max_chunks_per_doc:
+                primary_doc = chunks[0][0]
+                logger.info(f"📊 문서 '{primary_doc.title[:30]}...'에서 {len(chunks)}개 청크 발견")
+                logger.info(f"   📈 점수 범위: {chunks[0][1]:.3f} ~ {chunks[-1][1]:.3f}")
+                logger.info(f"   ✂️ 상위 {max_chunks_per_doc}개 청크만 선택, {len(chunks) - max_chunks_per_doc}개 청크 제외")
+                
+                # 선택된 청크와 제외된 청크 점수 보여주기
+                selected_scores = [score for _, score in chunks[:max_chunks_per_doc]]
+                excluded_scores = [score for _, score in chunks[max_chunks_per_doc:]]
+                logger.info(f"   ✅ 선택된 청크 점수: {selected_scores}")
+                if excluded_scores:
+                    logger.info(f"   ❌ 제외된 청크 점수: {excluded_scores[:5]}{'...' if len(excluded_scores) > 5 else ''}")
+            
+            top_chunks = chunks[:max_chunks_per_doc]
+            
+            # 대표 문서 (가장 높은 점수)
+            primary_doc, primary_score = top_chunks[0]
+            
+            # 평균 점수 계산
+            avg_score = sum(score for _, score in top_chunks) / len(top_chunks)
+            
+            # 문서들에서 요약과 메모 정보 수집
+            document_summary = ""
+            document_memo = ""
+            content_chunks = []
+            
+            # 모든 청크에서 요약, 메모, 일반 내용 분류
+            for doc, _ in top_chunks:
+                # 제목에서 메모/요약 구분
+                if doc.title and ("[메모]" in doc.title or "메모:" in doc.content):
+                    # 메모 문서
+                    if doc.summary:
+                        document_memo += doc.summary + "\n"
+                    if doc.content and not document_memo:
+                        # content에서 메모 내용 추출
+                        content_lines = doc.content.split('\n')
+                        for line in content_lines:
+                            if "메모:" in line:
+                                document_memo += line.replace("메모:", "").strip() + "\n"
+                            elif "사용자 메모:" in line:
+                                document_memo += line.replace("사용자 메모:", "").strip() + "\n"
+                
+                elif doc.title and ("[요약]" in doc.title or "요약:" in doc.content):
+                    # 요약 문서
+                    if doc.summary:
+                        document_summary += doc.summary + "\n"
+                    if doc.content and not document_summary:
+                        # content에서 요약 내용 추출
+                        content_lines = doc.content.split('\n')
+                        for line in content_lines:
+                            if "요약:" in line:
+                                document_summary += line.replace("요약:", "").strip() + "\n"
+                            elif "문서 요약:" in line:
+                                document_summary += line.replace("문서 요약:", "").strip() + "\n"
+                
+                else:
+                    # 일반 컨텐츠 청크
+                    content_chunks.append((doc, _))
+                    
+                    # 일반 문서에서도 summary와 extra_metadata 확인
+                    if doc.summary and not document_summary:
+                        document_summary = doc.summary
+                    
+                    if doc.extra_metadata and not document_memo:
+                        document_memo = doc.extra_metadata.get('memo', '') or \
+                                      doc.extra_metadata.get('note', '') or \
+                                      doc.extra_metadata.get('description', '')
+            
+            # 정리
+            document_summary = document_summary.strip()
+            document_memo = document_memo.strip()
+            
+            # 청크 내용들을 결합 (일반 컨텐츠만)
+            if content_chunks:
+                combined_content = "\n\n".join([
+                    f"[청크 {doc.chunk_index}] {doc.content}" 
+                    for doc, _ in content_chunks
+                ])
+            else:
+                # 일반 컨텐츠가 없으면 모든 청크 사용
+                combined_content = "\n\n".join([
+                    f"[청크 {doc.chunk_index}] {doc.content}" 
+                    for doc, _ in top_chunks
+                ])
+            
+            # 요약과 메모가 있으면 combined_content 앞에 추가
+            content_parts = []
+            
+            if document_summary:
+                content_parts.append(f"[문서 요약]\n{document_summary}")
+                
+            if document_memo:
+                content_parts.append(f"[메모]\n{document_memo}")
+                
+            content_parts.append(f"[청크 내용]\n{combined_content}")
+            
+            final_combined_content = "\n\n".join(content_parts)
+            
+            # 원본 제목 찾기 (메모/요약이 아닌 것)
+            original_title = primary_doc.title
+            for doc, _ in chunks:
+                if doc.title and not ("[메모]" in doc.title or "[요약]" in doc.title):
+                    original_title = doc.title
+                    break
+            
+            # 집계된 결과 생성
+            aggregated_result = {
+                "source_id": primary_doc.source_id,
+                "source_type": primary_doc.source_type,
+                "title": original_title,  # 원본 제목 사용
+                "url": primary_doc.url,
+                "keywords": primary_doc.keywords or [],
+                "summary": document_summary,  # 수집된 문서 요약
+                "memo": document_memo,        # 수집된 문서 메모
+                "primary_score": primary_score,
+                "average_score": avg_score,
+                "chunk_count": len(top_chunks),
+                "total_chunks_found": len(chunks),  # 실제 발견된 총 청크 수
+                "combined_content": final_combined_content,  # 요약+메모+청크 내용
+                "chunks_only_content": combined_content,      # 청크 내용만
+                "top_chunks": [
+                    {
+                        "chunk_index": doc.chunk_index,
+                        "content": doc.content,
+                        "score": score,
+                        "title": doc.title  # 개별 청크 제목도 포함
+                    }
+                    for doc, score in top_chunks
+                ],
+                "metadata": {
+                    "user_id": primary_doc.user_id,
+                    "embedding_model": primary_doc.embedding_model,
+                    "created_at": primary_doc.created_at.isoformat(),
+                    "extra_metadata": primary_doc.extra_metadata or {},
+                    "group_key": group_key,  # 디버깅용
+                    "has_memo": bool(document_memo),
+                    "has_summary": bool(document_summary)
+                }
+            }
+            
+            aggregated_results.append(aggregated_result)
+            
+            # 요약과 메모 포함 로깅
+            logger.info(f"📝 문서 '{original_title[:30]}...' - 요약: {'✅' if document_summary else '❌'}, 메모: {'✅' if document_memo else '❌'}, 총 청크: {len(chunks)}")
+        
+        # 평균 점수로 정렬
+        aggregated_results.sort(key=lambda x: x['average_score'], reverse=True)
+        
+        logger.info(f"📝 청크 집계 - 고유 문서 수: {len(aggregated_results)}")
+        
+        return aggregated_results
+
     async def hybrid_search(
         self,
         session: AsyncSession,
@@ -393,6 +747,52 @@ class VectorService:
                     "created_at": document.created_at.isoformat(),
                     "extra_metadata": document.extra_metadata or {}
                 }
+            }
+            formatted_results.append(formatted_result)
+
+        return formatted_results
+
+    def format_aggregated_results_for_rag(
+        self,
+        aggregated_results: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        집계된 검색 결과를 RAG 시스템에서 사용할 수 있는 형식으로 변환합니다.
+        문서 요약과 메모 정보도 포함됩니다.
+
+        Args:
+            aggregated_results: 문서별로 집계된 검색 결과
+
+        Returns:
+            RAG 시스템용 검색 결과 리스트 (요약, 메모 포함)
+        """
+        formatted_results = []
+
+        for result in aggregated_results:
+            # 결합된 내용의 스니펫 생성 (요약+메모+청크 포함)
+            snippet = (
+                result["combined_content"][:300] + "..."
+                if len(result["combined_content"]) > 300
+                else result["combined_content"]
+            )
+
+            formatted_result = {
+                "source_id": result["source_id"],
+                "source_type": result["source_type"],
+                "title": result["title"],
+                "url": result["url"],
+                "snippet": snippet,
+                "content": result["combined_content"],        # 요약+메모+청크 내용
+                "chunks_only_content": result["chunks_only_content"],  # 청크 내용만
+                "summary": result["summary"],               # 문서 요약
+                "memo": result["memo"],                     # 문서 메모
+                "keywords": result["keywords"],
+                "score": result["average_score"],
+                "primary_score": result["primary_score"],
+                "chunk_count": result["chunk_count"],
+                "total_chunks_found": result["total_chunks_found"],
+                "top_chunks": result["top_chunks"],
+                "metadata": result["metadata"]
             }
             formatted_results.append(formatted_result)
 

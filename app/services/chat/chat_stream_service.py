@@ -16,10 +16,7 @@ from loguru import logger
 from app.core.config import settings
 from app.schemas.chat import ChatRequestModel
 from app.repositories.chat_repository import ChatRepository
-from app.services.rag_search_service import rag_search_service
-from app.services.message_builder_service import message_builder_service
-from app.services.visualization_service import visualization_service
-from app.services.profile_update_service import profile_update_service
+# 같은 패키지 내 서비스들은 상대 import 사용하지 않고 직접 인스턴스 생성
 
 
 class ChatStreamService:
@@ -30,35 +27,52 @@ class ChatStreamService:
         self.progress_interval = 10  # 진행상황 알림 간격
         self.stream_delay = 0.01  # 스트리밍 지연 (10ms)
         
+        # 다른 서비스들 인스턴스 생성
+        from .rag_search_service import RAGSearchService
+        from .message_builder_service import MessageBuilderService
+        from .visualization_service import VisualizationService
+        from .profile_update_service import ProfileUpdateService
+        
+        self.rag_search_service = RAGSearchService()
+        self.message_builder_service = MessageBuilderService()
+        self.visualization_service = VisualizationService()
+        self.profile_update_service = ProfileUpdateService()
+        
     async def generate_chat_stream(
         self,
         request: ChatRequestModel,
         session_id: uuid.UUID,
-        user_message_id: uuid.UUID
+        user_message_id: uuid.UUID,
+        messages: List[Dict[str, str]] = None
     ) -> AsyncGenerator[str, None]:
-        """OpenAI 스트림을 SSE 형식으로 변환하면서 PostgreSQL에 저장"""
+        """채팅 스트림 생성 (내부 메서드)"""
         start_time = datetime.now(timezone.utc)
         
         try:
-            logger.info(f"🚀 채팅 스트림 시작 - user_id: {request.user_id}, session_id: {session_id}")
-
             # 세션 시작 알림
             yield await self._create_session_start_message(session_id, user_message_id)
 
-            # API 키 확인
-            if not settings.OPENAI_API_KEY:
-                yield await self._create_error_message("OpenAI API 키가 설정되지 않았습니다")
-                return
-
             # RAG 검색 수행
             ctx_blocks = await self._perform_rag_search(request.user_id, request.message)
+
+            # 메시지 구성 (라우터에서 전달되지 않은 경우에만)
+            if messages is None:
+                # 대화 히스토리 가져오기
+                conversation_history = await self._get_conversation_history(
+                    session_id, request.user_id, limit=20
+                )
+                
+                # 메시지 구성 (히스토리 포함)
+                messages = self.message_builder_service.build_messages(
+                    request.message, ctx_blocks, conversation_history
+                )
 
             # 시각화 데이터 전송
             yield await self._create_visualization_message(ctx_blocks, request.message)
 
             # LLM 설정 및 스트리밍
             ai_response = ""
-            async for chunk_data in self._stream_llm_response(request, ctx_blocks):
+            async for chunk_data in self._stream_llm_response(messages, ctx_blocks):
                 if chunk_data["type"] == "content":
                     ai_response += chunk_data["content"]
                 yield f"data: {json.dumps(chunk_data, ensure_ascii=False)}\n\n"
@@ -105,7 +119,7 @@ class ChatStreamService:
     async def _perform_rag_search(self, user_id: int, message: str) -> List[Tuple[str, Dict[str, Any]]]:
         """RAG 검색 수행"""
         try:
-            return await rag_search_service.retrieve_context(user_id, message)
+            return await self.rag_search_service.retrieve_context(user_id, message)
         except Exception as e:
             logger.error(f"❌ 컨텍스트 검색 실패: {e}")
             return []
@@ -116,7 +130,7 @@ class ChatStreamService:
         search_query: str
     ) -> str:
         """시각화 데이터 메시지 생성"""
-        viz_message = visualization_service.create_visualization_message(ctx_blocks, search_query)
+        viz_message = self.visualization_service.create_visualization_message(ctx_blocks, search_query)
         
         if ctx_blocks:
             logger.info(f"📊 시각화 데이터 전송 완료 - 노드: {len(viz_message['data']['graph_payload']['nodes'])}개")
@@ -125,7 +139,7 @@ class ChatStreamService:
 
     async def _stream_llm_response(
         self, 
-        request: ChatRequestModel, 
+        messages: List[Dict[str, str]],
         ctx_blocks: List[Tuple[str, Dict[str, Any]]]
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """LLM 응답 스트리밍"""
@@ -143,9 +157,6 @@ class ChatStreamService:
             }
         )
 
-        # 메시지 구성
-        messages = message_builder_service.build_messages(request.message, ctx_blocks)
-        
         # 스트리밍 시작 알림
         yield {
             "type": "stream_start", 
@@ -235,9 +246,9 @@ class ChatStreamService:
         """RAG 참조 정보 저장"""
         try:
             rag_references = []
-            for snippet, metadata in ctx_blocks:
+            for content, metadata in ctx_blocks:
                 rag_references.append({
-                    "snippet": snippet,
+                    "snippet": content,
                     "title": metadata.get("title", ""),
                     "url": metadata.get("url", ""),
                     "source_id": metadata.get("source_id", ""),
@@ -264,7 +275,7 @@ class ChatStreamService:
         end_time = datetime.now(timezone.utc)
         session_duration_minutes = (end_time - start_time).total_seconds() / 60
         
-        return await profile_update_service.update_user_ai_profile_after_chat(
+        return await self.profile_update_service.update_user_ai_profile_after_chat(
             user_id=request.user_id,
             user_message=request.message,
             ai_response=ai_response,
@@ -282,7 +293,7 @@ class ChatStreamService:
         profile_result: Dict[str, Any]
     ) -> str:
         """완료 메시지 생성"""
-        graph_payload = visualization_service.create_bookmark_visualization(ctx_blocks, request.message)
+        graph_payload = self.visualization_service.create_bookmark_visualization(ctx_blocks, request.message)
         
         completion_data = {
             "type": "session_end",
@@ -305,6 +316,37 @@ class ChatStreamService:
             }
         }
         return f"data: {json.dumps(completion_data, ensure_ascii=False)}\n\n"
+
+    async def _get_conversation_history(
+        self, 
+        session_id: uuid.UUID, 
+        user_id: int,
+        limit: int = 20
+    ) -> List[Dict[str, str]]:
+        """현재 세션의 대화 히스토리를 가져옵니다."""
+        try:
+            # 현재 세션의 메시지들을 가져옴 (현재 사용자 메시지 제외)
+            messages = await ChatRepository.get_session_messages(
+                session=None,
+                session_id=session_id,
+                user_id=user_id,
+                limit=limit
+            )
+            
+            # ChatMessage 객체를 딕셔너리로 변환
+            conversation_history = []
+            for message in messages:
+                conversation_history.append({
+                    "role": message.role,
+                    "content": message.content
+                })
+            
+            logger.info(f"📜 대화 히스토리 조회 - session_id: {session_id}, 메시지 수: {len(conversation_history)}")
+            return conversation_history
+            
+        except Exception as e:
+            logger.error(f"❌ 대화 히스토리 조회 실패: {e}")
+            return []
 
 
 # 싱글톤 인스턴스

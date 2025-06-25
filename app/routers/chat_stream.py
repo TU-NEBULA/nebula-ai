@@ -25,7 +25,6 @@ from app.schemas.chat import (
 from app.schemas.base import BaseResponse, IDResponse
 from app.repositories.chat_repository import ChatRepository
 
-# 채팅 관련 서비스들 import
 from app.services.chat import (
     RAGSearchService,
     VisualizationService,
@@ -36,7 +35,6 @@ from app.services.chat import (
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
-# 서비스 인스턴스 생성 (싱글톤)
 rag_search_service = RAGSearchService()
 visualization_service = VisualizationService()
 message_builder_service = MessageBuilderService()
@@ -72,72 +70,37 @@ async def _generate_chat_stream(
             yield f"data: {json.dumps({'type': 'error', 'data': error_msg}, ensure_ascii=False)}\n\n"
             return
 
-        # 1. RAG 검색 수행
-        try:
-            ctx_blocks = await rag_search_service.retrieve_context(request.user_id, request.message)
-        except Exception as e:
-            logger.error(f"❌ 컨텍스트 검색 실패: {e}")
-            ctx_blocks = []
-
-        # 2. 시각화 데이터 생성 및 전송
-        if ctx_blocks:
-            visualization_data = visualization_service.create_bookmark_visualization(ctx_blocks, request.message)
-            viz_message = {
-                "type": "visualization",
-                "data": {
-                    "graph_payload": visualization_data,
-                    "context_info": {
-                        "total_documents": len(ctx_blocks),
-                        "search_successful": True,
-                        "avg_similarity": visualization_data['statistics']['avg_similarity'],
-                        "search_query": request.message,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    },
-                    "filter_options": {
-                        "by_source_type": visualization_data['statistics']['source_types'],
-                        "by_similarity": ["high", "medium", "low"],
-                        "by_keywords": list(visualization_data['statistics']['keyword_distribution'].keys())
-                    },
-                    "sort_options": {
-                        "similarity_desc": "유사도 높은순",
-                        "similarity_asc": "유사도 낮은순", 
-                        "title_asc": "제목 가나다순",
-                        "keywords_desc": "키워드 많은순"
-                    }
-                }
-            }
-            yield f"data: {json.dumps(viz_message, ensure_ascii=False)}\n\n"
-            logger.info(f"📊 시각화 데이터 전송 완료 - 노드: {len(visualization_data['nodes'])}개, 엣지: {len(visualization_data['edges'])}개")
-        else:
-            # 검색 결과가 없을 때의 기본 시각화
-            empty_viz = {
-                "type": "visualization", 
-                "data": {
-                    "graph_payload": {
-                        "nodes": [],
-                        "edges": [],
-                        "layout": "empty",
-                        "message": "관련 북마크를 찾지 못했습니다"
-                    },
-                    "context_info": {
-                        "total_documents": 0,
-                        "search_successful": False,
-                        "message": "검색 결과가 없습니다"
-                    }
-                }
-            }
-            yield f"data: {json.dumps(empty_viz, ensure_ascii=False)}\n\n"
+        # 2. RAG 검색 수행
+        ctx_blocks = await rag_search_service.retrieve_context(request.user_id, request.message)
+        
+        # 대화 히스토리 가져오기
+        conversation_history = await ChatRepository.get_session_messages(
+            session=None,
+            session_id=session_id,
+            user_id=request.user_id,
+            limit=20
+        )
+        
+        # ChatMessage 객체를 딕셔너리로 변환
+        history_dicts = []
+        for message in conversation_history:
+            history_dicts.append({
+                "role": message.role,
+                "content": message.content
+            })
+        
+        logger.info(f"📜 대화 히스토리 조회 완료 - session_id: {session_id}, 메시지 수: {len(history_dicts)}")
 
         # 3. 메시지 구성
-        messages = message_builder_service.build_messages(request.message, ctx_blocks)
+        messages = message_builder_service.build_messages(request.message, ctx_blocks, history_dicts)
         
-        # 4. AI 응답 스트리밍 처리
+        # 4. AI 응답 스트리밍 처리 (구성된 메시지 전달)
         ai_response = ""
         token_count = 0
         
-        async for stream_data in chat_stream_service.generate_streaming_response(messages):
+        async for stream_data in chat_stream_service._stream_llm_response(messages, ctx_blocks):
             if stream_data["type"] == "chunk":
-                ai_response += stream_data["data"]
+                ai_response += stream_data["content"]
                 token_count += 1
                 yield f"data: {json.dumps(stream_data, ensure_ascii=False)}\n\n"
             elif stream_data["type"] == "progress":
@@ -195,7 +158,7 @@ async def _generate_chat_stream(
             ai_message = type('TempMessage', (), {'id': uuid.uuid4()})()
 
         # 6. 사용자 프로필 업데이트
-        profile_update_result = await profile_update_service.update_user_profile_after_chat(
+        profile_update_result = await profile_update_service.update_user_ai_profile_after_chat(
             user_id=request.user_id,
             user_message=request.message,
             ai_response=ai_response,
