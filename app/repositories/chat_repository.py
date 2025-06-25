@@ -12,6 +12,7 @@ from loguru import logger
 from sqlmodel import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy import func
 
 from app.models.chat import (
     ChatSession, ChatMessage, RAGReference, UserFeedback
@@ -257,7 +258,8 @@ class ChatRepository:
         session: AsyncSession,
         session_id: uuid.UUID,
         user_id: int,
-        limit: int = 100
+        limit: int = 100,
+        offset: int = 0
     ) -> List[ChatMessage]:
         """채팅 세션의 메시지 목록을 조회합니다."""
         
@@ -275,6 +277,7 @@ class ChatRepository:
                         )
                     )
                     .order_by(ChatMessage.created_at.asc())  # pylint: disable=no-member
+                    .offset(offset)
                     .limit(limit)
                 )
                 result = await new_session.execute(stmt)
@@ -283,6 +286,36 @@ class ChatRepository:
             except Exception as e:
                 logger.error(f"❌ 세션 메시지 조회 실패: {e}")
                 return []
+
+    @staticmethod
+    async def get_session_messages_count(
+        session: AsyncSession,
+        session_id: uuid.UUID,
+        user_id: int
+    ) -> int:
+        """채팅 세션의 총 메시지 수를 조회합니다."""
+        
+        # 새로운 독립적인 트랜잭션으로 처리
+        from app.core.database import AsyncSessionLocal
+        
+        async with AsyncSessionLocal() as new_session:
+            try:
+                stmt = (
+                    select(func.count(ChatMessage.id))
+                    .where(
+                        and_(
+                            ChatMessage.session_id == session_id,
+                            ChatMessage.user_id == user_id
+                        )
+                    )
+                )
+                result = await new_session.execute(stmt)
+                total_count = result.scalar() or 0
+                return total_count
+                
+            except Exception as e:
+                logger.error(f"❌ 세션 메시지 수 조회 실패: {e}")
+                return 0
 
     @staticmethod
     async def save_rag_references(
@@ -333,14 +366,38 @@ class ChatRepository:
         title: str
     ) -> Optional[ChatSession]:
         """채팅 세션의 제목을 업데이트합니다."""
-        chat_session = await ChatRepository.get_session(session, session_id, user_id)
-        if chat_session:
-            chat_session.title = title
-            chat_session.updated_at = datetime.now(timezone.utc)
-            await session.commit()
-            await session.refresh(chat_session)
-            logger.info(f"📝 세션 제목 업데이트 - session_id: {session_id}, title: {title}")
-        return chat_session
+        
+        # 새로운 독립적인 트랜잭션으로 처리
+        from app.core.database import AsyncSessionLocal
+        
+        async with AsyncSessionLocal() as new_session:
+            try:
+                # 세션 조회
+                stmt = select(ChatSession).where(
+                    and_(
+                        ChatSession.id == session_id,
+                        ChatSession.user_id == user_id
+                    )
+                )
+                result = await new_session.execute(stmt)
+                chat_session = result.scalar_one_or_none()
+                
+                if chat_session:
+                    chat_session.title = title
+                    chat_session.updated_at = datetime.now(timezone.utc)
+                    await new_session.commit()
+                    await new_session.refresh(chat_session)
+                    logger.info(f"📝 세션 제목 업데이트 - session_id: {session_id}, title: {title}")
+                    
+                return chat_session
+                
+            except Exception as e:
+                logger.error(f"❌ 세션 제목 업데이트 실패: {e}")
+                try:
+                    await new_session.rollback()
+                except Exception as rollback_error:
+                    logger.error(f"❌ 세션 제목 업데이트 롤백 실패: {rollback_error}")
+                raise
 
     @staticmethod
     async def deactivate_session(

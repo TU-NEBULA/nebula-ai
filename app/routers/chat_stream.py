@@ -8,330 +8,50 @@ PostgreSQL에 채팅 세션과 메시지를 저장합니다.
 import json
 import uuid
 from datetime import datetime, timezone
-from typing import Dict, Any, List, Tuple, Optional
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Header, Query
 from fastapi.responses import StreamingResponse
-from langchain_openai import ChatOpenAI
-from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
 from app.core.config import settings
-from app.core.database import get_async_session
 from app.schemas.chat import (
     ChatRequestModel,
     ChatSessionResponse,
     ChatMessageResponse,
     ChatSessionMessagesResponse,
-    ChatSessionListResponse
+    ChatSessionListResponse,
+    ChatSessionUpdateRequest,
+    ChatSessionMessagesPaginatedResponse
 )
 from app.schemas.base import BaseResponse, IDResponse
 from app.repositories.chat_repository import ChatRepository
-from app.services.vector_service import vector_service
-from app.repositories.vector_repository import VectorRepository
+
+from app.services.chat import (
+    RAGSearchService,
+    VisualizationService,
+    MessageBuilderService,
+    ChatStreamService,
+    ProfileUpdateService
+)
 
 router = APIRouter(prefix="/chat", tags=["Chat"])
 
-TOP_K = 10  # 검색 문서 수
+rag_search_service = RAGSearchService()
+visualization_service = VisualizationService()
+message_builder_service = MessageBuilderService()
+chat_stream_service = ChatStreamService()
+profile_update_service = ProfileUpdateService()
 
 
-async def _retrieve_context(
-    user_id: int, query: str
-) -> List[Tuple[str, Dict[str, Any]]]:
-    """PostgreSQL 벡터 데이터베이스에서 컨텍스트 검색"""
-    logger.info(f"🔍 컨텍스트 검색 시작 - user_id: {user_id}, query: {query[:50]}...")
-
-    try:
-        # 독립적인 세션으로 벡터 검색 수행
-        async for db_session in get_async_session():
-            # 먼저 사용자의 벡터 문서 수 확인
-            total_docs = await VectorRepository.get_user_document_count(
-                session=db_session,
-                user_id=user_id
-            )
-            logger.info(f"📊 사용자 {user_id}의 총 벡터 문서 수: {total_docs}")
-            
-            # 전체 데이터베이스 상태 확인 (디버깅용)
-            try:
-                all_users_docs = await VectorRepository.get_user_document_count(
-                    session=db_session,
-                    user_id=None  # 전체 사용자
-                )
-                logger.info(f"📊 전체 데이터베이스 벡터 문서 수: {all_users_docs}")
-                
-                # 샘플 문서 확인
-                if total_docs > 0:
-                    sample_docs = await VectorRepository.get_documents_by_user(
-                        session=db_session,
-                        user_id=user_id,
-                        limit=3
-                    )
-                    logger.info(f"📄 샘플 문서들:")
-                    for i, doc in enumerate(sample_docs):
-                        logger.info(f"  {i+1}. {doc.title[:50]} (타입: {doc.source_type})")
-                        logger.info(f"     키워드: {doc.keywords}")
-                        
-            except Exception as e:
-                logger.warning(f"⚠️ 데이터베이스 상태 확인 실패: {e}")
-            
-            if total_docs == 0:
-                logger.warning(f"⚠️ 사용자 {user_id}의 벡터 문서가 없습니다! 북마크를 먼저 저장해주세요.")
-                return []
-            
-            # 검색 임계값을 낮춰서 더 많은 결과 포함
-            low_threshold = 0.3  # 기존 0.7에서 0.3으로 낮춤
-            
-            # PostgreSQL 벡터 검색 수행 - user_id를 정수로 전달
-            logger.info(f"🔍 벡터 검색 실행 - threshold: {low_threshold}, limit: {TOP_K}")
-            try:
-                search_results = await vector_service.similarity_search(
-                    session=db_session,
-                    query=query,
-                    user_id=user_id,  # 정수 타입 그대로 전달
-                    limit=TOP_K * 2,  # 더 많은 결과 요청
-                    similarity_threshold=low_threshold
-                )
-            except Exception as search_error:
-                logger.error(f"❌ 벡터 검색 실패: {search_error}")
-                return []
-            
-            logger.info(f"📊 벡터 검색 결과: {len(search_results)}개 문서 발견")
-            
-            # 검색 결과가 없으면 사용자별로 낮은 임계값으로 재검색
-            if not search_results:
-                logger.info("🔍 사용자별 검색 결과 없음, 더 낮은 임계값으로 재시도...")
-                search_results = await vector_service.similarity_search(
-                    session=db_session,
-                    query=query,
-                    user_id=user_id,  # 사용자별 검색 유지
-                    limit=TOP_K,
-                    similarity_threshold=0.15  # 더 낮은 임계값으로 재시도
-                )
-                logger.info(f"📊 낮은 임계값 검색 결과: {len(search_results)}개 문서 발견")
-            
-            # 벡터 검색 결과가 여전히 부족하면 하이브리드 검색 시도
-            if len(search_results) < 3:
-                logger.info("🔍 벡터 검색 결과 부족, 하이브리드 검색 시도...")
-                try:
-                    hybrid_results = await vector_service.hybrid_search(
-                        session=db_session,
-                        query=query,
-                        user_id=user_id,  # 사용자별 하이브리드 검색
-                        limit=TOP_K,
-                        similarity_threshold=0.2,  # 더 낮은 임계값
-                        keyword_boost=0.2
-                    )
-                    logger.info(f"📊 하이브리드 검색 결과: {len(hybrid_results)}개 문서 발견")
-                    
-                    # 기존 결과와 합치되, 중복 제거
-                    existing_ids = {doc.id for doc, _ in search_results}
-                    for doc, score in hybrid_results:
-                        if doc.id not in existing_ids:
-                            search_results.append((doc, score))
-                            existing_ids.add(doc.id)
-                            
-                except Exception as e:
-                    logger.warning(f"⚠️ 하이브리드 검색 실패: {e}")
-
-            # 검색 결과를 기존 포맷으로 변환 (사용자별 검증 포함)
-            results = []
-            filtered_count = 0
-            for i, (document, score) in enumerate(search_results[:TOP_K]):
-                # 사용자 ID 검증: 현재 사용자의 북마크만 포함
-                if document.user_id != user_id:
-                    logger.warning(f"⚠️ 다른 사용자의 문서 필터링됨 - doc_user_id: {document.user_id}, current_user_id: {user_id}")
-                    filtered_count += 1
-                    continue
-                
-                snippet = document.content[:160].replace("\n", " ")
-                metadata = {
-                    "title": document.title or "(제목없음)",
-                    "url": document.url or "",
-                    "source_id": document.source_id,
-                    "source_type": document.source_type,
-                    "keywords": document.keywords or [],
-                    "score": score,
-                    "user_id": document.user_id  # 디버깅을 위해 user_id 추가
-                }
-                results.append((snippet, metadata))
-                logger.debug(f"📄 문서 {len(results)}: {metadata['title'][:30]} (점수: {score:.3f}, user_id: {document.user_id})")
-            
-            if filtered_count > 0:
-                logger.warning(f"⚠️ 총 {filtered_count}개 다른 사용자 문서가 필터링되었습니다")
-
-            logger.info(f"✅ 컨텍스트 검색 완료 - 최종 결과: {len(results)}개 문서")
-            return results
-            
-    except Exception as e:
-        logger.error(f"❌ 컨텍스트 검색 중 오류: {e}")
-        return []  # 검색 실패시 빈 결과 반환
-
-
-def _build_messages(prompt: str, ctx_blocks: List[Tuple[str, Dict[str, Any]]]):
-    # TODO: 세션 기반 대화 히스토리 추가 필요
-    # - conversation_history 매개변수 추가
-    # - 이전 대화 메시지들을 messages 배열에 포함
-    # - 토큰 제한 고려하여 최근 N개 메시지만 포함
-
-    # 새로운 NebulaBot v1.0 시스템 프롬프트 적용
-    system_prompt = """SYSTEM: 〈NebulaBot v1.0〉  
-너는 'NEBULA' 프로젝트의 지식 비서이다.  
-목표는 **사용자가 저장한 북마크와 그래프 메타데이터**를 활용해, 질문 의도에 맞춰 "찾기 → 요약 → 추천 → 그래프 → 로드맵 → 신규 요약" 6가지 업무를 처리하고 근거까지 제시하는 것이다.  
-
----
-
-## 📥 입력 스키마
-```json
-{
-  "user_query": "string — 사용자 질문 원문",
-  "bookmarks": [
-    {
-      "title": "string",
-      "url": "string",
-      "snippet": "string (최대 300자 요약)",
-      "tags": ["string", ...],
-      "createdAt": "YYYY-MM-DD",
-      "score": float  // 임베딩 코사인 유사도 (0~1, 높을수록 유사)
-    },
-    …
-  ],
-  "graph": {          // S-4에서만 주어짐
-    "nodes": [...],
-    "edges": [...]
-  },
-  "intent": "FIND | SUMMARY | RECOMMEND | GRAPH | ROADMAP | RECENT_TLDR"
-}
-```
-
-* **bookmarks** 는 Top-k(≤8)만 전달된다.
-* **intent** 는 서버가 시나리오를 분류해 전달한 값이다.
-
----
-
-## 🛠️ 공통 지침
-
-1. **한국어 설명형 문체**(존댓말 X) 사용.
-2. 핵심→세부 순서로 깔끔하게, 필요 시 소제목(`###`)·리스트 사용.
-3. 답변 끝에 **"📌 관련 북마크"** 섹션을 넣어 `- [제목](url) | 연관 키워드` 형식으로 최대 5개 나열.
-4. 북마크가 없으면 "관련 북마크를 찾지 못했다"고 명시하고, 대안(재검색·태그 추가)을 제안.
-5. 사실 여부가 불확실하면 추정 대신 "추가 확인이 필요하다"고 밝히기.
-
----
-
-## 🎬 시나리오별 출력 규칙
-
-| intent           | 설명          | 응답 포맷 요약                             |
-| ---------------- | ----------- | ------------------------------------ |
-| **FIND**         | 특정 글·정보 회상  | *직접 답변* → 왜 이 북마크가 적합한지 근거 1-2줄      |
-| **SUMMARY**      | N개 문서 요약    | 각 문서 1줄 + 통합 TL;DR 3-5줄              |
-| **RECOMMEND**    | 유사·관련 문서 추천 | 문서 간 공통 키워드·주제 설명 + 추천 리스트           |
-| **GRAPH**        | 그래프 뷰 요청    | 전체 맥락 요약 후 `graph` 설명(노드 수, 연결 의미 등) |
-| **ROADMAP**      | 학습 순서 제안    | 단계(①-③…)별 읽기 순서 + 학습 포인트             |
-| **RECENT\_TLDR** | 방금 저장한 글 핵심 | 5줄 이하 TL;DR + 다음 읽을 문서 제안            |
-
----
-
-## 💬 예시 템플릿
-
-### 1. FIND
-
-```
-### 원하는 정보
-OpenTelemetry Collector 설정 방법은 다음과 같다 …
-
-- **핵심 단계**  
-  1. …  
-  2. …
-
-🔍 *왜 이 북마크인가?*  
-해당 글은 Collector 버전 0.95 기준 설정 YAML 예시를 다룬다.
-
-📌 관련 북마크  
-- [Deep Dive into OTel](https://…) | tracing, collector  
-- …
-```
-
-### 2. SUMMARY
-
-```
-### 지난주 #RAG 북마크 요약
-**TL;DR**  
-1. …
-
-| 제목 | 핵심 한줄 |
-|------|-----------|
-| RAG Architecture Patterns | Retrieval-Augmented Generation 핵심 구성 3단계 … |
-| … | … |
-
-📌 관련 북마크
-- …
-```
-
-*(RECOMMEND·GRAPH·ROADMAP·RECENT\_TLDR 역시 같은 규칙으로 작성)*
-
----
-
-## ⚠️ 금지 사항
-
-* URL 복사만 나열하고 설명을 생략하지 말 것.
-* 사용자가 제공하지 않은 개인 정보·추측 사실 생성 금지.
-* 광고·홍보성 멘트 삽입 금지.
-
----
-
-### ✅ 최종 목표
-
-질문 의도(intent)를 만족하면서 **콘텐츠 근거가 명확한 답변**을 빠르게 스트리밍한다."""
-
-    # 북마크 데이터를 JSON 형식으로 구성
-    if ctx_blocks:
-        bookmarks_data = []
-        for i, (snippet, metadata) in enumerate(ctx_blocks[:8]):  # Top-8로 제한
-            bookmark = {
-                "title": metadata.get('title', '(제목없음)'),
-                "url": metadata.get('url', ''),
-                "snippet": snippet[:300],  # 최대 300자로 제한
-                "tags": metadata.get('keywords', []),
-                "createdAt": metadata.get('created_at', '2024-01-01'),
-                "score": float(metadata.get('score', 0.0))
-            }
-            bookmarks_data.append(bookmark)
-        
-        # FIND 의도로 기본 설정 (추후 의도 분류 로직 추가 가능)
-        user_context = {
-            "user_query": prompt,
-            "bookmarks": bookmarks_data,
-            "intent": "FIND"  # 기본값, 추후 의도 분류 로직으로 개선 가능
-        }
-        
-        context_json = json.dumps(user_context, ensure_ascii=False, indent=2)
-        logger.info(f"📝 컨텍스트 구성 완료: {len(bookmarks_data)}개 북마크")
-    else:
-        # 북마크가 없는 경우
-        user_context = {
-            "user_query": prompt,
-            "bookmarks": [],
-            "intent": "FIND"
-        }
-        context_json = json.dumps(user_context, ensure_ascii=False, indent=2)
-        logger.warning("⚠️ 관련 북마크를 찾지 못했습니다")
-
-    return [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"사용자 입력 데이터:\n{context_json}"},
-        # TODO: 여기에 conversation_history 메시지들 추가
-        # for msg in conversation_history:
-        #     messages.append({"role": msg["role"], "content": msg["content"]})
-    ]
-
-
-async def _generate_chat_stream(  # pylint: disable=too-many-locals
+async def _generate_chat_stream(
     request: ChatRequestModel,
     session_id: uuid.UUID,
     user_message_id: uuid.UUID
 ):
     """OpenAI 스트림을 SSE 형식으로 변환하면서 PostgreSQL에 저장"""
     start_time = datetime.now(timezone.utc)
+    
     try:
         logger.info(f"🚀 채팅 스트림 시작 - user_id: {request.user_id}, session_id: {session_id}")
 
@@ -352,131 +72,44 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
             yield f"data: {json.dumps({'type': 'error', 'data': error_msg}, ensure_ascii=False)}\n\n"
             return
 
-        # TODO: 대화 히스토리 조회 추가
-        # conversation_history = await _get_conversation_history(
-        #     session_id=session_id,
-        #     user_id=request.user_id,
-        #     db_session=db_session,
-        #     max_messages=10  # 최근 10개 메시지
-        # )
-
-        # RAG 검색
-        try:
-            ctx_blocks = await _retrieve_context(request.user_id, request.message)
-        except Exception as e:  # pylint: disable=broad-exception-caught
-            logger.error(f"❌ 컨텍스트 검색 실패: {e}")
-            ctx_blocks = []
-
-        # LLM 설정
-        logger.info("🤖 OpenAI LLM 호출 준비 중...")
-        llm = ChatOpenAI(
-            model=settings.OPENAI_MODEL,
-            streaming=True,
-            temperature=0.7,
-            timeout=30,
-            max_retries=1,
-            # 스트리밍 최적화를 위한 설정
-            model_kwargs={
-                "stream_options": {"include_usage": False},  # 사용량 정보 제외로 응답 속도 향상
-            }
+        # 2. RAG 검색 수행
+        ctx_blocks = await rag_search_service.retrieve_context(request.user_id, request.message)
+        
+        # 대화 히스토리 가져오기
+        conversation_history = await ChatRepository.get_session_messages(
+            session=None,
+            session_id=session_id,
+            user_id=request.user_id,
+            limit=20
         )
-
-        # 메시지 구성 (TODO: 히스토리 포함)
-        messages = _build_messages(request.message, ctx_blocks)
-        # TODO: messages = _build_messages(request.message, ctx_blocks, conversation_history)
         
-        # 응답 스트리밍 시작
-        logger.info("🚀 OpenAI 스트리밍 시작")
-        yield f"data: {json.dumps({'type': 'stream_start', 'data': {'timestamp': datetime.now(timezone.utc).isoformat()}}, ensure_ascii=False)}\n\n"
+        # ChatMessage 객체를 딕셔너리로 변환
+        history_dicts = []
+        for message in conversation_history:
+            history_dicts.append({
+                "role": message.role,
+                "content": message.content
+            })
         
-        # 시각화 데이터 전송 (RAG 검색 결과가 있을 때)
-        if ctx_blocks:
-            visualization_data = _create_bookmark_visualization(ctx_blocks, request.message)
-            viz_message = {
-                "type": "visualization",
-                "data": {
-                    "graph_payload": visualization_data,
-                    "context_info": {
-                        "total_documents": len(ctx_blocks),
-                        "search_successful": True,
-                        "avg_similarity": visualization_data['statistics']['avg_similarity'],
-                        "search_query": request.message,
-                        "timestamp": datetime.now(timezone.utc).isoformat()
-                    },
-                    "filter_options": {
-                        "by_source_type": visualization_data['statistics']['source_types'],
-                        "by_similarity": ["high", "medium", "low"],
-                        "by_keywords": list(visualization_data['statistics']['keyword_distribution'].keys())
-                    },
-                    "sort_options": {
-                        "similarity_desc": "유사도 높은순",
-                        "similarity_asc": "유사도 낮은순", 
-                        "title_asc": "제목 가나다순",
-                        "keywords_desc": "키워드 많은순"
-                    }
-                }
-            }
-            yield f"data: {json.dumps(viz_message, ensure_ascii=False)}\n\n"
-            logger.info(f"📊 시각화 데이터 전송 완료 - 노드: {len(visualization_data['nodes'])}개, 엣지: {len(visualization_data['edges'])}개")
-        else:
-            # 검색 결과가 없을 때의 기본 시각화
-            empty_viz = {
-                "type": "visualization", 
-                "data": {
-                    "graph_payload": {
-                        "nodes": [],
-                        "edges": [],
-                        "layout": "empty",
-                        "message": "관련 북마크를 찾지 못했습니다"
-                    },
-                    "context_info": {
-                        "total_documents": 0,
-                        "search_successful": False,
-                        "message": "검색 결과가 없습니다"
-                    }
-                }
-            }
-            yield f"data: {json.dumps(empty_viz, ensure_ascii=False)}\n\n"
+        logger.info(f"📜 대화 히스토리 조회 완료 - session_id: {session_id}, 메시지 수: {len(history_dicts)}")
 
-        # AI 응답 수집 및 스트림
+        # 3. 메시지 구성
+        messages = message_builder_service.build_messages(request.message, ctx_blocks, history_dicts)
+        
+        # 4. AI 응답 스트리밍 처리 (구성된 메시지 전달)
         ai_response = ""
         token_count = 0
-        chunk_buffer = ""
-        buffer_size = 5  # 5개 토큰마다 전송
-
-        for chunk in llm.stream(messages):
-            if chunk.content:
+        
+        async for stream_data in chat_stream_service._stream_llm_response(messages, ctx_blocks):
+            if stream_data["type"] == "chunk":
+                ai_response += stream_data["content"]
                 token_count += 1
-                ai_response += chunk.content
-                chunk_buffer += chunk.content
-                
-                # 버퍼가 찼거나 문장 끝 표시가 있으면 전송
-                should_send = (
-                    len(chunk_buffer) >= buffer_size or
-                    chunk.content in ['.', '!', '?', '\n', '。', '！', '？'] or
-                    token_count % 3 == 0  # 3토큰마다 강제 전송
-                )
-                
-                if should_send:
-                    logger.debug(f"📝 토큰 {token_count}: 청크 전송 - {chunk_buffer[:20]}...")
-                    yield f"data: {json.dumps({'type': 'chunk', 'data': chunk_buffer}, ensure_ascii=False)}\n\n"
-                    chunk_buffer = ""
-                    
-                    # 10토큰마다 진행 상황 전송
-                    if token_count % 10 == 0:
-                        yield f"data: {json.dumps({'type': 'progress', 'data': {'token_count': token_count, 'status': 'generating'}}, ensure_ascii=False)}\n\n"
-                    
-                    # 약간의 지연으로 스트리밍 효과 보장
-                    import asyncio
-                    await asyncio.sleep(0.01)  # 10ms 지연
-        
-        # 남은 버퍼 내용 전송
-        if chunk_buffer:
-            logger.debug(f"📝 마지막 청크 전송: {chunk_buffer}")
-            yield f"data: {json.dumps({'type': 'chunk', 'data': chunk_buffer}, ensure_ascii=False)}\n\n"
-        
-        # 스트리밍 완료 알림
-        yield f"data: {json.dumps({'type': 'stream_complete', 'data': '응답 생성 완료'}, ensure_ascii=False)}\n\n"
+                yield f"data: {json.dumps(stream_data, ensure_ascii=False)}\n\n"
+            elif stream_data["type"] == "progress":
+                yield f"data: {json.dumps(stream_data, ensure_ascii=False)}\n\n"
+            elif stream_data["type"] == "stream_complete":
+                yield f"data: {json.dumps(stream_data, ensure_ascii=False)}\n\n"
+                break
 
         # 프로필 업데이트 시작 알림
         yield f"data: {json.dumps({'type': 'profile_update_start', 'data': '사용자 프로필 분석 중...'}, ensure_ascii=False)}\n\n"
@@ -486,10 +119,10 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
 
         logger.info(f"✅ 스트림 완료 - {token_count}개 토큰 생성, 응답시간: {response_time_ms}ms")
 
-        # AI 응답 메시지 저장 (독립적인 트랜잭션)
+        # 5. AI 응답 메시지 저장
         try:
             ai_message = await ChatRepository.save_message(
-                session=None,  # Repository에서 독립적인 세션 사용
+                session=None,
                 session_id=session_id,
                 content=ai_response,
                 role="assistant",
@@ -501,7 +134,7 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
                 }
             )
 
-            # RAG 참조 저장 (독립적인 트랜잭션)
+            # RAG 참조 저장
             if ctx_blocks:
                 try:
                     rag_references = []
@@ -511,28 +144,23 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
                             "title": metadata.get("title", ""),
                             "url": metadata.get("url", ""),
                             "source_id": metadata.get("source_id", ""),
-                            "score": float(metadata.get("score", 0.0))  # 유사도 점수
+                            "score": float(metadata.get("score", 0.0))
                         })
 
                     await ChatRepository.save_rag_references(
-                        session=None,  # Repository에서 독립적인 세션 사용
+                        session=None,
                         message_id=ai_message.id,
                         references=rag_references
                     )
                 except Exception as rag_error:
                     logger.error(f"❌ RAG 참조 저장 실패: {rag_error}")
-                    # RAG 참조 저장 실패해도 메시지는 저장된 상태이므로 계속 진행
         
         except Exception as save_error:
             logger.error(f"❌ AI 메시지 저장 실패: {save_error}")
-            # 메시지 저장 실패 시 임시 메시지 ID 생성하여 응답 완료
             ai_message = type('TempMessage', (), {'id': uuid.uuid4()})()
 
-        # 완료 메시지 (그래프 데이터 + 메시지 ID 포함)
-        graph_payload = _create_bookmark_visualization(ctx_blocks, request.message)
-        
-        # 채팅 완료 후 사용자 AI 프로필 실시간 업데이트
-        profile_update_result = await _update_user_ai_profile_after_chat(
+        # 6. 사용자 프로필 업데이트
+        profile_update_result = await profile_update_service.update_user_ai_profile_after_chat(
             user_id=request.user_id,
             user_message=request.message,
             ai_response=ai_response,
@@ -549,6 +177,9 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
             
         yield f"data: {json.dumps({'type': 'profile_update_complete', 'data': profile_status_msg}, ensure_ascii=False)}\n\n"
         
+        # 7. 최종 완료 데이터 전송
+        graph_payload = visualization_service.create_bookmark_visualization(ctx_blocks, request.message)
+        
         completion_data = {
             "type": "session_end",
             "data": {
@@ -558,7 +189,7 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
                 "session_info": {
                     "user_id": request.user_id,
                     "session_id": str(request.session_id),
-                    "total_messages": 2,  # 사용자 메시지 + AI 응답
+                    "total_messages": 2,
                     "processing_time": f"{(datetime.now(timezone.utc) - start_time).total_seconds():.2f}s"
                 },
                 "rag_summary": {
@@ -571,392 +202,15 @@ async def _generate_chat_stream(  # pylint: disable=too-many-locals
         }
         yield f"data: {json.dumps(completion_data, ensure_ascii=False)}\n\n"
 
-    except Exception as e:  # pylint: disable=broad-exception-caught
+    except Exception as e:
         logger.error(f"❌ 스트림 생성 실패: {e}")
         yield f"data: {json.dumps({'type': 'error', 'data': str(e)}, ensure_ascii=False)}\n\n"
-
-
-def _create_bookmark_visualization(
-    ctx_blocks: List[Tuple[str, Dict[str, Any]]],
-    search_query: str
-) -> Dict[str, Any]:
-    """
-    RAG 검색 결과를 북마크 시각화용 그래프 데이터로 변환합니다.
-    
-    Args:
-        ctx_blocks: RAG 검색 결과 [(snippet, metadata), ...]
-        search_query: 검색 쿼리
-        
-    Returns:
-        시각화용 그래프 데이터 (nodes, edges, layout 정보 포함)
-    """
-    if not ctx_blocks:
-        return {
-            "nodes": [],
-            "edges": [],
-            "layout": "force-3d",
-            "total_bookmarks": 0,
-            "search_query": "",
-            "visualization_type": "bookmark_network"
-        }
-
-    # 노드 생성 (각 북마크를 노드로 표현)
-    nodes = []
-    for i, (snippet, metadata) in enumerate(ctx_blocks):
-        # 유사도 점수에 따른 노드 크기 계산
-        score = metadata.get('score', 0)
-        node_size = max(10, min(30, int(score * 40)))  # 10-30 범위
-        
-        # 소스 타입에 따른 색상 구분
-        source_type = metadata.get('source_type', 'bookmark')
-        color_map = {
-            'bookmark': '#4F46E5',     # 보라색
-            'document': '#059669',     # 초록색  
-            'article': '#DC2626',      # 빨간색
-            'note': '#D97706',         # 주황색
-            'webpage': '#0891B2'       # 파란색
-        }
-        node_color = color_map.get(source_type, '#6B7280')
-        
-        node = {
-            "id": f"bookmark_{metadata.get('source_id', i)}",
-            "label": metadata.get('title', '(제목없음)')[:30],
-            "title": metadata.get('title', '(제목없음)'),
-            "url": metadata.get('url', ''),
-            "snippet": snippet,
-            "keywords": metadata.get('keywords', []),
-            "source_type": source_type,
-            "similarity_score": float(score),
-            "size": int(node_size),
-            "color": node_color,
-            "x": i * 100,  # 기본 배치
-            "y": score * 100,
-            "z": i * 50
-        }
-        nodes.append(node)
-
-    # 엣지 생성 (북마크 간 관계 표현)
-    edges = []
-    
-    # 1. 키워드 기반 연결
-    for i in range(len(nodes)):
-        for j in range(i + 1, len(nodes)):
-            node_a = nodes[i]
-            node_b = nodes[j]
-            
-            # 공통 키워드 찾기
-            keywords_a = set(node_a.get('keywords', []))
-            keywords_b = set(node_b.get('keywords', []))
-            shared_keywords = keywords_a & keywords_b
-            
-            if shared_keywords:
-                # 공통 키워드 수에 따른 연결 강도
-                connection_weight = len(shared_keywords)
-                edge_width = max(1, min(5, connection_weight))
-                
-                edge = {
-                    "id": f"edge_{node_a['id']}_{node_b['id']}",
-                    "source": node_a['id'],
-                    "target": node_b['id'],
-                    "weight": connection_weight,
-                    "width": edge_width,
-                    "color": "#94A3B8",
-                    "shared_keywords": list(shared_keywords),
-                    "connection_type": "keyword_similarity"
-                }
-                edges.append(edge)
-    
-    # 2. 유사도 점수 기반 연결 (고유사도 북마크들 연결)
-    high_similarity_nodes = [node for node in nodes if node['similarity_score'] > 0.8]
-    if len(high_similarity_nodes) > 1:
-        for i in range(len(high_similarity_nodes)):
-            for j in range(i + 1, len(high_similarity_nodes)):
-                node_a = high_similarity_nodes[i]
-                node_b = high_similarity_nodes[j]
-                
-                # 이미 키워드로 연결되어 있으면 건너뛰기
-                existing_edge = any(
-                    edge['source'] == node_a['id'] and edge['target'] == node_b['id']
-                    for edge in edges
-                )
-                
-                if not existing_edge:
-                    edge = {
-                        "id": f"edge_similarity_{node_a['id']}_{node_b['id']}",
-                        "source": node_a['id'],
-                        "target": node_b['id'],
-                        "weight": 0.5,
-                        "width": 2,
-                        "color": "#F59E0B",
-                        "connection_type": "high_similarity"
-                    }
-                    edges.append(edge)
-
-    # 레이아웃 결정 (노드 수와 연결 관계에 따라)
-    layout_type = _determine_layout(nodes, edges)
-    
-    return {
-        "nodes": nodes,
-        "edges": edges,
-        "layout": layout_type,
-        "total_bookmarks": len(nodes),
-        "search_query": search_query,
-        "visualization_type": "bookmark_network",
-        "statistics": {
-            "total_connections": int(len(edges)),
-            "avg_similarity": float(sum(node['similarity_score'] for node in nodes) / len(nodes)) if nodes else 0.0,
-            "source_types": list(set(node['source_type'] for node in nodes)),
-            "keyword_distribution": _get_keyword_distribution(nodes),
-            "similarity_range": {
-                "min": float(min(node['similarity_score'] for node in nodes)) if nodes else 0.0,
-                "max": float(max(node['similarity_score'] for node in nodes)) if nodes else 0.0
-            }
-        },
-        "interaction_hints": {
-            "node_hover": "북마크 상세 정보 확인",
-            "node_click": "북마크 링크로 이동",
-            "edge_hover": "연결 관계 확인",
-            "layout_options": ["force-3d", "circular", "hierarchical", "grid"]
-        }
-    }
-
-
-def _determine_layout(nodes: List[Dict], edges: List[Dict]) -> str:
-    """노드와 엣지 수에 따라 최적의 레이아웃을 결정합니다."""
-    node_count = len(nodes)
-    edge_count = len(edges)
-    
-    if node_count <= 3:
-        return "linear"
-    elif node_count <= 6:
-        return "circular" 
-    elif edge_count > node_count * 0.7:
-        return "force-3d"  # 연결이 많으면 3D 포스 레이아웃
-    elif edge_count < node_count * 0.3:
-        return "grid"      # 연결이 적으면 그리드 레이아웃
-    else:
-        return "force-2d"  # 기본 2D 포스 레이아웃
-
-
-def _get_keyword_distribution(nodes: List[Dict]) -> Dict[str, int]:
-    """노드들의 키워드 분포를 계산합니다."""
-    keyword_count = {}
-    
-    for node in nodes:
-        keywords = node.get('keywords', [])
-        for keyword in keywords:
-            keyword_count[keyword] = keyword_count.get(keyword, 0) + 1
-    
-    # 상위 10개 키워드만 반환
-    sorted_keywords = sorted(keyword_count.items(), key=lambda x: x[1], reverse=True)
-    return dict(sorted_keywords[:10])
-
-
-async def _update_user_ai_profile_after_chat(
-    user_id: int,
-    user_message: str,
-    ai_response: str,
-    ctx_blocks: List[Tuple[str, Dict[str, Any]]],
-    session_id: uuid.UUID,
-    session_duration_minutes: float
-) -> Dict[str, Any]:
-    """채팅 완료 후 사용자 AI 프로필을 실시간 업데이트합니다."""
-    try:
-        logger.info(f"🤖 사용자 AI 프로필 업데이트 시작 - user_id: {user_id}")
-        
-        # 키워드 추출 (빠르고 가벼운 처리)
-        new_keywords = await _extract_interests_from_message(user_message)
-        
-        # 검색된 문서의 키워드들도 추가
-        searched_keywords = []
-        for _, metadata in ctx_blocks:
-            keywords = metadata.get('keywords', [])
-            searched_keywords.extend(keywords)
-        
-        # 중복 제거하고 상위 키워드만 선택
-        all_keywords = list(set(new_keywords + searched_keywords))
-        message_count = 2  # 사용자 메시지 + AI 응답
-        
-        # 별도 세션으로 AI 프로필 업데이트 (빠른 통계 업데이트)
-        async for session in get_async_session():
-            try:
-                from app.repositories.bookmark_repository import AIProfileRepository
-                
-                updated_profile = await AIProfileRepository.update_chat_statistics(
-                    session=session,
-                    user_id=user_id,
-                    session_duration_minutes=session_duration_minutes,
-                    message_count=message_count,
-                    new_keywords=all_keywords[:20]  # 상위 20개만
-                )
-                
-                logger.info(
-                    f"✅ AI 프로필 업데이트 완료 - user_id: {user_id}, "
-                    f"관심사: {updated_profile.current_interests}, "
-                    f"스타일: {updated_profile.ai_interaction_style}"
-                )
-                
-                return {
-                    "success": True,
-                    "update_type": "ai_profile_statistics", 
-                    "current_interests": updated_profile.current_interests,
-                    "ai_interaction_style": updated_profile.ai_interaction_style,
-                    "preferred_search_domains": updated_profile.preferred_search_domains,
-                    "new_keywords_added": len(all_keywords[:20]),
-                    "processing_time": 0.05,  # 빠른 처리 (~50ms)
-                    "extracted_keywords": new_keywords[:5],  # 상위 5개만 표시
-                    "searched_keywords": searched_keywords[:5]  # 상위 5개만 표시
-                }
-                
-            except Exception as db_error:
-                logger.error(f"❌ AI 프로필 DB 업데이트 실패 - user_id: {user_id}: {db_error}")
-                return {
-                    "success": False,
-                    "error": f"DB 업데이트 실패: {str(db_error)}",
-                    "update_type": "failed"
-                }
-        
-    except Exception as e:
-        logger.error(f"❌ AI 프로필 업데이트 실패 - user_id: {user_id}, 오류: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "extracted_keywords": [],
-            "searched_keywords": [],
-            "total_new_keywords": 0,
-            "update_type": "failed"
-        }
-
-
-async def _extract_interests_from_message(message: str) -> List[str]:
-    """사용자 메시지에서 관심사 키워드를 추출합니다."""
-    try:
-        # 간단한 키워드 추출 (실제로는 더 정교한 NLP 처리 가능)
-        # 한글/영문 키워드 패턴
-        import re
-        
-        # 기술 용어, 브랜드명, 전문 용어 등을 추출
-        patterns = [
-            r'\b[A-Z][A-Za-z]+\b',  # 영문 키워드 (첫글자 대문자)
-            r'\b[가-힣]{2,10}\b',    # 한글 키워드 (2-10글자)
-            r'\b\w+[A-Z]\w*\b',     # 카멜케이스
-        ]
-        
-        keywords = []
-        for pattern in patterns:
-            matches = re.findall(pattern, message)
-            keywords.extend(matches)
-        
-        # 불용어 제거
-        stopwords = {'에서', '에게', '에는', '에도', '그리고', '하지만', '그러나', '또한', '그런데', '있는', '없는', '하는', '되는', '같은', '다른', '이런', '저런', '어떤', '무엇', '어디', '언제', '어떻게', '왜'}
-        
-        filtered_keywords = [kw for kw in keywords if kw not in stopwords and len(kw) > 1]
-        
-        # 중복 제거하고 소문자 변환
-        unique_keywords = list(set([kw.lower() for kw in filtered_keywords]))
-        
-        return unique_keywords[:15]  # 상위 15개만 반환
-        
-    except Exception as e:
-        logger.warning(f"⚠️ 키워드 추출 실패: {e}")
-        return []
-
-
-async def _async_update_profile(update_request: 'ProfileUpdateRequest') -> Dict[str, Any]:
-    """비동기로 사용자 프로필을 업데이트합니다."""
-    try:
-        # 별도 세션으로 프로필 업데이트 처리
-        async for session in get_async_session():
-            try:
-                from app.services.user_profile_processor import UserProfileProcessor
-                from app.repositories.chat_repository import ChatRepository
-                from app.repositories.bookmark_repository import BookmarkRepository
-                from app.repositories.user_profile_repository import UserProfileRepository
-                
-                # Repository 인스턴스 생성
-                repositories = {
-                    'chat_repo': ChatRepository(),
-                    'bookmark_repo': BookmarkRepository(), 
-                    'user_profile_repo': UserProfileRepository()
-                }
-                
-                # 프로필 프로세서 초기화
-                processor = UserProfileProcessor(repositories)
-                
-                # 점진적 프로필 업데이트 수행
-                result = await processor.update_user_profile(
-                    user_id=update_request.user_id,
-                    force_full_recalculation=update_request.force_recalculation,
-                    include_historical_data=not update_request.incremental_update
-                )
-                
-                logger.info(f"📊 프로필 업데이트 성공 - user_id: {update_request.user_id}")
-                return {
-                    "success": True,
-                    "processing_time": result.get("processing_time", 0.0),
-                    "vector_strength": result.get("vector_strength", 0.0),
-                    "update_type": result.get("update_type", "incremental"),
-                    "data_points_processed": result.get("data_points_processed", 0)
-                }
-                
-            except ImportError as import_error:
-                logger.error(f"❌ 모듈 import 실패: {import_error}")
-                return {
-                    "success": False,
-                    "error": f"모듈 로드 실패: {str(import_error)}",
-                    "processing_time": 0.0,
-                    "vector_strength": 0.0
-                }
-            except Exception as process_error:
-                logger.error(f"❌ 프로필 처리 실패: {process_error}")
-                return {
-                    "success": False,
-                    "error": f"프로필 처리 실패: {str(process_error)}",
-                    "processing_time": 0.0,
-                    "vector_strength": 0.0
-                }
-            
-    except Exception as e:
-        logger.error(f"❌ 비동기 프로필 업데이트 실패: {e}")
-        return {
-            "success": False,
-            "error": str(e),
-            "processing_time": 0.0,
-            "vector_strength": 0.0
-        }
-
-
-# TODO: 대화 히스토리 조회 함수 추가 필요
-# async def _get_conversation_history(
-#     session_id: uuid.UUID,
-#     user_id: int,
-#     db_session: AsyncSession,
-#     max_messages: int = 10
-# ) -> List[Dict[str, str]]:
-#     """
-#     세션의 이전 대화 기록을 조회하여 LLM 컨텍스트에 포함할 형태로 반환
-#
-#     Args:
-#         session_id: 채팅 세션 ID
-#         user_id: 사용자 ID
-#         db_session: DB 세션
-#         max_messages: 최대 메시지 수 (토큰 제한 고려)
-#
-#     Returns:
-#         [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]
-#
-#     고려사항:
-#     - 토큰 제한: GPT 모델별 최대 토큰 수 고려
-#     - 성능: 자주 조회되는 히스토리는 캐싱 고려
-#     - 우선순위: 최근 메시지 우선, 중요도에 따른 필터링
-#     """
-#     pass
 
 
 @router.post(
     "/stream",
     response_class=StreamingResponse,
-    summary="채팅 스트림 (PostgreSQL 연동)",
+    summary="채팅 스트림",
 )
 async def chat_stream_direct(
     request: ChatRequestModel,
@@ -964,41 +218,96 @@ async def chat_stream_direct(
 ):
     """
     직접 스트리밍 방식의 채팅 API with PostgreSQL 연동
-    - 채팅 세션 관리
-    - 메시지 저장
-    - RAG 메타데이터 저장
-    - 중복 요청 방지
+    
+    ## 주요 기능
+    - **채팅 세션 관리**: 기존 세션 ID가 있으면 해당 세션 사용, 없으면 새로운 세션 자동 생성
+    - **메시지 저장**: 사용자 메시지와 AI 응답을 PostgreSQL에 저장
+    - **RAG 검색**: 사용자의 북마크 데이터에서 관련 컨텍스트 검색
+    - **실시간 스트리밍**: Server-Sent Events(SSE)를 통한 실시간 응답 스트리밍
+    - **프로필 업데이트**: 대화 내용을 바탕으로 사용자 프로필 자동 업데이트
+    - **중복 요청 방지**: Idempotency key를 통한 중복 요청 방지
+    
+    ## 세션 처리 로직
+    1. **기존 세션 ID 제공시**: 해당 세션을 찾아서 대화 이어가기
+    2. **세션 ID 미제공시**: 
+       - 새로운 세션을 자동으로 생성하여 대화 시작
+       - AI가 사용자의 첫 번째 메시지를 분석하여 의미있는 세션 제목 자동 생성
+       - 제목 생성 실패 시 기본 제목("대화 YYYY-MM-DD HH:MM") 사용
+    3. **잘못된 세션 ID시**: 새로운 세션을 생성하여 대화 시작 (제목 자동 생성)
+    
+    ## 요청 예시
+    ### 새로운 대화 시작 (세션 ID 없음)
+    ```json
+    {
+        "user_id": 123,
+        "message": "Python에서 리스트를 효율적으로 정렬하는 방법을 알려주세요"
+    }
+    ```
+    ↳ 자동 생성되는 세션 제목: "Python 리스트 정렬 방법"
+    
+    ### 기존 대화 이어가기 (세션 ID 있음)
+    ```json
+    {
+        "user_id": 123,
+        "message": "이전 질문에 대해 더 자세히 설명해주세요",
+        "session_id": "550e8400-e29b-41d4-a716-446655440000"
+    }
+    ```
+    
+    ## 응답 형식 (SSE)
+    - `session_start`: 세션 정보 (세션 ID, 사용자 메시지 ID)
+    - `chunk`: AI 응답 텍스트 조각
+    - `progress`: 진행 상태 업데이트
+    - `stream_complete`: 스트리밍 완료
+    - `profile_update_start`: 프로필 업데이트 시작
+    - `profile_update_complete`: 프로필 업데이트 완료
+    - `session_end`: 최종 완료 데이터 (그래프, 메타데이터 등)
+    - `error`: 오류 발생시
+    
+    Args:
+        request: 채팅 요청 데이터 (user_id, message, session_id(선택적))
+        idempotency_key: 중복 요청 방지를 위한 키 (선택적)
+        
+    Returns:
+        StreamingResponse: SSE 형식의 실시간 스트리밍 응답
+        
+    Raises:
+        500: 채팅 스트림 초기화 실패시
     """
     logger.info(f"📨 채팅 스트림 요청 수신 - user_id: {request.user_id}, idempotency_key: {idempotency_key}")
 
     try:
         # TODO: Idempotency key를 사용한 중복 요청 방지
         if idempotency_key:
-            # Redis 또는 임시 저장소에서 중복 체크 (여기서는 간단히 로그만)
             logger.info(f"🔄 중복 방지 키 확인: {idempotency_key}")
 
         # 기존 세션 확인 또는 새 세션 생성
         chat_session = None
         if hasattr(request, 'session_id') and request.session_id:
-            # 기존 세션 사용
             chat_session = await ChatRepository.get_session(
-                session=None,  # Repository에서 독립적인 세션 사용
+                session=None,
                 session_id=uuid.UUID(request.session_id),
                 user_id=request.user_id
             )
 
         if not chat_session:
-            # 새로운 세션 생성
+            # 사용자 메시지를 기반으로 적절한 제목 생성
+            try:
+                session_title = await chat_stream_service.generate_session_title(request.message)
+            except Exception as title_error:
+                logger.warning(f"⚠️ 제목 생성 실패, 기본 제목 사용: {title_error}")
+                session_title = f"대화 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
+            
             chat_session = await ChatRepository.create_session(
-                session=None,  # Repository에서 독립적인 세션 사용
+                session=None,
                 user_id=request.user_id,
-                title=f"대화 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
+                title=session_title
             )
 
         # 사용자 메시지 저장
         try:
             user_message = await ChatRepository.save_message(
-                session=None,  # Repository에서 독립적인 세션 사용
+                session=None,
                 session_id=chat_session.id,
                 content=request.message,
                 role="user",
@@ -1007,7 +316,6 @@ async def chat_stream_direct(
             logger.info(f"💾 세션 및 사용자 메시지 저장 완료 - session_id: {chat_session.id}")
         except Exception as user_msg_error:
             logger.error(f"❌ 사용자 메시지 저장 실패: {user_msg_error}")
-            # 사용자 메시지 저장 실패시 임시 ID 생성
             user_message = type('TempMessage', (), {'id': uuid.uuid4()})()
 
         headers = {
@@ -1017,7 +325,7 @@ async def chat_stream_direct(
             "Connection": "keep-alive",
             "Access-Control-Allow-Origin": "*",
             "Access-Control-Allow-Headers": "Cache-Control",
-            "X-Accel-Buffering": "no",  # Nginx 버퍼링 비활성화
+            "X-Accel-Buffering": "no",
         }
 
         return StreamingResponse(
@@ -1034,21 +342,67 @@ async def chat_stream_direct(
         ) from e
 
 
-# 🆕 세션 생성 API 추가
 @router.post(
     "/sessions",
     response_model=BaseResponse[IDResponse],
-    summary="새 채팅 세션 생성"
+    summary="새 채팅 세션 생성 (legacy - 사용 안함)"
 )
 async def create_chat_session(
     user_id: int,
     title: Optional[str] = None
 ):
-    """새로운 채팅 세션을 생성합니다."""
+    """
+    새로운 채팅 세션을 생성합니다.
+    
+    ## 주요 기능
+    - **새 세션 생성**: 지정된 사용자를 위한 새로운 채팅 세션 생성
+    - **자동 제목**: 제목을 제공하지 않으면 기본 제목 자동 생성
+    - **세션 관리**: 생성된 세션은 향후 대화에서 재사용 가능
+    
+    ## 세션 생성 로직
+    1. **사용자 ID 확인**: 제공된 사용자 ID로 세션 생성
+    2. **제목 처리**: 
+       - 제목 제공시: 사용자가 지정한 제목 사용
+       - 제목 미제공시: "새 대화 YYYY-MM-DD HH:MM" 형식으로 자동 생성
+    3. **세션 설정**: 기본 세션 타입은 "general", 활성 상태로 생성
+    
+    ## 요청 예시
+    ### 제목을 지정한 새 세션 생성
+    ```http
+    POST /chat/sessions?user_id=123&title=프로젝트 기획 회의
+    ```
+    
+    ### 기본 제목으로 새 세션 생성
+    ```http
+    POST /chat/sessions?user_id=123
+    ```
+    ↳ 생성되는 제목: "새 대화 2024-01-15 14:30"
+    
+    ## 응답 형식
+    ```json
+    {
+        "success": true,
+        "message": "채팅 세션이 성공적으로 생성되었습니다",
+        "data": {
+            "id": "550e8400-e29b-41d4-a716-446655440000"
+        }
+    }
+    ```
+    
+    Args:
+        user_id: 세션을 생성할 사용자의 ID
+        title: 세션 제목 (선택적, 미제공시 자동 생성)
+        
+    Returns:
+        BaseResponse[IDResponse]: 생성된 세션의 ID를 포함한 응답
+        
+    Raises:
+        500: 세션 생성 실패시
+    """
     try:
         default_title = f"새 대화 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
         chat_session = await ChatRepository.create_session(
-            session=None,  # Repository에서 독립적인 세션 사용
+            session=None,
             user_id=user_id,
             title=title or default_title
         )
@@ -1067,7 +421,6 @@ async def create_chat_session(
         ) from e
 
 
-# 채팅 세션 관리 API 추가
 @router.get(
     "/sessions",
     response_model=BaseResponse[ChatSessionListResponse],
@@ -1078,10 +431,77 @@ async def get_user_sessions(
     limit: int = 20,
     offset: int = 0
 ):
-    """사용자의 채팅 세션 목록을 조회합니다."""
+    """
+    사용자의 채팅 세션 목록을 조회합니다.
+    
+    ## 주요 기능
+    - **세션 목록 조회**: 사용자가 생성한 모든 채팅 세션 조회
+    - **페이지네이션 지원**: limit/offset 방식으로 대용량 세션 목록 효율적 처리
+    - **최신순 정렬**: 가장 최근에 업데이트된 세션부터 반환
+    - **세션 상태 포함**: 각 세션의 활성 상태 및 메타데이터 제공
+    
+    ## 정렬 및 필터링
+    1. **정렬 순서**: 최근 업데이트 시간 기준 내림차순 (최신 → 과거)
+    2. **활성/비활성**: 모든 세션 반환 (활성 상태 정보 포함)
+    3. **페이지네이션**: offset + limit 방식으로 메모리 효율적 조회
+    
+    ## 요청 예시
+    ### 기본 조회 (최근 20개)
+    ```http
+    GET /chat/sessions?user_id=123
+    ```
+    
+    ### 페이지네이션 조회
+    ```http
+    GET /chat/sessions?user_id=123&limit=10&offset=20
+    ```
+    ↳ 21번째부터 30번째 세션까지 조회
+    
+    ### 대용량 조회
+    ```http
+    GET /chat/sessions?user_id=123&limit=50&offset=0
+    ```
+    ↳ 최대 50개 세션을 한 번에 조회
+    
+    ## 응답 형식
+    ```json
+    {
+        "success": true,
+        "message": "채팅 세션 목록을 성공적으로 조회했습니다",
+        "data": {
+            "sessions": [
+                {
+                    "id": "550e8400-e29b-41d4-a716-446655440000",
+                    "title": "Python 리스트 정렬 방법",
+                    "session_type": "general",
+                    "created_at": "2024-01-15T10:30:00Z",
+                    "updated_at": "2024-01-15T11:45:00Z",
+                    "is_active": true
+                }
+            ],
+            "total": 1
+        }
+    }
+    ```
+    
+    Args:
+        user_id: 세션 목록을 조회할 사용자의 ID
+        limit: 한 번에 조회할 세션 수 (기본값: 20, 최대 권장: 50)
+        offset: 건너뛸 세션 수 (기본값: 0)
+        
+    Returns:
+        BaseResponse[ChatSessionListResponse]: 세션 목록과 총 개수를 포함한 응답
+        
+    Raises:
+        500: 세션 목록 조회 실패시
+        
+    Note:
+        - 대용량 데이터 처리를 위해 적절한 limit 값 사용 권장
+        - 실시간 업데이트가 필요한 경우 주기적 폴링 또는 WebSocket 고려
+    """
     try:
         sessions = await ChatRepository.get_user_sessions(
-            session=None,  # Repository에서 독립적인 세션 사용
+            session=None,
             user_id=user_id,
             limit=limit,
             offset=offset
@@ -1120,20 +540,130 @@ async def get_user_sessions(
 
 @router.get(
     "/sessions/{session_id}/messages",
-    response_model=BaseResponse[ChatSessionMessagesResponse],
-    summary="채팅 세션 메시지 조회"
+    response_model=BaseResponse[ChatSessionMessagesPaginatedResponse],
+    summary="채팅 세션 메시지 조회 (페이지네이션)"
 )
 async def get_session_messages(
     session_id: str,
-    user_id: int
+    user_id: int,
+    page: int = Query(1, ge=1, description="페이지 번호 (1부터 시작)"),
+    size: int = Query(20, ge=1, le=100, description="페이지 크기 (1-100)")
 ):
-    """특정 채팅 세션의 메시지 목록을 조회합니다."""
+    """
+    채팅 세션의 메시지를 페이지네이션으로 조회합니다.
+    
+    ## 주요 기능
+    - **메시지 페이지네이션**: 대화 내역을 효율적으로 페이지 단위로 조회
+    - **권한 검증**: 세션 소유자만 메시지 조회 가능
+    - **시간순 정렬**: 가장 오래된 메시지부터 반환 (대화 흐름 순서)
+    - **메타데이터 제공**: 총 메시지 수, 페이지 정보 등 포함
+    
+    ## 페이지네이션 로직
+    1. **정렬 순서**: 메시지 생성 시간 기준 오름차순 (과거 → 최신)
+    2. **페이지 계산**: (page - 1) * size로 offset 자동 계산
+    3. **권한 확인**: 요청한 사용자가 세션 소유자인지 검증
+    4. **성능 최적화**: 별도 COUNT 쿼리로 총 개수 효율적 조회
+    
+    ## 요청 예시
+    ### 기본 조회 (첫 페이지, 20개)
+    ```http
+    GET /chat/sessions/550e8400-e29b-41d4-a716-446655440000/messages?user_id=123
+    ```
+    
+    ### 특정 페이지 조회
+    ```http
+    GET /chat/sessions/550e8400-e29b-41d4-a716-446655440000/messages?user_id=123&page=3&size=10
+    ```
+    ↳ 3페이지, 페이지당 10개 메시지 조회
+    
+    ### 대용량 페이지 조회
+    ```http
+    GET /chat/sessions/550e8400-e29b-41d4-a716-446655440000/messages?user_id=123&page=1&size=100
+    ```
+    ↳ 첫 페이지에 최대 100개 메시지 조회
+    
+    ## 응답 형식
+    ```json
+    {
+        "success": true,
+        "message": "채팅 세션 메시지를 성공적으로 조회했습니다",
+        "data": {
+            "messages": [
+                {
+                    "id": "msg-001",
+                    "session_id": "550e8400-e29b-41d4-a716-446655440000",
+                    "sender_type": "user",
+                    "content": "Python 리스트 정렬 방법을 알려주세요",
+                    "metadata": {},
+                    "created_at": "2024-01-15T10:30:00Z"
+                }
+            ],
+            "pagination": {
+                "current_page": 1,
+                "page_size": 20,
+                "total_count": 45,
+                "total_pages": 3,
+                "has_next": true,
+                "has_prev": false,
+                "next_page": 2,
+                "prev_page": null
+            }
+        }
+    }
+    ```
+    
+    Args:
+        session_id: 조회할 채팅 세션의 UUID
+        user_id: 요청하는 사용자의 ID (권한 검증용)
+        page: 조회할 페이지 번호 (1부터 시작, 기본값: 1)
+        size: 페이지당 메시지 수 (1-100, 기본값: 20)
+        
+    Returns:
+        BaseResponse[ChatSessionMessagesPaginatedResponse]: 
+            메시지 목록과 페이지네이션 정보를 포함한 응답
+        
+    Raises:
+        400: 잘못된 UUID 형식의 세션 ID
+        404: 세션이 존재하지 않거나 접근 권한이 없음
+        422: 잘못된 페이지 번호 또는 크기 (음수 값 등)
+        500: 메시지 조회 실패시
+        
+    Note:
+        - 대화 내역이 많은 경우 적절한 페이지 크기 사용 권장
+        - 실시간 메시지 수신은 WebSocket 스트림 API 사용
+        - 메시지 순서는 대화 흐름을 유지하기 위해 시간순 정렬
+    """
     try:
+        # 파라미터 검증
+        if page < 1:
+            raise HTTPException(
+                status_code=400,
+                detail="페이지 번호는 1 이상이어야 합니다"
+            )
+            
+        if size < 1 or size > 100:
+            raise HTTPException(
+                status_code=400,
+                detail="페이지 크기는 1-100 사이여야 합니다"
+            )
+        
         session_uuid = uuid.UUID(session_id)
-        messages = await ChatRepository.get_session_messages(
-            session=None,  # Repository에서 독립적인 세션 사용
+        offset = (page - 1) * size
+        
+        # 총 메시지 수 조회
+        total_count = await ChatRepository.get_session_messages_count(
+            session=None,
             session_id=session_uuid,
             user_id=user_id
+        )
+        
+        # 메시지 목록 조회
+        messages = await ChatRepository.get_session_messages(
+            session=None,
+            session_id=session_uuid,
+            user_id=user_id,
+            limit=size,
+            offset=offset
         )
 
         message_responses = [
@@ -1146,15 +676,32 @@ async def get_session_messages(
             )
             for message in messages
         ]
+        
+        # 페이지네이션 정보 계산
+        total_pages = (total_count + size - 1) // size  # 올림 계산
+        has_next = page < total_pages
+        has_prev = page > 1
 
-        session_messages_response = ChatSessionMessagesResponse(
+        pagination_info = {
+            "current_page": page,
+            "page_size": size,
+            "total_count": total_count,
+            "total_pages": total_pages,
+            "has_next": has_next,
+            "has_prev": has_prev,
+            "next_page": page + 1 if has_next else None,
+            "prev_page": page - 1 if has_prev else None
+        }
+
+        session_messages_response = ChatSessionMessagesPaginatedResponse(
             session_id=session_id,
-            messages=message_responses
+            messages=message_responses,
+            pagination=pagination_info
         )
 
-        return BaseResponse[ChatSessionMessagesResponse](
+        return BaseResponse[ChatSessionMessagesPaginatedResponse](
             success=True,
-            message="채팅 메시지 목록을 성공적으로 조회했습니다",
+            message=f"채팅 메시지 목록을 성공적으로 조회했습니다 (페이지 {page}/{total_pages})",
             data=session_messages_response
         )
 
@@ -1168,4 +715,147 @@ async def get_session_messages(
         raise HTTPException(
             status_code=500,
             detail=f"세션 메시지 조회 실패: {str(e)}"
+        ) from e
+
+
+@router.put(
+    "/sessions/{session_id}",
+    response_model=BaseResponse[ChatSessionResponse],
+    summary="채팅 세션 정보 업데이트"
+)
+async def update_chat_session(
+    session_id: str,
+    user_id: int,
+    request: ChatSessionUpdateRequest
+):
+    """
+    채팅 세션의 정보를 업데이트합니다.
+    
+    ## 주요 기능
+    - **세션 제목 변경**: 채팅 세션의 제목을 사용자가 원하는 이름으로 수정
+    - **권한 검증**: 세션 소유자만 수정 가능
+    - **즉시 반영**: 변경 사항이 즉시 적용되어 업데이트된 정보 반환
+    - **안전한 수정**: 트랜잭션 기반으로 데이터 일관성 보장
+    
+    ## 업데이트 로직
+    1. **세션 존재 확인**: 요청된 세션 ID가 유효한지 검증
+    2. **권한 검증**: 요청한 사용자가 세션 소유자인지 확인
+    3. **제목 업데이트**: 새로운 제목으로 변경 및 업데이트 시간 갱신
+    4. **응답 반환**: 수정된 세션 정보 전체 반환
+    
+    ## 요청 예시
+    ### 세션 제목 변경
+    ```http
+    PUT /chat/sessions/550e8400-e29b-41d4-a716-446655440000?user_id=123
+    Content-Type: application/json
+    
+    {
+        "title": "Python 프로젝트 개발 회의"
+    }
+    ```
+    
+    ### 긴 제목으로 변경
+    ```http
+    PUT /chat/sessions/550e8400-e29b-41d4-a716-446655440000?user_id=123
+    Content-Type: application/json
+    
+    {
+        "title": "머신러닝 모델 성능 개선을 위한 데이터 전처리 및 하이퍼파라미터 튜닝 논의"
+    }
+    ```
+    
+    ## 응답 형식
+    ```json
+    {
+        "success": true,
+        "message": "채팅 세션 정보가 성공적으로 업데이트되었습니다",
+        "data": {
+            "id": "550e8400-e29b-41d4-a716-446655440000",
+            "title": "Python 프로젝트 개발 회의",
+            "session_type": "general",
+            "created_at": "2024-01-15T10:30:00Z",
+            "updated_at": "2024-01-15T14:45:00Z",
+            "is_active": true
+        }
+    }
+    ```
+    
+    ## 에러 응답 예시
+    ### 권한 없음 (404)
+    ```json
+    {
+        "success": false,
+        "message": "채팅 세션을 찾을 수 없거나 접근 권한이 없습니다"
+    }
+    ```
+    
+    ### 잘못된 UUID (400)
+    ```json
+    {
+        "success": false,
+        "message": "잘못된 세션 ID 형식입니다"
+    }
+    ```
+    
+    Args:
+        session_id: 업데이트할 채팅 세션의 UUID
+        user_id: 요청하는 사용자의 ID (권한 검증용)
+        request: 업데이트할 세션 정보 (현재는 title만 지원)
+        
+    Returns:
+        BaseResponse[ChatSessionResponse]: 업데이트된 세션 정보를 포함한 응답
+        
+    Raises:
+        400: 잘못된 UUID 형식의 세션 ID
+        404: 세션이 존재하지 않거나 접근 권한이 없음
+        422: 잘못된 요청 데이터 (제목이 너무 긴 경우 등)
+        500: 세션 업데이트 실패시
+        
+    Note:
+        - 제목은 빈 문자열이 아닌 의미있는 내용으로 설정 권장
+        - 세션 타입이나 활성 상태는 별도 API를 통해 변경
+        - 업데이트 시간은 자동으로 현재 시간으로 갱신
+    """
+    try:
+        session_uuid = uuid.UUID(session_id)
+        
+        # 세션 제목 업데이트
+        updated_session = await ChatRepository.update_session_title(
+            session=None,
+            session_id=session_uuid,
+            user_id=user_id,
+            title=request.title
+        )
+        
+        if not updated_session:
+            raise HTTPException(
+                status_code=404,
+                detail="세션을 찾을 수 없거나 권한이 없습니다"
+            )
+        
+        session_response = ChatSessionResponse(
+            id=str(updated_session.id),
+            title=updated_session.title,
+            session_type=updated_session.session_type,
+            created_at=updated_session.created_at,
+            updated_at=updated_session.updated_at,
+            is_active=updated_session.is_active
+        )
+        
+        return BaseResponse[ChatSessionResponse](
+            success=True,
+            message="채팅 세션이 성공적으로 업데이트되었습니다",
+            data=session_response
+        )
+        
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="올바르지 않은 세션 ID 형식입니다"
+        ) from exc
+    except Exception as e:
+        logger.error(f"❌ 세션 업데이트 실패: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"세션 업데이트 실패: {str(e)}"
         ) from e
