@@ -12,6 +12,7 @@ from typing import Dict, Any, List, Tuple, AsyncGenerator
 
 from langchain_openai import ChatOpenAI
 from loguru import logger
+from openai import AsyncOpenAI
 
 from app.core.config import settings
 from app.schemas.chat import ChatRequestModel
@@ -37,6 +38,8 @@ class ChatStreamService:
         self.message_builder_service = MessageBuilderService()
         self.visualization_service = VisualizationService()
         self.profile_update_service = ProfileUpdateService()
+        
+        self.client = AsyncOpenAI(api_key=settings.OPENAI_API_KEY)
         
     async def generate_chat_stream(
         self,
@@ -347,6 +350,82 @@ class ChatStreamService:
         except Exception as e:
             logger.error(f"❌ 대화 히스토리 조회 실패: {e}")
             return []
+
+    async def generate_session_title(self, user_message: str) -> str:
+        """
+        사용자의 첫 번째 메시지를 기반으로 적절한 세션 제목을 생성합니다.
+        
+        Args:
+            user_message: 사용자의 첫 번째 메시지
+            
+        Returns:
+            생성된 세션 제목 (최대 50자)
+        """
+        try:
+            # 제목 생성을 위한 프롬프트
+            title_prompt = f"""다음 사용자 메시지를 바탕으로 대화 세션의 적절한 제목을 생성해주세요.
+
+사용자 메시지: "{user_message}"
+
+요구사항:
+- 한국어로 작성
+- 최대 50자 이내
+- 메시지의 핵심 주제나 의도를 간결하게 표현
+- 구체적이고 의미있는 제목
+- 특수문자나 이모지 사용 금지
+
+예시:
+- "Python 리스트 정렬 방법" (정렬에 대한 질문인 경우)
+- "React 컴포넌트 최적화" (React 성능에 대한 질문인 경우)
+- "데이터베이스 설계 조언" (DB 설계에 대한 질문인 경우)
+
+제목만 응답해주세요:"""
+
+            response = await self.client.chat.completions.create(
+                model="gpt-3.5-turbo",  # 간단한 제목 생성이므로 가벼운 모델 사용
+                messages=[
+                    {"role": "system", "content": "당신은 대화 제목을 생성하는 전문가입니다. 간결하고 명확한 제목을 만들어주세요."},
+                    {"role": "user", "content": title_prompt}
+                ],
+                max_tokens=100,
+                temperature=0.7,
+                timeout=10.0  # 10초 타임아웃
+            )
+            
+            generated_title = response.choices[0].message.content.strip()
+            
+            # 제목 길이 제한 및 정리
+            if len(generated_title) > 50:
+                generated_title = generated_title[:47] + "..."
+                
+            # 따옴표 제거
+            generated_title = generated_title.strip('"\'')
+            
+            logger.info(f"🏷️ 세션 제목 생성 완료: '{generated_title}'")
+            return generated_title
+            
+        except asyncio.TimeoutError:
+            logger.warning("⏰ 제목 생성 타임아웃 - 기본 제목 사용")
+            return self._generate_fallback_title(user_message)
+        except Exception as e:
+            logger.error(f"❌ 제목 생성 실패: {e} - 기본 제목 사용")
+            return self._generate_fallback_title(user_message)
+    
+    def _generate_fallback_title(self, user_message: str) -> str:
+        """
+        AI 제목 생성 실패 시 사용할 폴백 제목 생성
+        
+        Args:
+            user_message: 사용자 메시지
+            
+        Returns:
+            폴백 제목
+        """
+        # 메시지의 첫 30자를 사용하여 간단한 제목 생성
+        if len(user_message) <= 30:
+            return user_message
+        else:
+            return user_message[:27] + "..."
 
 
 # 싱글톤 인스턴스

@@ -20,7 +20,8 @@ from app.schemas.chat import (
     ChatSessionResponse,
     ChatMessageResponse,
     ChatSessionMessagesResponse,
-    ChatSessionListResponse
+    ChatSessionListResponse,
+    ChatSessionUpdateRequest
 )
 from app.schemas.base import BaseResponse, IDResponse
 from app.repositories.chat_repository import ChatRepository
@@ -216,10 +217,61 @@ async def chat_stream_direct(
 ):
     """
     직접 스트리밍 방식의 채팅 API with PostgreSQL 연동
-    - 채팅 세션 관리
-    - 메시지 저장
-    - RAG 메타데이터 저장
-    - 중복 요청 방지
+    
+    ## 주요 기능
+    - **채팅 세션 관리**: 기존 세션 ID가 있으면 해당 세션 사용, 없으면 새로운 세션 자동 생성
+    - **메시지 저장**: 사용자 메시지와 AI 응답을 PostgreSQL에 저장
+    - **RAG 검색**: 사용자의 북마크 데이터에서 관련 컨텍스트 검색
+    - **실시간 스트리밍**: Server-Sent Events(SSE)를 통한 실시간 응답 스트리밍
+    - **프로필 업데이트**: 대화 내용을 바탕으로 사용자 프로필 자동 업데이트
+    - **중복 요청 방지**: Idempotency key를 통한 중복 요청 방지
+    
+    ## 세션 처리 로직
+    1. **기존 세션 ID 제공시**: 해당 세션을 찾아서 대화 이어가기
+    2. **세션 ID 미제공시**: 
+       - 새로운 세션을 자동으로 생성하여 대화 시작
+       - AI가 사용자의 첫 번째 메시지를 분석하여 의미있는 세션 제목 자동 생성
+       - 제목 생성 실패 시 기본 제목("대화 YYYY-MM-DD HH:MM") 사용
+    3. **잘못된 세션 ID시**: 새로운 세션을 생성하여 대화 시작 (제목 자동 생성)
+    
+    ## 요청 예시
+    ### 새로운 대화 시작 (세션 ID 없음)
+    ```json
+    {
+        "user_id": 123,
+        "message": "Python에서 리스트를 효율적으로 정렬하는 방법을 알려주세요"
+    }
+    ```
+    ↳ 자동 생성되는 세션 제목: "Python 리스트 정렬 방법"
+    
+    ### 기존 대화 이어가기 (세션 ID 있음)
+    ```json
+    {
+        "user_id": 123,
+        "message": "이전 질문에 대해 더 자세히 설명해주세요",
+        "session_id": "550e8400-e29b-41d4-a716-446655440000"
+    }
+    ```
+    
+    ## 응답 형식 (SSE)
+    - `session_start`: 세션 정보 (세션 ID, 사용자 메시지 ID)
+    - `chunk`: AI 응답 텍스트 조각
+    - `progress`: 진행 상태 업데이트
+    - `stream_complete`: 스트리밍 완료
+    - `profile_update_start`: 프로필 업데이트 시작
+    - `profile_update_complete`: 프로필 업데이트 완료
+    - `session_end`: 최종 완료 데이터 (그래프, 메타데이터 등)
+    - `error`: 오류 발생시
+    
+    Args:
+        request: 채팅 요청 데이터 (user_id, message, session_id(선택적))
+        idempotency_key: 중복 요청 방지를 위한 키 (선택적)
+        
+    Returns:
+        StreamingResponse: SSE 형식의 실시간 스트리밍 응답
+        
+    Raises:
+        500: 채팅 스트림 초기화 실패시
     """
     logger.info(f"📨 채팅 스트림 요청 수신 - user_id: {request.user_id}, idempotency_key: {idempotency_key}")
 
@@ -238,10 +290,17 @@ async def chat_stream_direct(
             )
 
         if not chat_session:
+            # 사용자 메시지를 기반으로 적절한 제목 생성
+            try:
+                session_title = await chat_stream_service.generate_session_title(request.message)
+            except Exception as title_error:
+                logger.warning(f"⚠️ 제목 생성 실패, 기본 제목 사용: {title_error}")
+                session_title = f"대화 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
+            
             chat_session = await ChatRepository.create_session(
                 session=None,
                 user_id=request.user_id,
-                title=f"대화 {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')}"
+                title=session_title
             )
 
         # 사용자 메시지 저장
@@ -416,4 +475,81 @@ async def get_session_messages(
         raise HTTPException(
             status_code=500,
             detail=f"세션 메시지 조회 실패: {str(e)}"
+        ) from e
+
+
+@router.put(
+    "/sessions/{session_id}",
+    response_model=BaseResponse[ChatSessionResponse],
+    summary="채팅 세션 정보 업데이트"
+)
+async def update_chat_session(
+    session_id: str,
+    user_id: int,
+    request: ChatSessionUpdateRequest
+):
+    """
+    채팅 세션의 제목을 업데이트합니다.
+    
+    Args:
+        session_id: 업데이트할 세션의 UUID
+        user_id: 세션 소유자의 사용자 ID
+        request: 업데이트할 정보가 담긴 요청 객체
+        
+    Returns:
+        업데이트된 세션 정보를 포함한 응답
+        
+    Raises:
+        400: 잘못된 세션 ID 형식
+        404: 세션을 찾을 수 없거나 권한 없음
+        500: 서버 오류
+        
+    Example:
+        PUT /chat/sessions/550e8400-e29b-41d4-a716-446655440000?user_id=123
+        {
+            "title": "새로운 세션 제목"
+        }
+    """
+    try:
+        session_uuid = uuid.UUID(session_id)
+        
+        # 세션 제목 업데이트
+        updated_session = await ChatRepository.update_session_title(
+            session=None,
+            session_id=session_uuid,
+            user_id=user_id,
+            title=request.title
+        )
+        
+        if not updated_session:
+            raise HTTPException(
+                status_code=404,
+                detail="세션을 찾을 수 없거나 권한이 없습니다"
+            )
+        
+        session_response = ChatSessionResponse(
+            id=str(updated_session.id),
+            title=updated_session.title,
+            session_type=updated_session.session_type,
+            created_at=updated_session.created_at,
+            updated_at=updated_session.updated_at,
+            is_active=updated_session.is_active
+        )
+        
+        return BaseResponse[ChatSessionResponse](
+            success=True,
+            message="채팅 세션이 성공적으로 업데이트되었습니다",
+            data=session_response
+        )
+        
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="올바르지 않은 세션 ID 형식입니다"
+        ) from exc
+    except Exception as e:
+        logger.error(f"❌ 세션 업데이트 실패: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"세션 업데이트 실패: {str(e)}"
         ) from e
