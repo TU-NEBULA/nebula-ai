@@ -36,11 +36,16 @@ class ChatRepository:
         
         async with AsyncSessionLocal() as new_session:
             try:
+                # 동일한 시간을 created_at과 updated_at에 사용
+                current_time = datetime.now(timezone.utc)
+                
                 chat_session = ChatSession(
                     user_id=user_id,
                     title=title or "새로운 대화",
                     session_type=session_type,
-                    is_active=True
+                    is_active=True,
+                    created_at=current_time,
+                    updated_at=current_time
                 )
                 new_session.add(chat_session)
                 await new_session.commit()
@@ -239,10 +244,28 @@ class ChatRepository:
                     rag_metadata=metadata or {}
                 )
                 new_session.add(message)
+
+                # 메시지 저장 시 해당 세션의 updated_at도 함께 업데이트
+                try:
+                    session_stmt = select(ChatSession).where(
+                        and_(
+                            ChatSession.id == session_id,
+                            ChatSession.user_id == user_id
+                        )
+                    )
+                    session_result = await new_session.execute(session_stmt)
+                    chat_session = session_result.scalar_one_or_none()
+                    
+                    if chat_session:
+                        chat_session.updated_at = datetime.now(timezone.utc)
+                        new_session.add(chat_session)
+                except Exception as session_update_error:
+                    logger.warning(f"⚠️ 세션 updated_at 업데이트 실패 (메시지 저장은 계속): {session_update_error}")
+
                 await new_session.commit()
                 await new_session.refresh(message)
 
-                logger.debug(f"💾 메시지 저장 - session_id: {session_id}, role: {role}")
+                logger.debug(f"💾 메시지 저장 및 세션 업데이트 완료 - session_id: {session_id}, role: {role}")
                 return message
 
             except Exception as e:  # pylint: disable=broad-exception-caught

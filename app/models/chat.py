@@ -9,7 +9,7 @@
 - 사용자 피드백 모델
 - 벡터 저장소 모델 (PostgreSQL pgvector)
 """
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 from sqlmodel import Field as SQLField, Relationship, SQLModel
@@ -45,7 +45,7 @@ class ChatSessionBase(SQLModel):
     # 통계 필드
     total_messages: int = SQLField(default=0)
     avg_response_time_ms: Optional[int] = SQLField(default=None)
-    last_activity_at: datetime = SQLField(default_factory=datetime.utcnow)
+    last_activity_at: datetime = SQLField(default_factory=lambda: datetime.now(timezone.utc))
 
 class ChatSession(ChatSessionBase, table=True):
     """채팅 세션 테이블"""
@@ -57,14 +57,14 @@ class ChatSession(ChatSessionBase, table=True):
         sa_column=Column(PG_UUID(as_uuid=True), primary_key=True)
     )
     created_at: datetime = SQLField(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         # pylint: disable=not-callable
         sa_column=Column(DateTime(timezone=True), server_default=func.now())
     )
-    updated_at: Optional[datetime] = SQLField(
-        default=None,
+    updated_at: datetime = SQLField(
+        default_factory=lambda: datetime.now(timezone.utc),
         # pylint: disable=not-callable
-        sa_column=Column(DateTime(timezone=True), onupdate=func.now())
+        sa_column=Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     )
 
     # 관계 정의
@@ -83,7 +83,7 @@ class ChatSessionRead(ChatSessionBase):
     """채팅 세션 조회 스키마"""
     id: UUID
     created_at: datetime
-    updated_at: Optional[datetime]
+    updated_at: datetime
 
 class ChatSessionUpdate(SQLModel):
     """채팅 세션 업데이트 스키마"""
@@ -119,7 +119,7 @@ class ChatMessage(ChatMessageBase, table=True):
         sa_column=Column(PG_UUID(as_uuid=True), primary_key=True)
     )
     created_at: datetime = SQLField(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         # pylint: disable=not-callable
         sa_column=Column(DateTime(timezone=True), server_default=func.now())
     )
@@ -169,7 +169,7 @@ class UserFeedback(UserFeedbackBase, table=True):
         sa_column=Column(PG_UUID(as_uuid=True), primary_key=True)
     )
     created_at: datetime = SQLField(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         # pylint: disable=not-callable
         sa_column=Column(DateTime(timezone=True), server_default=func.now())
     )
@@ -220,7 +220,7 @@ class RAGReference(RAGReferenceBase, table=True):
         sa_column=Column(PG_UUID(as_uuid=True), primary_key=True)
     )
     created_at: datetime = SQLField(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         # pylint: disable=not-callable
         sa_column=Column(DateTime(timezone=True), server_default=func.now())
     )
@@ -261,7 +261,7 @@ class UserProfile(UserProfileBase, table=True):
 
     # 기본 필드들 (직접 정의)
     created_at: datetime = SQLField(
-        default_factory=datetime.utcnow,
+        default_factory=lambda: datetime.now(timezone.utc),
         # pylint: disable=not-callable
         sa_column=Column(DateTime(timezone=True), server_default=func.now())
     )
@@ -333,7 +333,7 @@ if PGVECTOR_AVAILABLE:
             sa_column=Column(PG_UUID(as_uuid=True), primary_key=True)
         )
         created_at: datetime = SQLField(
-            default_factory=datetime.utcnow,
+            default_factory=lambda: datetime.now(timezone.utc),
             # pylint: disable=not-callable
             sa_column=Column(DateTime(timezone=True), server_default=func.now())
         )
