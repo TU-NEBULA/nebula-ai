@@ -1,8 +1,14 @@
 """
-User AI Profile → User Profile 배치 동기화 태스크
+User AI Profile → User Profile 실시간 동기화 태스크
 
-실시간으로 쌓인 AI 프로필 데이터를 주기적으로 User Profile에 반영하여
-벡터 임베딩과 개인화 추천 시스템을 업데이트합니다.
+🔄 실시간 동기화 (3시간마다)
+- AI 프로필 변경사항을 빠르게 User Profile에 반영
+- 활성 사용자 우선 처리로 실시간성 강화
+- 경량화된 데이터 동기화에 집중
+
+📊 vs 새벽 배치 (daily_profile_monitor.py)
+- 실시간: 빠른 데이터 동기화
+- 배치: 품질 분석 + 문제 프로필 수정
 """
 
 import asyncio
@@ -10,8 +16,8 @@ import logging
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Any
 
-from app.database.connection import get_async_session
-from app.repositories.bookmark_repository import AIProfileRepository
+from app.core.database import get_async_session
+from app.repositories.ai_profile_repository import AIProfileRepository
 from app.repositories.user_profile_repository import UserProfileRepository
 from app.services.user_profile_processor import UserProfileProcessor
 
@@ -23,7 +29,8 @@ class ProfileSyncTask:
     
     def __init__(self):
         self.batch_size = 50  # 한 번에 처리할 사용자 수
-        self.sync_interval_hours = 6  # 6시간마다 동기화
+        self.sync_interval_hours = 3  # 3시간마다 동기화
+        self.priority_sync_for_active_users = True  # 활성 사용자 우선 처리
         
     async def run_sync_batch(self) -> Dict[str, Any]:
         """배치 동기화 실행"""
@@ -93,18 +100,27 @@ class ProfileSyncTask:
                 from sqlalchemy import text
                 
                 query = text("""
-                    SELECT DISTINCT uap.user_id::integer
+                    SELECT DISTINCT uap.user_id::integer,
+                           uap.updated_at,
+                           CASE 
+                               WHEN uap.updated_at > NOW() - INTERVAL '24 hours' THEN 1
+                               WHEN uap.updated_at > NOW() - INTERVAL '7 days' THEN 2  
+                               ELSE 3
+                           END as priority_level
                     FROM user_ai_profiles uap
                     LEFT JOIN user_profiles up ON uap.user_id::integer = up.user_id
                     WHERE (
                         -- AI Profile이 User Profile보다 최근에 업데이트된 경우
                         up.id IS NULL OR 
-                        uap.updated_at > up.last_updated_at OR
-                        -- 또는 6시간 이상 동기화되지 않은 경우
-                        up.last_updated_at < NOW() - INTERVAL '6 hours'
+                        uap.updated_at > up.updated_at OR
+                        -- 또는 3시간 이상 동기화되지 않은 경우
+                        up.updated_at < NOW() - INTERVAL '3 hours'
                     )
-                    AND uap.total_chat_sessions > 0  -- 실제 활동이 있는 사용자만
-                    ORDER BY uap.updated_at DESC
+                    AND uap.current_interests IS NOT NULL  -- 실제 관심사가 있는 사용자만
+                    AND LENGTH(TRIM(uap.current_interests)) > 0
+                    ORDER BY 
+                        priority_level ASC,  -- 최근 업데이트 우선
+                        uap.updated_at DESC
                     LIMIT 200  -- 최대 200명까지
                 """)
                 
@@ -173,25 +189,43 @@ class ProfileSyncTask:
     ) -> bool:
         """단일 사용자 동기화"""
         try:
-            # AI Profile에서 관심사 추출
+            # AI Profile에서 관심사 및 빈도 정보 추출
             interests = []
-            if ai_profile.frequent_keywords:
-                interests.extend(ai_profile.frequent_keywords[:30])  # 상위 30개
+            keywords_frequency = {}
+            
+            if ai_profile.current_interests:
+                # 쉼표로 구분된 키워드들을 리스트로 변환
+                keywords_list = [kw.strip() for kw in ai_profile.current_interests.split(",") if kw.strip()]
+                interests = keywords_list[:50]
+                
+                # 키워드 빈도 정보 생성 (순서 기반 가중치)
+                for i, keyword in enumerate(interests):
+                    # 앞쪽 키워드일수록 높은 가중치 (2.0 → 1.0)
+                    weight = max(2.0 - (i * 0.02), 1.0)  # 50개 기준으로 감소율 조정
+                    frequency = max(20 - i // 2, 1)  # 빈도도 순서에 따라 감소 (더 넓은 범위)
+                    
+                    keywords_frequency[keyword] = {
+                        "frequency": frequency,
+                        "weight": round(weight, 2),
+                        "last_seen": datetime.now().isoformat(),
+                        "rank": i + 1  # 순위 정보 추가
+                    }
             
             # 활동 패턴 분석
             activity_patterns = {
-                "total_sessions": ai_profile.total_chat_sessions,
-                "total_messages": ai_profile.total_messages,
-                "avg_session_duration": ai_profile.avg_session_duration_minutes or 0,
-                "preferred_response_style": ai_profile.preferred_response_style,
-                "preferred_language": ai_profile.preferred_language,
+                "total_sessions": getattr(ai_profile, 'total_chat_sessions', 0),
+                "total_messages": getattr(ai_profile, 'total_messages', 0),
+                "avg_session_duration": getattr(ai_profile, 'avg_session_duration_minutes', 0) or 0,
+                "preferred_response_style": getattr(ai_profile, 'ai_interaction_style', 'detailed'),
+                "preferred_language": getattr(ai_profile, 'learning_preferences', 'ko'),
                 "last_sync": datetime.now(timezone.utc).isoformat()
             }
             
-            # User Profile 업데이트 또는 생성
+            # User Profile 업데이트 또는 생성 (키워드 빈도 포함)
             await processor.sync_from_ai_profile(
                 user_id=user_id,
                 interests=interests,
+                keywords_frequency=keywords_frequency,  # 🆕 키워드 빈도 정보 추가
                 activity_patterns=activity_patterns,
                 ai_profile_data=ai_profile
             )
@@ -212,17 +246,64 @@ async def run_profile_sync():
     return result
 
 
-# 스케줄러 설정 (예시 - APScheduler 사용)
-# from apscheduler.schedulers.asyncio import AsyncIOScheduler
-# 
-# scheduler = AsyncIOScheduler()
-# scheduler.add_job(
-#     run_profile_sync,
-#     'interval',
-#     hours=6,  # 6시간마다 실행
-#     id='profile_sync_task',
-#     replace_existing=True
-# )
+# Celery 태스크로 실시간 동기화 설정
+from app.core.celery_worker import celery
+from celery.schedules import crontab
+
+@celery.task(
+    name="tasks.profile_sync_realtime",
+    bind=True,
+    autoretry_for=(Exception,),
+    retry_kwargs={"max_retries": 2, "countdown": 300},
+    retry_backoff=True,
+    retry_jitter=True,
+    queue="monitoring",
+)
+def profile_sync_realtime_task(self) -> dict:
+    """Celery 태스크: 실시간 프로필 동기화 (3시간마다)"""
+    logger.info("🔄 실시간 프로필 동기화 시작")
+    
+    try:
+        import asyncio
+        result = asyncio.run(run_profile_sync())
+        logger.info("✅ 실시간 프로필 동기화 완료")
+        return result
+    except Exception as e:
+        logger.error(f"❌ 실시간 프로필 동기화 실패: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "timestamp": datetime.now(timezone.utc).isoformat()
+        }
+
+def setup_realtime_sync_schedule():
+    """실시간 동기화 스케줄 설정"""
+    from app.core.celery_worker import celery
+    
+    # 기존 beat_schedule에 추가
+    if not hasattr(celery.conf, 'beat_schedule'):
+        celery.conf.beat_schedule = {}
+    
+    # 프로덕션 스케줄 - 3시간마다 실행
+    celery.conf.beat_schedule.update({
+        'realtime-profile-sync': {
+            'task': 'tasks.profile_sync_realtime',
+            'schedule': crontab(minute=0, hour='*/3'),  # 3시간마다 실행 (0시, 3시, 6시, 9시, 12시, 15시, 18시, 21시)
+            'options': {
+                'queue': 'monitoring',  # monitoring 큐에 라우팅
+                'expires': 1800,  # 30분 후 만료
+                'retry': True,
+                'retry_policy': {
+                    'max_retries': 2,
+                    'interval_start': 300,  # 5분
+                    'interval_step': 300,
+                    'interval_max': 900,  # 15분
+                }
+            }
+        }
+    })
+    
+    logger.info("📅 프로필 동기화 스케줄 설정 완료 (3시간마다)")
 
 
 if __name__ == "__main__":

@@ -1,18 +1,25 @@
 """
 일일 프로필 품질 모니터링 및 자동 업데이트 시스템
 
-이 모듈은 매일 모든 사용자 프로필의 품질을 체크하고,
-품질이 낮은 프로필들에 대해 자동으로 업데이트를 트리거하는 시스템입니다.
+📊 새벽 배치 (매일 새벽 2시)
+- 전체 프로필 품질 분석 및 리포팅
+- 문제 프로필 식별 및 집중 관리  
+- 시스템 전체 건강성 모니터링
+
+🔄 vs 실시간 동기화 (profile_sync_task.py)
+- 실시간: 빠른 데이터 동기화 (3시간마다)
+- 배치: 품질 분석 + 문제 프로필 수정 (새벽 2시)
 
 주요 기능:
-1. 프로필 품질 점수 계산
-2. 낮은 품질 프로필 식별
-3. 자동 업데이트 트리거
-4. 모니터링 및 리포팅
+1. 프로필 품질 점수 계산 (완성도, 최신성, 벡터 강도 등)
+2. 낮은 품질 프로필 식별 및 자동 수정
+3. 상세 품질 리포트 생성
+4. 시스템 모니터링 및 개선 권장사항 제공
 """
 
 import asyncio
-from datetime import datetime
+import concurrent.futures
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 
@@ -131,11 +138,11 @@ class ProfileQualityCalculator:
 
             return ProfileQualityMetrics(
                 user_id=user_profile.user_id,
-                quality_score=quality_score,
-                completeness_score=completeness_score,
-                freshness_score=freshness_score,
-                vector_strength=user_profile.vector_strength or 0.0,
-                activity_level=activity_score,
+                quality_score=float(quality_score),
+                completeness_score=float(completeness_score),
+                freshness_score=float(freshness_score),
+                vector_strength=float(user_profile.vector_strength or 0.0),
+                activity_level=float(activity_score),
                 last_update_days=last_update_days,
                 recommendations=recommendations,
                 needs_update=needs_update
@@ -146,11 +153,11 @@ class ProfileQualityCalculator:
             # 기본값 반환
             return ProfileQualityMetrics(
                 user_id=user_profile.user_id,
-                quality_score=0.0,
-                completeness_score=0.0,
-                freshness_score=0.0,
-                vector_strength=0.0,
-                activity_level=0.0,
+                quality_score=float(0.0),
+                completeness_score=float(0.0),
+                freshness_score=float(0.0),
+                vector_strength=float(0.0),
+                activity_level=float(0.0),
                 last_update_days=999,
                 recommendations=["프로필 품질 계산 오류 - 수동 검토 필요"],
                 needs_update=True
@@ -162,60 +169,69 @@ class ProfileQualityCalculator:
         total_fields = 8
 
         # 필수 필드들 체크
-        if profile.profile_vector and len(profile.profile_vector) > 0:
+        if profile.profile_vector is not None and len(profile.profile_vector) > 0:
             score += 1.0  # 가장 중요한 필드
-        if profile.keywords_frequency:
+        if profile.keywords_frequency and isinstance(profile.keywords_frequency, dict):
             score += 1.0
-        if profile.categories_distribution:
+        if profile.categories_distribution and isinstance(profile.categories_distribution, dict):
             score += 1.0
-        if profile.activity_patterns:
+        if profile.activity_patterns and isinstance(profile.activity_patterns, dict):
             score += 1.0
-        if profile.preferences:
+        if profile.preferences and isinstance(profile.preferences, dict):
             score += 1.0
-        if profile.total_bookmarks > 0:
+        if profile.total_bookmarks and profile.total_bookmarks > 0:
             score += 1.0
         if profile.avg_session_duration is not None:
             score += 1.0
-        if profile.completeness_score > 0:
+        if profile.completeness_score and profile.completeness_score > 0:
             score += 1.0
 
         return min(score / total_fields, 1.0)
 
     def _calculate_freshness_score(self, profile: UserProfile) -> float:
         """데이터 최신성 점수 계산 (0.0 - 1.0)"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
 
         # 마지막 업데이트 시간 확인
         last_update = profile.updated_at or profile.created_at
         if not last_update:
             return 0.0
 
+        # timezone 처리
+        if last_update.tzinfo is None:
+            last_update = last_update.replace(tzinfo=timezone.utc)
+        
         days_since_update = (now - last_update).days
 
         # 마지막 활동 시간 확인
         last_activity = profile.last_activity_at
         days_since_activity = 30  # 기본값
         if last_activity:
+            # timezone 처리
+            if last_activity.tzinfo is None:
+                last_activity = last_activity.replace(tzinfo=timezone.utc)
             days_since_activity = (now - last_activity).days
 
-        # 최신성 점수 계산 (지수 감쇠)
-        update_freshness = np.exp(-days_since_update / 30.0)  # 30일 반감기
-        activity_freshness = np.exp(-days_since_activity / 14.0)  # 14일 반감기
+        # 최신성 점수 계산 (지수 감쇠) - JSON 직렬화 가능한 표준 float 타입으로 변환
+        update_freshness = float(np.exp(-days_since_update / 30.0))  # 30일 반감기
+        activity_freshness = float(np.exp(-days_since_activity / 14.0))  # 14일 반감기
 
-        # 가중 평균
-        return 0.6 * update_freshness + 0.4 * activity_freshness
+        # 가중 평균 - JSON 직렬화를 위해 명시적으로 float 변환
+        result = 0.6 * update_freshness + 0.4 * activity_freshness
+        return float(result)
 
     def _calculate_vector_strength_score(self, profile: UserProfile) -> float:
         """벡터 강도 점수 계산 (0.0 - 1.0)"""
-        if not profile.profile_vector:
+        if profile.profile_vector is None or len(profile.profile_vector) == 0:
             return 0.0
 
         try:
             vector_array = np.array(profile.profile_vector)
-            # L2 norm 계산
-            vector_norm = np.linalg.norm(vector_array)
+            # L2 norm 계산 - JSON 직렬화를 위해 명시적으로 float 변환
+            vector_norm = float(np.linalg.norm(vector_array))
             # 정규화 (일반적인 벡터 강도 범위: 0-50)
-            return min(vector_norm / 50.0, 1.0)
+            result = min(vector_norm / 50.0, 1.0)
+            return float(result)
         except (ValueError, TypeError):
             return 0.0
 
@@ -224,19 +240,14 @@ class ProfileQualityCalculator:
         score = 0.0
 
         # 북마크 활동
-        if profile.total_bookmarks > 0:
+        if profile.total_bookmarks and profile.total_bookmarks > 0:
             bookmark_score = min(profile.total_bookmarks / 100.0, 1.0)
-            score += bookmark_score * 0.4
-
-        # 채팅 활동
-        if profile.total_chat_sessions > 0:
-            chat_score = min(profile.total_chat_sessions / 50.0, 1.0)
-            score += chat_score * 0.4
+            score += bookmark_score * 0.6  # 채팅 활동이 없으므로 가중치 조정
 
         # 세션 지속 시간
         if profile.avg_session_duration and profile.avg_session_duration > 0:
             duration_score = min(profile.avg_session_duration / 60.0, 1.0)  # 60분 기준
-            score += duration_score * 0.2
+            score += duration_score * 0.4  # 가중치 조정
 
         return min(score, 1.0)
 
@@ -245,12 +256,12 @@ class ProfileQualityCalculator:
         score = 0.0
 
         # 키워드 다양성
-        if profile.keywords_frequency:
+        if profile.keywords_frequency and isinstance(profile.keywords_frequency, dict):
             keyword_count = len(profile.keywords_frequency)
             score += min(keyword_count / 50.0, 1.0) * 0.5
 
         # 카테고리 다양성
-        if profile.categories_distribution:
+        if profile.categories_distribution and isinstance(profile.categories_distribution, dict):
             category_count = len(profile.categories_distribution)
             score += min(category_count / 20.0, 1.0) * 0.5
 
@@ -258,10 +269,15 @@ class ProfileQualityCalculator:
 
     def _calculate_days_since_update(self, profile: UserProfile) -> int:
         """마지막 업데이트 후 경과 일수 계산"""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         last_update = profile.updated_at or profile.created_at
         if not last_update:
             return 999  # 매우 오래된 것으로 간주
+        
+        # timezone 처리
+        if last_update.tzinfo is None:
+            last_update = last_update.replace(tzinfo=timezone.utc)
+            
         return (now - last_update).days
 
     def _generate_recommendations(
@@ -314,11 +330,12 @@ class DailyProfileMonitor:
 
     async def run_daily_quality_check(self) -> QualityReport:
         """일일 품질 체크 실행"""
-        start_time = datetime.utcnow()
+        start_time = datetime.now(timezone.utc)
         logger.info("🔍 일일 프로필 품질 체크 시작")
 
         try:
-            async with get_async_session() as session:
+            from app.core.database import AsyncSessionLocal
+            async with AsyncSessionLocal() as session:
                 # 1. 모든 프로필 조회
                 profiles = await self._get_all_profiles(session)
                 if not profiles:
@@ -338,7 +355,7 @@ class DailyProfileMonitor:
                 updated_count = await self._trigger_profile_updates(low_quality_profiles)
 
                 # 5. 리포트 생성
-                execution_time = (datetime.utcnow() - start_time).total_seconds()
+                execution_time = (datetime.now(timezone.utc) - start_time).total_seconds()
                 report_data = {
                     'start_time': start_time,
                     'total_profiles': len(profiles),
@@ -547,7 +564,7 @@ class DailyProfileMonitor:
 
     def _generate_empty_report(self, start_time: datetime) -> QualityReport:
         """빈 리포트 생성"""
-        execution_time = (datetime.utcnow() - start_time).total_seconds()
+        execution_time = (datetime.now(timezone.utc) - start_time).total_seconds()
         return QualityReport(
             date=start_time,
             total_profiles=0,
@@ -563,7 +580,7 @@ class DailyProfileMonitor:
 
     def _generate_error_report(self, start_time: datetime, error_msg: str) -> QualityReport:
         """오류 리포트 생성"""
-        execution_time = (datetime.utcnow() - start_time).total_seconds()
+        execution_time = (datetime.now(timezone.utc) - start_time).total_seconds()
         return QualityReport(
             date=start_time,
             total_profiles=0,
@@ -580,20 +597,75 @@ class DailyProfileMonitor:
 
 def _run_async_safely(async_func):
     """Celery 워커에서 안전하게 비동기 함수를 실행"""
+    import asyncio
+    import concurrent.futures
+    import threading
+    
+    def run_in_new_loop():
+        """새로운 이벤트 루프에서 실행"""
+        new_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(new_loop)
+        result = None
+        try:
+            result = new_loop.run_until_complete(async_func)
+            return result
+        finally:
+            try:
+                # 모든 pending task 정리
+                pending = asyncio.all_tasks(new_loop)
+                if pending:
+                    logger.debug(f"정리할 pending task: {len(pending)}개")
+                    for task in pending:
+                        task.cancel()
+                    # 취소된 태스크들이 완료되기를 기다림
+                    if pending:
+                        try:
+                            new_loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+                        except Exception as gather_error:
+                            logger.warning(f"Pending task 정리 중 경고: {gather_error}")
+                
+                # 비동기 제너레이터 정리
+                try:
+                    new_loop.run_until_complete(new_loop.shutdown_asyncgens())
+                except Exception as asyncgen_error:
+                    logger.warning(f"Asyncgen 정리 중 경고: {asyncgen_error}")
+                
+                # 기본 executor 정리
+                try:
+                    new_loop.run_until_complete(new_loop.shutdown_default_executor())
+                except Exception as executor_error:
+                    logger.warning(f"Executor 정리 중 경고: {executor_error}")
+                    
+            except Exception as cleanup_error:
+                logger.warning(f"이벤트 루프 정리 중 경고: {cleanup_error}")
+            finally:
+                # 이벤트 루프가 아직 열려있으면 닫기
+                if not new_loop.is_closed():
+                    new_loop.close()
+                # 이벤트 루프 참조 정리
+                asyncio.set_event_loop(None)
+    
     try:
         # 현재 실행 중인 이벤트 루프가 있는지 확인
-        loop = asyncio.get_running_loop()
-        # 이미 이벤트 루프가 실행 중이면 새로운 스레드에서 실행
-        logger.debug("기존 이벤트 루프 감지 - 새 스레드에서 실행")
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            future = executor.submit(asyncio.run, async_func)
-            return future.result(timeout=3600)  # 1시간 타임아웃
-    except RuntimeError:
-        # 이벤트 루프가 실행 중이지 않으면 일반적인 방법 사용
-        logger.debug("새 이벤트 루프 생성하여 실행")
-        return asyncio.run(async_func)
+        try:
+            loop = asyncio.get_running_loop()
+            if loop.is_closed():
+                raise RuntimeError("Loop is closed")
+            logger.debug("기존 이벤트 루프 감지 - 새 스레드에서 실행")
+            # 기존 루프가 실행 중이면 새로운 스레드에서 실행
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_in_new_loop)
+                return future.result(timeout=300)  # 5분 타임아웃
+        except RuntimeError:
+            # 이벤트 루프가 없거나 닫혀있음
+            logger.debug("새 이벤트 루프 생성하여 실행")
+            return run_in_new_loop()
+            
+    except concurrent.futures.TimeoutError:
+        logger.error("❌ 비동기 실행 타임아웃 (5분)")
+        raise
     except Exception as e:
-        logger.error("❌ 비동기 실행 중 오류: {}", e)
+        logger.error(f"❌ 비동기 실행 중 오류: {e}")
         raise
 
 
@@ -621,10 +693,10 @@ def run_daily_quality_check_task() -> dict:
                     "analyzed_profiles": report.analyzed_profiles,
                     "low_quality_profiles": report.low_quality_profiles,
                     "updated_profiles": report.updated_profiles,
-                    "average_quality": report.average_quality,
+                    "average_quality": float(report.average_quality),
                     "quality_distribution": report.quality_distribution,
-                    "update_success_rate": report.update_success_rate,
-                    "execution_time_seconds": report.execution_time_seconds,
+                    "update_success_rate": float(report.update_success_rate),
+                    "execution_time_seconds": float(report.execution_time_seconds),
                     "recommendations": report.recommendations
                 }
             }
@@ -633,15 +705,19 @@ def run_daily_quality_check_task() -> dict:
             return {
                 "success": False,
                 "error": str(e),
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
         finally:
-            # API 어댑터 연결 정리
-            await monitor.api_adapter.close_connection()
+            # API 어댑터 연결 정리 (안전한 방식)
+            try:
+                if hasattr(monitor, 'api_adapter') and monitor.api_adapter:
+                    await monitor.api_adapter.close_connection()
+            except Exception as cleanup_error:
+                logger.warning(f"API 어댑터 정리 중 경고: {cleanup_error}")
 
     # 비동기 함수 실행
     try:
-        result = _run_async_safely(_async_quality_check())
+        result = _run_async_safely(_async_quality_check())  # 함수를 호출하여 코루틴 생성
         logger.info("✅ Celery 태스크 완료: 일일 프로필 품질 체크")
         return result
     except Exception as e:  # pylint: disable=broad-exception-caught
@@ -649,14 +725,15 @@ def run_daily_quality_check_task() -> dict:
         return {
             "success": False,
             "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
+            "timestamp": datetime.now(timezone.utc).isoformat()
         }
 
 
 async def calculate_single_profile_quality(user_id: int) -> Optional[ProfileQualityMetrics]:
     """단일 사용자 프로필 품질 계산"""
     try:
-        async with get_async_session() as session:
+        from app.core.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as session:
             from sqlalchemy import select  # pylint: disable=import-outside-toplevel
             result = await session.execute(
                 select(UserProfile).where(UserProfile.user_id == user_id)
@@ -681,7 +758,8 @@ async def calculate_single_profile_quality(user_id: int) -> Optional[ProfileQual
 async def get_low_quality_profiles(threshold: float = 0.5) -> List[ProfileQualityMetrics]:
     """낮은 품질의 프로필 목록 조회"""
     try:
-        async with get_async_session() as session:
+        from app.core.database import AsyncSessionLocal
+        async with AsyncSessionLocal() as session:
             result = await session.execute(select(UserProfile))
             profiles = result.scalars().all()
 
@@ -709,8 +787,9 @@ async def get_low_quality_profiles(threshold: float = 0.5) -> List[ProfileQualit
 def setup_daily_monitoring_schedule():
     """일일 모니터링 스케줄 설정"""
     from app.core.celery_worker import celery  # pylint: disable=import-outside-toplevel
+    from celery.schedules import crontab  # pylint: disable=import-outside-toplevel
 
-    # 매일 새벽 2시에 실행
+    # 프로덕션 스케줄 - 매일 새벽 2시 실행
     celery.conf.beat_schedule = {
         'daily-profile-quality-check': {
             'task': 'tasks.run_daily_quality_check',
@@ -728,4 +807,4 @@ def setup_daily_monitoring_schedule():
         }
     }
 
-    logger.info("📅 일일 프로필 품질 모니터링 스케줄 설정 완료")
+    logger.info("📅 프로필 품질 모니터링 스케줄 설정 완료 (매일 새벽 2시)")

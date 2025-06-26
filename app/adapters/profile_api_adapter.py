@@ -16,8 +16,8 @@ from aio_pika import Message, DeliveryMode
 from loguru import logger
 
 from app.core.config import settings
-from app.schemas.profile_schemas import ProfileUpdateRequest, ProfileRefreshRequest
-from app.services.user_profile_processor import ActivityData, ActivityType
+from app.schemas.profile_schemas import ProfileUpdateRequest, ProfileRefreshRequest, ActivityData
+from app.services.user_profile_processor import ActivityType
 
 
 class ProfileAPIAdapter:
@@ -73,7 +73,7 @@ class ProfileAPIAdapter:
             if success:
                 logger.info(
                     f"✅ 프로필 업데이트 메시지 발행 성공 - User ID: {user_id}, "
-                    f"Activity: {activity_data.activity_type.value}"
+                    f"Activity: {activity_data.activity_type}"
                 )
             else:
                 logger.error(
@@ -108,16 +108,25 @@ class ProfileAPIAdapter:
             success_count = 0
 
             for user_id in user_ids:
+                # ActivityData 객체 생성
+                activity_data = ActivityData(
+                    activity_type="quality_check",
+                    content=f"Batch quality check for user {user_id}",
+                    timestamp=datetime.now(),
+                    metadata={
+                        "batch_update": True,
+                        "batch_type": update_type,
+                        "timestamp": datetime.now().isoformat()
+                    },
+                    weight=1.0
+                )
+                
                 update_request = ProfileUpdateRequest(
                     user_id=user_id,
                     update_type=update_type,
                     incremental_update=not force_recalculation,
                     force_recalculation=force_recalculation,
-                    source_data={
-                        "batch_update": True,
-                        "batch_type": update_type,
-                        "timestamp": datetime.now().isoformat()
-                    }
+                    source_data=[activity_data]  # 리스트로 전달
                 )
 
                 if await self._publish_to_queue(
@@ -209,12 +218,11 @@ class ProfileAPIAdapter:
         Returns:
             변환된 ProfileUpdateRequest
         """
-        # ActivityData를 딕셔너리로 변환
-        source_data = asdict(activity_data)
-
-        # 메타데이터 추가
+        # 메타데이터가 있으면 ActivityData에 추가
         if metadata:
-            source_data.update(metadata)
+            # 기존 metadata와 새 metadata 병합
+            combined_metadata = {**activity_data.metadata, **metadata}
+            activity_data.metadata = combined_metadata
 
         # 관심사 추출 (ActivityData의 metadata에서)
         new_interests = []
@@ -228,7 +236,7 @@ class ProfileAPIAdapter:
             update_type=update_type,
             incremental_update=True,
             new_interests=new_interests if new_interests else None,
-            source_data=source_data,
+            source_data=[activity_data],  # ActivityData 객체를 리스트로 전달
             force_recalculation=False
         )
 

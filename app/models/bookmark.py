@@ -14,7 +14,7 @@ from sqlalchemy import DateTime, text
 class BookmarkAIStatusBase(SQLModel):
     """북마크 AI 처리 상태 기본 스키마"""
     bookmark_id: UUID = Field(primary_key=True)
-    user_id: str = Field(index=True, max_length=255)
+    user_id: int = Field(index=True)
 
     # 기본 정보 (캐시용)
     title: Optional[str] = Field(default=None, max_length=1000)
@@ -119,7 +119,7 @@ class DocumentChunkRead(DocumentChunkBase):
 # 사용자 AI 프로필 모델 (실제 데이터베이스 구조에 맞춤)
 class UserAIProfileBase(SQLModel):
     """사용자 AI 프로필 기본 스키마"""
-    user_id: str = Field(primary_key=True, max_length=255)
+    user_id: int = Field(primary_key=True)
 
     # 실제 데이터베이스 구조에 맞는 필드들
     preferred_search_domains: Optional[str] = Field(default=None)

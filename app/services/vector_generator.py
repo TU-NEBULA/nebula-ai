@@ -10,7 +10,7 @@
 
 import json
 import math
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 from enum import Enum
@@ -287,12 +287,17 @@ class VectorGenerator:
 
     def _calculate_temporal_weights(self, activities: List[ActivityData]) -> Dict[str, float]:
         """시간적 가중치를 계산합니다 (최근 활동에 더 높은 가중치)."""
-        current_time = datetime.utcnow()
+        current_time = datetime.now(timezone.utc)
         temporal_weights = {}
 
         for activity in activities:
+            # activity.created_at이 timezone-naive인 경우 UTC로 간주
+            activity_time = activity.created_at
+            if activity_time.tzinfo is None:
+                activity_time = activity_time.replace(tzinfo=timezone.utc)
+            
             # 시간 차이 계산 (일 단위)
-            time_diff_days = (current_time - activity.created_at).days
+            time_diff_days = (current_time - activity_time).days
 
             # 지수적 감쇠 공식: weight = exp(-ln(2) * time_diff / half_life)
             decay_factor = math.exp(-math.log(2) * time_diff_days / self.time_decay_half_life)
@@ -455,7 +460,7 @@ class VectorGenerator:
             top_interests[layer] = dict(sorted_interests[:5])
 
         return {
-            "generation_timestamp": datetime.utcnow().isoformat(),
+            "generation_timestamp": datetime.now(timezone.utc).isoformat(),
             "total_activities": len(activities),
             "activity_distribution": activity_distribution,
             "layer_strengths": layer_strengths,
@@ -539,7 +544,7 @@ class VectorGenerator:
             "previous_vector_norm": float(np.linalg.norm(current_array)),
             "new_vector_norm": float(np.linalg.norm(new_array)),
             "updated_vector_norm": float(np.linalg.norm(updated_vector)),
-            "update_timestamp": datetime.utcnow().isoformat()
+            "update_timestamp": datetime.now(timezone.utc).isoformat()
         }
 
         return updated_vector.tolist(), metadata

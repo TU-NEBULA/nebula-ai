@@ -1,0 +1,63 @@
+# Git 관련
+.git
+.gitignore
+
+# Python 관련
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache
+.coverage
+htmlcov/
+coverage.xml
+.coveragerc
+
+# 환경 파일
+.env.local
+.env.development
+.env.production
+.env.test
+!.env
+!.env.example
+
+# IDE 관련
+.vscode/
+.cursor/
+.roo/
+*.code-workspace
+.DS_Store
+
+# 문서 및 테스트
+docs/
+tests/
+*.md
+!README.md
+
+# 로그 및 임시 파일
+logs/
+*.log
+*.tmp
+
+# Node.js (만약 있다면)
+node_modules/
+npm-debug.log
+
+# 빌드 관련
+dist/
+build/
+*.egg-info/
+
+# 기타
+.pytest_cache/
+.github/
+htmlcov/
+.windsurfrules
+.roomodes
+.taskmaster/
+
+# Docker 관련
+Dockerfile*
+docker-compose*.yml 

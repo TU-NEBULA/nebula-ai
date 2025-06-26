@@ -56,7 +56,12 @@ dev-build: dev-fix-buildx
 .PHONY: dev-build-quick
 dev-build-quick: dev-fix-buildx  
 	@echo "⚡ 개발 환경 빠른 빌드 (캐시 사용)..."
-	docker-compose -f docker-compose.dev.yml build
+	DOCKER_BUILDKIT=1 docker-compose -f docker-compose.dev.yml build
+
+.PHONY: dev-build-cache
+dev-build-cache: dev-fix-buildx
+	@echo "🏎️ 최적화된 캐시 빌드..."
+	DOCKER_BUILDKIT=1 docker build --target production --cache-from nebula-ai:latest -t nebula-ai:latest .
 
 .PHONY: dev-fix-buildx
 dev-fix-buildx:

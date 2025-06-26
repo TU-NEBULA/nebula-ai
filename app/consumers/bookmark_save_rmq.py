@@ -16,6 +16,22 @@ from app.core.config import settings
 from app.core.rabbit import get_rabbit_connection
 from app.tasks.bookmark_save_task import save_bookmark_task
 
+async def _cleanup_consumer_connections(connection, channel):
+    """Consumer 연결 정리"""
+    try:
+        if channel and not channel.is_closed:
+            await channel.close()
+            logger.info("✅ Consumer 채널 정리 완료")
+    except Exception as e:
+        logger.warning(f"Consumer 채널 정리 중 오류: {e}")
+    
+    try:
+        if connection and not connection.is_closed:
+            await connection.close()
+            logger.info("✅ Consumer 연결 정리 완료")
+    except Exception as e:
+        logger.warning(f"Consumer 연결 정리 중 오류: {e}")
+
 async def on_bookmark_save(message: IncomingMessage):
     """
     북마크 저장 메시지 처리
@@ -86,6 +102,8 @@ async def start_bookmark_save_consumer():
     """북마크 저장 Consumer 시작"""
     max_retries = 5
     retry_delay = 5  # 5초 간격으로 재시도
+    connection = None
+    channel = None
     
     for attempt in range(max_retries):
         try:
@@ -124,7 +142,11 @@ async def start_bookmark_save_consumer():
                 return
 
             # 실제 환경: Consumer 실행 유지
-            await asyncio.Future()  # 무한 대기
+            try:
+                await asyncio.Future()  # 무한 대기
+            finally:
+                # 정리 작업
+                await _cleanup_consumer_connections(connection, channel)
 
         except AMQPException as e:
             logger.error("❌ RabbitMQ 연결 오류 (시도 {}/{}): {}", attempt + 1, max_retries, e)

@@ -15,7 +15,7 @@ Celery 태스크들을 정의합니다:
 import asyncio
 import json
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass
 import concurrent.futures
@@ -32,15 +32,12 @@ from app.external.openai_service import OpenAIService
 
 # Repository 임포트
 from app.repositories import (
-    ChatRepository,
     BookmarkRepository,
-    AIProfileRepository,
-    UserProfileRepository,
-    RecommendationRepository,
-    TrendAnalysisRepository
+    ChatRepository,
+    UserProfileRepository
 )
+from app.repositories.ai_profile_repository import AIProfileRepository
 
-# 새로운 VectorGenerator 임포트
 from app.services.vector_generator import VectorGenerator, ActivityData, ActivityType
 from app.repositories.bookmark_repository import BookmarkRepository
 from app.repositories.user_profile_repository import RecommendationRepository
@@ -155,7 +152,7 @@ class UserProfileProcessor:
                 activities.append(ActivityData(
                     activity_type=ActivityType.AI_PROFILE,
                     content=" ".join(content_parts),
-                    created_at=getattr(profile, 'created_at', datetime.utcnow()),
+                    created_at=getattr(profile, 'created_at', datetime.now(timezone.utc)),
                     metadata={"profile_id": profile.id},
                     weight=1.2
                 ))
@@ -726,7 +723,7 @@ async def _async_update_profile_logic(profile_data: ProfileUpdateData) -> dict:
                 interests_data.get("activity_patterns", {})
                 .get("engagement_score", 0)
             ),
-            "last_analysis": datetime.utcnow().isoformat(),
+                            "last_analysis": datetime.now(timezone.utc).isoformat(),
             "vector_metadata": vector_metadata,
             "last_update_type": profile_data.update_type
         })
@@ -851,7 +848,7 @@ async def _async_calculate_similarities(user_id: int) -> dict:
                         calculation_method=f"advanced_{primary_method}",
                         metadata={
                             "vector_dimensions": len(current_vector),
-                            "calculation_date": datetime.utcnow().isoformat(),
+                            "calculation_date": datetime.now(timezone.utc).isoformat(),
                             "algorithm_version": "v2.0",
                             "all_similarities": similarities_by_method,
                             "primary_method": primary_method,
@@ -1103,7 +1100,7 @@ async def _async_analyze_trends() -> dict:
         trend_repo = TrendAnalysisRepository()
 
         # 1. 최근 활동 데이터 수집 (Repository 사용)
-        recent_date = datetime.utcnow() - timedelta(days=7)
+        recent_date = datetime.now(timezone.utc) - timedelta(days=7)
 
         # 모든 사용자의 최근 북마크 조회 (분석용)
         recent_bookmarks = await bookmark_repo.get_bookmarks_for_analysis(
@@ -1141,7 +1138,7 @@ async def _async_analyze_trends() -> dict:
             await trend_repo.save_trend_analysis(
                 session,
                 period_start=recent_date,
-                period_end=datetime.utcnow(),
+                period_end=datetime.now(timezone.utc),
                 trending_keywords=[trend["keyword"] for trend in top_trends],
                 keyword_frequencies={
                     trend["keyword"]: trend["count"] for trend in top_trends

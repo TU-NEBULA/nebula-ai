@@ -4,23 +4,19 @@
 채팅 후 사용자 AI 프로필을 실시간으로 업데이트합니다.
 """
 
-import re
 import uuid
 from typing import Dict, Any, List, Tuple
 from loguru import logger
 
 from app.core.database import get_async_session
+from app.utils.text_processing import extract_keywords
 
 
 class ProfileUpdateService:
     """사용자 프로필 업데이트를 담당하는 서비스 클래스"""
     
     def __init__(self):
-        self.stopwords = {
-            '에서', '에게', '에는', '에도', '그리고', '하지만', '그러나', '또한', 
-            '그런데', '있는', '없는', '하는', '되는', '같은', '다른', '이런', 
-            '저런', '어떤', '무엇', '어디', '언제', '어떻게', '왜'
-        }
+        pass
         
     async def update_user_ai_profile_after_chat(
         self,
@@ -38,9 +34,30 @@ class ProfileUpdateService:
             # 키워드 추출
             new_keywords = await self._extract_interests_from_message(user_message)
             searched_keywords = self._extract_searched_keywords(ctx_blocks)
+
+            logger.debug(f"🔍 추출된 키워드 - 사용자 메시지: {new_keywords}, 검색된 문서: {searched_keywords}")
             
-            # 중복 제거하고 상위 키워드만 선택
-            all_keywords = list(set(new_keywords + searched_keywords))
+            # 키워드 중복 제거 및 우선순위 적용
+            # 1. 사용자 메시지 키워드 우선 (가중치 높음)
+            # 2. 검색된 문서 키워드 (가중치 낮음)
+            keyword_priority = {}
+            
+            # 사용자 메시지 키워드에 높은 가중치 부여
+            for keyword in new_keywords:
+                keyword_priority[keyword] = keyword_priority.get(keyword, 0) + 2.0
+            
+            # 검색된 키워드에 낮은 가중치 부여
+            for keyword in searched_keywords:
+                keyword_priority[keyword] = keyword_priority.get(keyword, 0) + 1.0
+            
+            # 가중치 순으로 정렬하여 상위 키워드 선택
+            sorted_keywords = sorted(
+                keyword_priority.items(), 
+                key=lambda x: x[1], 
+                reverse=True
+            )
+            all_keywords = [keyword for keyword, _ in sorted_keywords]
+            
             message_count = 2  # 사용자 메시지 + AI 응답
             
             # AI 프로필 업데이트
@@ -65,30 +82,32 @@ class ProfileUpdateService:
             }
 
     async def _extract_interests_from_message(self, message: str) -> List[str]:
-        """사용자 메시지에서 관심사 키워드를 추출합니다."""
+        """
+        사용자 메시지에서 관심사 키워드를 추출합니다.
+        text_processing.py의 extract_keywords 함수를 사용하여 
+        한국어/영어 형태소 분석과 불용어 제거를 수행합니다.
+        """
         try:
-            # 키워드 추출 패턴들
-            patterns = [
-                r'\b[A-Z][A-Za-z]+\b',  # 영문 키워드 (첫글자 대문자)
-                r'\b[가-힣]{2,10}\b',    # 한글 키워드 (2-10글자)
-                r'\b\w+[A-Z]\w*\b',     # 카멜케이스
-            ]
+            if not message or not message.strip():
+                logger.warning("⚠️ 빈 메시지로 인한 키워드 추출 불가")
+                return []
             
-            keywords = []
-            for pattern in patterns:
-                matches = re.findall(pattern, message)
-                keywords.extend(matches)
+            # text_processing.py의 고도화된 키워드 추출 사용
+            # - 한국어: Okt 형태소 분석기로 명사 추출
+            # - 영어: NLTK pos_tag로 명사 추출 (NN, NNS, NNP, NNPS)
+            # - 불용어 자동 제거 (ko_stopwords.txt, NLTK stopwords)
+            # - 길이 필터링 (2글자 이상)
+            keywords = extract_keywords(message, max_keywords=15)
             
-            # 불용어 제거 및 필터링
-            filtered_keywords = [
-                kw for kw in keywords 
-                if kw not in self.stopwords and len(kw) > 1
-            ]
-            
-            # 중복 제거하고 소문자 변환
-            unique_keywords = list(set([kw.lower() for kw in filtered_keywords]))
-            
-            return unique_keywords[:15]  # 상위 15개만 반환
+            if keywords:
+                logger.info(
+                    f"✅ 메시지 키워드 추출 성공 - 개수: {len(keywords)}, "
+                    f"샘플: {keywords[:3]}{'...' if len(keywords) > 3 else ''}"
+                )
+            else:
+                logger.warning(f"⚠️ 메시지에서 키워드 추출되지 않음: '{message[:50]}...'")
+                
+            return keywords
             
         except Exception as e:
             logger.warning(f"⚠️ 키워드 추출 실패: {e}")
@@ -114,7 +133,7 @@ class ProfileUpdateService:
         """프로필 통계 업데이트"""
         async for session in get_async_session():
             try:
-                from app.repositories.bookmark_repository import AIProfileRepository
+                from app.repositories.ai_profile_repository import AIProfileRepository
                 
                 updated_profile = await AIProfileRepository.update_chat_statistics(
                     session=session,
@@ -153,7 +172,7 @@ class ProfileUpdateService:
                     "total_new_keywords": 0
                 }
 
-    async def async_update_profile(self, update_request: 'ProfileUpdateRequest') -> Dict[str, Any]:
+    async def async_update_profile(self, update_request: Any) -> Dict[str, Any]:
         """비동기로 사용자 프로필을 업데이트합니다."""
         try:
             async for session in get_async_session():

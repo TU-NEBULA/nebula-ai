@@ -45,7 +45,10 @@ class ChatSessionBase(SQLModel):
     # 통계 필드
     total_messages: int = SQLField(default=0)
     avg_response_time_ms: Optional[int] = SQLField(default=None)
-    last_activity_at: datetime = SQLField(default_factory=lambda: datetime.now(timezone.utc))
+    last_activity_at: datetime = SQLField(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column=Column(DateTime(timezone=True))
+    )
 
 class ChatSession(ChatSessionBase, table=True):
     """채팅 세션 테이블"""

@@ -5,6 +5,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      target: production
+    image: nebula-ai:latest
     container_name: nebula-ai-dev
     restart: always
     command: pipenv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
@@ -17,15 +19,26 @@ services:
       - ./tests:/app/tests
 
   celery_worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: nebula-ai:latest
     container_name: celery_worker-dev
     command: pipenv run celery -A app.core.celery_worker worker --loglevel=info -Q bookmark_save,user_profile,user_analysis,recommendations,analytics,monitoring
     env_file:
       - .env
     volumes:
       - ./app:/app/app
+    depends_on:
+      - web
+
+  celery_beat:
+    image: nebula-ai:latest
+    container_name: celery_beat-dev
+    command: pipenv run celery -A app.core.celery_worker beat --loglevel=info
+    env_file:
+      - .env
+    volumes:
+      - ./app:/app/app
+    depends_on:
+      - celery_worker
 
   flower:
     image: mher/flower
