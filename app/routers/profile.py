@@ -5,6 +5,8 @@ Spring Boot 서버에서 호출하는 사용자 프로필 관련 읽기 전용 A
 - 프로필 조회 (즉시 응답)
 - 유사 사용자 검색 (즉시 응답)
 - 캐시된 추천 조회 (즉시 응답)
+- 실시간 추천 생성 (새로 추가)
+- 검색 기반 추천 (새로 추가)
 - 작업 상태 조회 (비동기 작업 추적)
 """
 
@@ -20,6 +22,8 @@ from app.repositories import (
     UserProfileRepository,
     RecommendationRepository,
 )
+from app.services.recommendation_engine import RecommendationEngine
+from app.services.recommendation_feedback import RecommendationFeedbackService
 from app.schemas.profile_schemas import (
     UserProfileResponse,
     SimilarUsersResponse,
@@ -202,6 +206,186 @@ async def get_recommendations(
     except Exception as e:
         logger.error(f"추천 조회 실패: user_id={user_id}, error={str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error") from e
+
+
+@router.post("/{user_id}/recommendations/generate")
+async def generate_fresh_recommendations(
+    user_id: int,
+    limit: int = Query(20, ge=1, le=50, description="생성할 추천 수"),
+    exclude_bookmarks: bool = Query(True, description="기존 북마크 제외 여부"),
+    diversity_boost: bool = Query(True, description="다양성 증진 여부"),
+    session: AsyncSession = Depends(get_async_session)
+):
+    """
+    실시간 개인화 추천 생성
+
+    사용 시나리오:
+    - 사용자 요청 시 즉시 새로운 추천 생성
+    - 프로파일 업데이트 후 갱신된 추천 확인
+    - A/B 테스트용 실시간 추천
+    """
+    try:
+        engine = RecommendationEngine()
+        feedback_service = RecommendationFeedbackService()
+
+        # 실시간 추천 생성
+        recommendations = await engine.get_general_recommendations(
+            user_id=user_id,
+            limit=limit,
+            exclude_user_bookmarks=exclude_bookmarks,
+            diversity_boost=diversity_boost
+        )
+
+        if not recommendations:
+            logger.warning(f"추천 생성 실패: user_id={user_id}")
+            return {
+                "user_id": user_id,
+                "recommendations": [],
+                "generated_at": datetime.utcnow(),
+                "total_generated": 0,
+                "status": "no_recommendations"
+            }
+
+        # 추천 표시 기록
+        recommendation_ids = []
+        for rec in recommendations:
+            rec_id = await feedback_service.record_recommendation_shown(
+                user_id=user_id,
+                recommendation_data=rec,
+                recommendation_type="real_time_general"
+            )
+            if rec_id:
+                recommendation_ids.append(rec_id)
+
+        logger.info(f"실시간 추천 생성 완료: user_id={user_id}, count={len(recommendations)}")
+        return {
+            "user_id": user_id,
+            "recommendations": recommendations,
+            "generated_at": datetime.utcnow(),
+            "total_generated": len(recommendations),
+            "tracking_ids": recommendation_ids,
+            "status": "success"
+        }
+
+    except Exception as e:
+        logger.error(f"실시간 추천 생성 실패: user_id={user_id}, error={str(e)}")
+        raise HTTPException(status_code=500, detail="추천 생성 중 오류가 발생했습니다") from e
+
+
+@router.post("/{user_id}/recommendations/search")
+async def get_search_based_recommendations(
+    user_id: int,
+    search_query: str = Query(..., description="검색어"),
+    limit: int = Query(15, ge=1, le=30, description="추천 결과 수"),
+    personalization_weight: float = Query(0.4, ge=0.0, le=1.0, description="개인화 가중치"),
+    session: AsyncSession = Depends(get_async_session)
+):
+    """
+    검색어 기반 개인화 추천
+
+    사용 시나리오:
+    - 검색 결과 페이지 개인화 추천
+    - 검색어 확장 추천
+    - 관련 콘텐츠 제안
+    """
+    try:
+        engine = RecommendationEngine()
+        feedback_service = RecommendationFeedbackService()
+
+        # 검색 기반 추천 생성
+        recommendations = await engine.get_search_based_recommendations(
+            user_id=user_id,
+            search_query=search_query,
+            limit=limit,
+            personalization_weight=personalization_weight
+        )
+
+        if not recommendations:
+            logger.warning(f"검색 기반 추천 없음: user_id={user_id}, query='{search_query}'")
+            return {
+                "user_id": user_id,
+                "search_query": search_query,
+                "recommendations": [],
+                "generated_at": datetime.utcnow(),
+                "total_found": 0,
+                "status": "no_results"
+            }
+
+        # 추천 표시 기록
+        recommendation_ids = []
+        for rec in recommendations:
+            rec_id = await feedback_service.record_recommendation_shown(
+                user_id=user_id,
+                recommendation_data=rec,
+                recommendation_type="search_based"
+            )
+            if rec_id:
+                recommendation_ids.append(rec_id)
+
+        logger.info(f"검색 추천 생성 완료: user_id={user_id}, query='{search_query}', count={len(recommendations)}")
+        return {
+            "user_id": user_id,
+            "search_query": search_query,
+            "recommendations": recommendations,
+            "generated_at": datetime.utcnow(),
+            "total_found": len(recommendations),
+            "tracking_ids": recommendation_ids,
+            "personalization_applied": personalization_weight,
+            "status": "success"
+        }
+
+    except Exception as e:
+        logger.error(f"검색 추천 생성 실패: user_id={user_id}, query='{search_query}', error={str(e)}")
+        raise HTTPException(status_code=500, detail="검색 추천 생성 중 오류가 발생했습니다") from e
+
+
+@router.post("/{user_id}/recommendations/{recommendation_id}/feedback")
+async def record_recommendation_feedback(
+    user_id: int,
+    recommendation_id: str,
+    action: str = Query(..., description="사용자 액션 (clicked, saved, dismissed, ignored)"),
+    additional_data: Optional[dict] = None,
+    session: AsyncSession = Depends(get_async_session)
+):
+    """
+    추천에 대한 사용자 피드백 기록
+
+    사용 시나리오:
+    - 클릭/저장/무시 등의 사용자 행동 추적
+    - 추천 시스템 학습을 위한 피드백 수집
+    - A/B 테스트 성과 측정
+    """
+    try:
+        feedback_service = RecommendationFeedbackService()
+
+        # UUID 문자열을 UUID 객체로 변환
+        from uuid import UUID
+        rec_uuid = UUID(recommendation_id)
+
+        # 피드백 기록
+        success = await feedback_service.record_user_action(
+            recommendation_id=rec_uuid,
+            action=action,
+            additional_data=additional_data or {}
+        )
+
+        if not success:
+            raise HTTPException(status_code=404, detail="추천 기록을 찾을 수 없습니다")
+
+        logger.info(f"피드백 기록 완료: user_id={user_id}, rec_id={recommendation_id}, action={action}")
+        return {
+            "user_id": user_id,
+            "recommendation_id": recommendation_id,
+            "action": action,
+            "recorded_at": datetime.utcnow(),
+            "status": "recorded"
+        }
+
+    except ValueError:
+        raise HTTPException(status_code=400, detail="잘못된 추천 ID 형식입니다")
+    except Exception as e:
+        logger.error(f"피드백 기록 실패: user_id={user_id}, rec_id={recommendation_id}, error={str(e)}")
+        raise HTTPException(status_code=500, detail="피드백 기록 중 오류가 발생했습니다") from e
 
 
 @router.get("/{user_id}/interests", response_model=InterestsAnalysisResponse)

@@ -147,7 +147,160 @@ GET /api/v1/profiles/{user_id}/recommendations
 }
 ```
 
-### 1.4 관심사 분석
+### 1.4 실시간 추천 생성
+
+사용자를 위한 새로운 추천을 실시간으로 생성합니다.
+
+**엔드포인트**
+```
+POST /api/v1/profiles/{user_id}/recommendations/generate
+```
+
+**요청 매개변수**
+| 매개변수 | 타입 | 필수 | 설명 |
+|---------|------|------|------|
+| `user_id` | integer | 필수 | 사용자 ID |
+| `limit` | integer | 선택 | 생성할 추천 수 (1-50, 기본값: 20) |
+| `exclude_bookmarks` | boolean | 선택 | 기존 북마크 제외 여부 (기본값: true) |
+| `diversity_boost` | boolean | 선택 | 다양성 증진 여부 (기본값: true) |
+
+**응답 스키마**
+```json
+{
+  "user_id": 123,
+  "recommendations": [
+    {
+      "document_id": 1,
+      "title": "AI 기초 가이드",
+      "url": "https://example.com/ai-guide",
+      "content": "인공지능의 기본 개념들",
+      "keywords": ["AI", "인공지능", "머신러닝"],
+      "summary": "AI에 대한 기초 설명",
+      "recommendation_score": 0.85,
+      "recommendation_type": "content_based",
+      "reasoning": {
+        "type": "content_based",
+        "factors": [
+          {
+            "factor": "content_similarity",
+            "description": "당신의 관심사와 유사한 콘텐츠",
+            "weight": 0.8
+          }
+        ]
+      }
+    }
+  ],
+  "generated_at": "2024-01-15T10:30:00Z",
+  "total_generated": 15,
+  "tracking_ids": ["uuid1", "uuid2", "..."],
+  "status": "success"
+}
+```
+
+### 1.5 검색 기반 추천
+
+검색어를 기반으로 개인화된 추천을 생성합니다.
+
+**엔드포인트**
+```
+POST /api/v1/profiles/{user_id}/recommendations/search
+```
+
+**요청 매개변수**
+| 매개변수 | 타입 | 필수 | 설명 |
+|---------|------|------|------|
+| `user_id` | integer | 필수 | 사용자 ID |
+| `search_query` | string | 필수 | 검색어 |
+| `limit` | integer | 선택 | 추천 결과 수 (1-30, 기본값: 15) |
+| `personalization_weight` | float | 선택 | 개인화 가중치 (0.0-1.0, 기본값: 0.4) |
+
+**응답 스키마**
+```json
+{
+  "user_id": 123,
+  "search_query": "machine learning",
+  "recommendations": [
+    {
+      "document_id": 2,
+      "title": "머신러닝 실전 가이드",
+      "url": "https://example.com/ml-practical",
+      "semantic_similarity": 0.9,
+      "recommendation_score": 0.88,
+      "personalization_score": 0.7,
+      "keyword_match_score": 0.8,
+      "reasoning": {
+        "type": "search_based",
+        "search_query": "machine learning",
+        "expanded_keywords": ["machine", "learning", "ai", "머신러닝"],
+        "factors": [
+          {
+            "factor": "semantic_similarity",
+            "description": "'machine learning'와 의미적으로 유사한 콘텐츠",
+            "weight": 0.9
+          },
+          {
+            "factor": "keyword_matching",
+            "description": "검색어와 관련된 키워드 포함",
+            "weight": 0.8
+          },
+          {
+            "factor": "personalization",
+            "description": "당신의 관심사와 일치하는 콘텐츠",
+            "weight": 0.7
+          }
+        ],
+        "confidence": 0.88
+      }
+    }
+  ],
+  "generated_at": "2024-01-15T10:35:00Z",
+  "total_found": 12,
+  "tracking_ids": ["uuid3", "uuid4", "..."],
+  "personalization_applied": 0.4,
+  "status": "success"
+}
+```
+
+### 1.6 추천 피드백 기록
+
+추천에 대한 사용자 행동을 기록합니다.
+
+**엔드포인트**
+```
+POST /api/v1/profiles/{user_id}/recommendations/{recommendation_id}/feedback
+```
+
+**요청 매개변수**
+| 매개변수 | 타입 | 필수 | 설명 |
+|---------|------|------|------|
+| `user_id` | integer | 필수 | 사용자 ID |
+| `recommendation_id` | string | 필수 | 추천 기록 UUID |
+| `action` | string | 필수 | 사용자 액션 (clicked, saved, dismissed, ignored) |
+| `additional_data` | object | 선택 | 추가 피드백 데이터 |
+
+**요청 본문 예시**
+```json
+{
+  "additional_data": {
+    "session_duration": 120,
+    "scroll_depth": 0.8,
+    "time_spent": 45
+  }
+}
+```
+
+**응답 스키마**
+```json
+{
+  "user_id": 123,
+  "recommendation_id": "uuid1",
+  "action": "clicked",
+  "recorded_at": "2024-01-15T10:40:00Z",
+  "status": "recorded"
+}
+```
+
+### 1.7 관심사 분석
 
 사용자의 관심사를 키워드와 토픽 수준에서 분석합니다.
 
@@ -197,7 +350,7 @@ GET /api/v1/profiles/{user_id}/interests
 }
 ```
 
-### 1.5 프로필 메트릭 조회
+### 1.8 프로필 메트릭 조회
 
 사용자 프로필의 상세 메트릭 정보를 조회합니다.
 
@@ -233,7 +386,7 @@ GET /api/v1/profiles/{user_id}/metrics
 }
 ```
 
-### 1.6 작업 상태 조회
+### 1.9 작업 상태 조회
 
 비동기 작업의 진행 상태를 조회합니다.
 
