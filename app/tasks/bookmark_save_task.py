@@ -449,7 +449,36 @@ async def _trigger_profile_update_event(bookmark_data: BookmarkData) -> Dict:
                 
                 await session.commit()
                 
-                # 5. 메모리 정리
+                # 5. 프로파일 업데이트 리스너에 이벤트 트리거 (if available)
+                try:
+                    from app.main import get_profile_listener
+                    profile_listener = get_profile_listener()
+                    
+                    if profile_listener:
+                        # 북마크 추가 이벤트 트리거
+                        await profile_listener.handle_bookmark_event(
+                            user_id=bookmark_data.user_id,
+                            event_type="added",
+                            bookmark_data={
+                                "star_id": bookmark_data.star_id,
+                                "title": bookmark_data.title,
+                                "url": bookmark_data.url,
+                                "keywords": bookmark_data.keywords,
+                                "summary": bookmark_data.summary
+                            },
+                            metadata={
+                                "profile_update_method": "optimized_update",
+                                "processing_timestamp": datetime.now().isoformat()
+                            }
+                        )
+                        logger.info("🎯 프로파일 업데이트 이벤트 트리거 완료 - user_id: {}", bookmark_data.user_id)
+                    else:
+                        logger.warning("⚠️ 프로파일 업데이트 리스너가 실행 중이지 않음 - user_id: {}", bookmark_data.user_id)
+                        
+                except Exception as event_error:
+                    logger.warning("⚠️ 프로파일 업데이트 이벤트 트리거 실패 (계속 진행): {}", event_error)
+                
+                # 6. 메모리 정리
                 del activity_data, updated_vector, update_metadata, openai_service, vector_generator
                 
                 logger.info("✅ 사용자 프로필 업데이트 완료 - user_id: {}", bookmark_data.user_id)

@@ -5,8 +5,10 @@ Event Listeners Module
 """
 
 from .user_actions import BookmarkEventListener, ChatEventListener
+from .profile_update_listener import RealTimeProfileUpdateListener
 
 __all__ = [
     "BookmarkEventListener",
-    "ChatEventListener"
+    "ChatEventListener",
+    "RealTimeProfileUpdateListener"
 ]

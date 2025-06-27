@@ -6,12 +6,15 @@
 주요 기능:
 - 채팅 스트리밍 라우터 (PostgreSQL 연동)
 - 사용자 프로필 라우터 (프로필 조회, 추천, 유사 사용자 검색)
+- 추천 시스템 라우터 (개인화 추천, 피드백 수집)
 """
 from fastapi import FastAPI
 from app.routers.chat_stream import router as chat_stream_router
 from app.routers.profile import router as profile_router
+from app.routers.recommendations import router as recommendations_router
 
 def init_routers(app: FastAPI) -> None:
     """라우터 초기화 함수"""
     app.include_router(chat_stream_router)
     app.include_router(profile_router)
+    app.include_router(recommendations_router)

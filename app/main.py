@@ -19,6 +19,8 @@ from app.core.config import settings
 from app.services.message_handlers import RabbitMQConsumer
 from app.consumers.bookmark_save_rmq import start_bookmark_save_consumer
 from app.consumers.extract_data_rmq import start_extract_consumer
+from app.listeners.profile_update_listener import RealTimeProfileUpdateListener
+from app.services.recommendation_feedback import RecommendationFeedbackService
 
 # 로그 설정
 logger.add(
@@ -29,15 +31,17 @@ logger.add(
     format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
 )
 
-# RabbitMQ 컨슈머를 위한 전역 변수
+# 전역 서비스 인스턴스
 RABBITMQ_CONSUMER = None
 CONSUMER_TASKS = []  # 백그라운드 태스크 추적용
+PROFILE_UPDATE_LISTENER = None
+RECOMMENDATION_FEEDBACK_SERVICE = None
 
 
 @asynccontextmanager
 async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
     """애플리케이션 시작/종료 시 실행할 코드"""
-    global RABBITMQ_CONSUMER, CONSUMER_TASKS  # pylint: disable=global-statement
+    global RABBITMQ_CONSUMER, CONSUMER_TASKS, PROFILE_UPDATE_LISTENER, RECOMMENDATION_FEEDBACK_SERVICE  # pylint: disable=global-statement
     
     # 시작 시
     await init_db()
@@ -49,6 +53,24 @@ async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
         logger.info("📅 Celery 스케줄러 설정 완료")
     except Exception as e:
         logger.error(f"Celery 스케줄러 설정 실패: {e}")
+
+    # 실시간 프로파일 업데이트 리스너 시작
+    try:
+        PROFILE_UPDATE_LISTENER = RealTimeProfileUpdateListener()
+        await PROFILE_UPDATE_LISTENER.start_processing()
+        logger.info("🎯 실시간 프로파일 업데이트 리스너 시작 완료")
+    except Exception as e:
+        logger.error(f"프로파일 업데이트 리스너 시작 실패: {e}")
+        PROFILE_UPDATE_LISTENER = None
+
+    # 추천 피드백 서비스 백그라운드 처리 시작
+    try:
+        RECOMMENDATION_FEEDBACK_SERVICE = RecommendationFeedbackService()
+        await RECOMMENDATION_FEEDBACK_SERVICE.start_background_processing()
+        logger.info("📊 추천 피드백 서비스 백그라운드 처리 시작 완료")
+    except Exception as e:
+        logger.error(f"추천 피드백 서비스 시작 실패: {e}")
+        RECOMMENDATION_FEEDBACK_SERVICE = None
 
     # RabbitMQ 컨슈머 설정 (환경변수에 RabbitMQ URL이 있는 경우에만)
     try:
@@ -75,6 +97,22 @@ async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
 
     # 종료 시
     logger.info("애플리케이션 종료 시작")
+    
+    # 프로파일 업데이트 리스너 정리
+    if PROFILE_UPDATE_LISTENER:
+        try:
+            await PROFILE_UPDATE_LISTENER.stop_processing()
+            logger.info("프로파일 업데이트 리스너 정리 완료")
+        except Exception as e:
+            logger.error(f"프로파일 업데이트 리스너 정리 실패: {e}")
+    
+    # 추천 피드백 서비스 정리
+    if RECOMMENDATION_FEEDBACK_SERVICE:
+        try:
+            await RECOMMENDATION_FEEDBACK_SERVICE.stop_background_processing()
+            logger.info("추천 피드백 서비스 정리 완료")
+        except Exception as e:
+            logger.error(f"추천 피드백 서비스 정리 실패: {e}")
     
     # RabbitMQ 컨슈머 정리
     if RABBITMQ_CONSUMER:
@@ -136,10 +174,34 @@ async def root():
 @app.get("/health")
 async def health_check():
     """헬스 체크 엔드포인트"""
+    global PROFILE_UPDATE_LISTENER, RECOMMENDATION_FEEDBACK_SERVICE, RABBITMQ_CONSUMER
+    
+    # 서비스 상태 확인
+    profile_listener_status = "running" if (PROFILE_UPDATE_LISTENER and PROFILE_UPDATE_LISTENER.is_processing) else "stopped"
+    feedback_service_status = "running" if (RECOMMENDATION_FEEDBACK_SERVICE and RECOMMENDATION_FEEDBACK_SERVICE.is_processing) else "stopped"
+    rabbitmq_status = "connected" if RABBITMQ_CONSUMER else "disabled"
+    
     return {
         "status": "healthy",
         "services": {
             "database": "connected",
-            "rabbitmq": "connected" if RABBITMQ_CONSUMER else "disabled"
+            "rabbitmq": rabbitmq_status,
+            "profile_update_listener": profile_listener_status,
+            "recommendation_feedback_service": feedback_service_status
+        },
+        "processing_stats": {
+            "profile_events_processed": PROFILE_UPDATE_LISTENER.processed_events_count if PROFILE_UPDATE_LISTENER else 0,
+            "feedback_queue_size": RECOMMENDATION_FEEDBACK_SERVICE.feedback_queue.qsize() if RECOMMENDATION_FEEDBACK_SERVICE else 0
         }
     }
+
+
+# 전역 서비스 접근을 위한 헬퍼 함수들
+def get_profile_listener() -> RealTimeProfileUpdateListener:
+    """프로파일 업데이트 리스너 인스턴스 반환"""
+    return PROFILE_UPDATE_LISTENER
+
+
+def get_feedback_service() -> RecommendationFeedbackService:
+    """추천 피드백 서비스 인스턴스 반환"""
+    return RECOMMENDATION_FEEDBACK_SERVICE
