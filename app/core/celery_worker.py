@@ -26,6 +26,13 @@ celery.conf.task_routes = {
     # 사용자 프로필 관련 태스크 (중간 우선순위, 배경 처리)
     "tasks.update_user_profile": {"queue": "user_profile"},
     
+    # 클러스터링 관련 태스크 (중간 우선순위, CPU 집약적, 정기 실행)
+    "clustering.full_clustering": {"queue": "clustering"},
+    "clustering.incremental_clustering": {"queue": "clustering"},
+    "clustering.quality_monitoring": {"queue": "monitoring"},
+    "clustering.auto_reclustering": {"queue": "clustering"},
+    "clustering.cleanup_old_data": {"queue": "maintenance"},
+    
     # 사용자 분석 관련 태스크 (낮은 우선순위, CPU 집약적)
     "tasks.calculate_user_similarities": {"queue": "user_analysis"},
     
@@ -87,6 +94,7 @@ try:
     from app.tasks import bookmark_save_task
     from app.tasks import user_profile_tasks
     from app.tasks import daily_profile_monitor
+    from app.tasks import clustering_task
 except ImportError as e:
     # 태스크 모듈이 아직 구현되지 않은 경우 무시
     logger.warning(f"일부 태스크 모듈을 로드할 수 없습니다: {e}")
@@ -96,12 +104,16 @@ def setup_all_schedules():
     """모든 스케줄 설정 초기화"""
     from app.tasks.daily_profile_monitor import setup_daily_monitoring_schedule
     from app.tasks.profile_sync_task import setup_realtime_sync_schedule
+    from app.tasks.clustering_task import setup_periodic_tasks
     
     # 새벽 배치 스케줄 설정
     setup_daily_monitoring_schedule()
     
     # 실시간 동기화 스케줄 설정  
     setup_realtime_sync_schedule()
+    
+    # 클러스터링 정기 작업 스케줄 설정
+    setup_periodic_tasks()
     
     logger.info("📅 모든 Celery 스케줄 설정 완료")
 

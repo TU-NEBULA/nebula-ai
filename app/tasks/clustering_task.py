@@ -19,7 +19,7 @@ from celery.utils.log import get_task_logger
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, and_, desc
 
-from app.core.celery_worker import app as celery_app
+from app.core.celery_worker import celery as celery_app
 from app.core.database import get_async_session
 from app.services.clustering_service import ClusteringService, ClusteringConfig
 from app.models.clustering import (
@@ -101,7 +101,7 @@ async def _run_full_clustering(config_override: Optional[Dict[str, Any]] = None)
     start_time = datetime.utcnow()
     
     try:
-        async with get_async_session() as session:
+        async for session in get_async_session():
             # 설정 생성
             config = ClusteringConfig()
             if config_override:
@@ -150,7 +150,7 @@ async def _run_incremental_clustering(new_user_ids: List[int]) -> Dict[str, Any]
     start_time = datetime.utcnow()
     
     try:
-        async with get_async_session() as session:
+        async for session in get_async_session():
             clustering_service = ClusteringService(session)
             
             # 기존 클러스터 확인
@@ -174,8 +174,12 @@ async def _run_incremental_clustering(new_user_ids: List[int]) -> Dict[str, Any]
                     "users_processed": len(result.user_ids)
                 }
             
-            # 증분 클러스터링 실행
-            await clustering_service.incremental_update(new_user_ids)
+            # 증분 클러스터링 실행 (현재는 전체 클러스터링으로 대체)
+            # TODO: incremental_update 메서드 구현 필요
+            logger.warning("증분 클러스터링이 아직 구현되지 않아 전체 클러스터링을 수행합니다.")
+            result = await clustering_service.perform_clustering(
+                job_type="incremental_fallback_to_full"
+            )
             
             execution_time = (datetime.utcnow() - start_time).total_seconds()
             
@@ -183,10 +187,12 @@ async def _run_incremental_clustering(new_user_ids: List[int]) -> Dict[str, Any]
             
             return {
                 "status": "success",
-                "mode": "incremental",
+                "mode": "incremental_fallback_to_full",
                 "execution_time": execution_time,
-                "users_processed": len(new_user_ids),
-                "existing_clusters": len(existing_clusters)
+                "clusters_created": result.n_clusters,
+                "users_processed": len(result.user_ids),
+                "existing_clusters": len(existing_clusters),
+                "silhouette_score": result.silhouette_score
             }
     
     except Exception as e:
@@ -207,7 +213,7 @@ async def _run_quality_monitoring() -> Dict[str, Any]:
     start_time = datetime.utcnow()
     
     try:
-        async with get_async_session() as session:
+        async for session in get_async_session():
             # 현재 활성 클러스터 조회
             clusters_result = await session.execute(
                 select(UserCluster).where(UserCluster.is_active == True)
@@ -307,7 +313,7 @@ async def _run_auto_reclustering() -> Dict[str, Any]:
     start_time = datetime.utcnow()
     
     try:
-        async with get_async_session() as session:
+        async for session in get_async_session():
             # 품질 모니터링 실행
             monitoring_result = await _run_quality_monitoring()
             
@@ -416,7 +422,7 @@ async def _run_cleanup_old_data(days_to_keep: int) -> Dict[str, Any]:
     start_time = datetime.utcnow()
     
     try:
-        async with get_async_session() as session:
+        async for session in get_async_session():
             cutoff_date = datetime.utcnow() - timedelta(days=days_to_keep)
             
             cleanup_result = {
@@ -536,22 +542,46 @@ def setup_periodic_tasks():
     
     from celery.schedules import crontab
     
-    # 매일 새벽 2시에 전체 클러스터링
-    celery_app.conf.beat_schedule = {
+    # 기존 스케줄이 있으면 업데이트, 없으면 새로 생성
+    current_schedule = getattr(celery_app.conf, 'beat_schedule', {})
+    
+    clustering_schedule = {
+        # 매일 새벽 2시에 전체 클러스터링
         'daily-full-clustering': {
             'task': 'clustering.full_clustering',
             'schedule': crontab(hour=2, minute=0),
             'args': (),
+            'options': {'queue': 'clustering'}
         },
         
         # 매 4시간마다 품질 모니터링
-        'quality-monitoring': {
+        'clustering-quality-monitoring': {
             'task': 'clustering.quality_monitoring',
             'schedule': crontab(minute=0, hour='*/4'),
             'args': (),
+            'options': {'queue': 'monitoring'}
+        },
+        
+        # 매주 일요일 새벽 3시에 자동 재클러스터링 (품질이 낮을 때)
+        'weekly-auto-reclustering': {
+            'task': 'clustering.auto_reclustering',
+            'schedule': crontab(hour=3, minute=0, day_of_week=0),
+            'args': (),
+            'options': {'queue': 'clustering'}
+        },
+        
+        # 매주 토요일 새벽 4시에 오래된 데이터 정리
+        'weekly-cleanup-old-data': {
+            'task': 'clustering.cleanup_old_data',
+            'schedule': crontab(hour=4, minute=0, day_of_week=6),
+            'args': (30,),  # 30일 이전 데이터 정리
+            'options': {'queue': 'maintenance'}
         },
     }
     
+    # 기존 스케줄과 병합
+    current_schedule.update(clustering_schedule)
+    celery_app.conf.beat_schedule = current_schedule
     celery_app.conf.timezone = 'UTC'
 
 
