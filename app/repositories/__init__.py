@@ -6,7 +6,8 @@ Repository 패턴을 통해 데이터베이스 접근 로직을 캡슐화합니�
 """
 
 from .chat_repository import ChatRepository
-from .bookmark_repository import BookmarkRepository, AIProfileRepository
+from .bookmark_repository import BookmarkRepository
+from .ai_profile_repository import AIProfileRepository
 from .user_profile_repository import (
     UserProfileRepository,
     RecommendationRepository,

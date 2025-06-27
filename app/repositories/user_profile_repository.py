@@ -4,7 +4,7 @@
 사용자 프로필, 유사도, 추천 관련 데이터 접근을 담당합니다.
 Repository 패턴을 통해 데이터베이스 로직을 캡슐화합니다.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Dict, Any
 
 from loguru import logger
@@ -232,7 +232,7 @@ class RecommendationRepository:
         if recommendation:
             recommendation.user_feedback = user_feedback
             recommendation.clicked = clicked
-            recommendation.feedback_date = datetime.utcnow()
+            recommendation.feedback_date = datetime.now(timezone.utc)
 
             session.add(recommendation)
             logger.debug(
@@ -279,7 +279,7 @@ class TrendAnalysisRepository:
         days: int = 7
     ) -> Optional[TrendAnalysis]:
         """최신 트렌드 분석을 조회합니다."""
-        recent_date = datetime.utcnow() - timedelta(days=days)
+        recent_date = datetime.now(timezone.utc) - timedelta(days=days)
 
         stmt = (
             select(TrendAnalysis)

@@ -4,6 +4,7 @@
 이 모듈은 RabbitMQ를 통해 HTML 콘텐츠 데이터 추출 요청을 받아 처리합니다.
 S3에 저장된 HTML에서 이미지와 키워드를 추출하고 그 결과를 응답으로 반환합니다.
 """
+import asyncio
 import traceback
 import json
 import uuid
@@ -19,6 +20,22 @@ from app.models.extract_data import ExtractDataRequest
 from app.tasks.data_extractor_nlp import NebulaNLPExtractor
 
 log = logger.bind(name=__name__)
+
+async def _cleanup_extract_consumer_connections(connection, channel):
+    """Extract Consumer 연결 정리"""
+    try:
+        if channel and not channel.is_closed:
+            await channel.close()
+            logger.info("✅ Extract Consumer 채널 정리 완료")
+    except Exception as e:
+        logger.warning(f"Extract Consumer 채널 정리 중 오류: {e}")
+    
+    try:
+        if connection and not connection.is_closed:
+            await connection.close()
+            logger.info("✅ Extract Consumer 연결 정리 완료")
+    except Exception as e:
+        logger.warning(f"Extract Consumer 연결 정리 중 오류: {e}")
 
 class ExtractDataResponse(BaseModel):
     """
@@ -135,6 +152,8 @@ async def start_extract_consumer():
     데이터 추출 컨슈머를 시작하는 함수
     """
     logger.info("📊 Extract Data Consumer 시작 준비...")
+    connection = None
+    channel = None
 
     try:
         connection = await get_rabbit_connection()
@@ -152,7 +171,20 @@ async def start_extract_consumer():
 
         logger.info(f"🎯 Extract consumer 대기 중: {settings.EXTRACT_REQ_QUEUE}")
         await queue.consume(handler)
+        
+        # 무한 대기 (테스트 환경이 아닌 경우)
+        import os
+        if not os.getenv("PYTEST_CURRENT_TEST"):
+            try:
+                await asyncio.Future()  # 무한 대기
+            finally:
+                await _cleanup_extract_consumer_connections(connection, channel)
 
     except AMQPException as e:
         logger.error(f"❌ Extract Data Consumer 시작 실패: {e}")
+        await _cleanup_extract_consumer_connections(connection, channel)
+        raise
+    except Exception as e:
+        logger.error(f"❌ Extract Data Consumer 예상치 못한 오류: {e}")
+        await _cleanup_extract_consumer_connections(connection, channel)
         raise

@@ -1,63 +1,81 @@
-FROM python:3.12-bullseye
+# =====================================
+# Stage 1: Base Dependencies
+# =====================================
+FROM python:3.12-alpine AS base
+
+# 기본 시스템 패키지 (빌드 도구 제외)
+RUN apk add --no-cache \
+    openjdk17 \
+    sqlite \
+    postgresql17-dev \
+    && rm -rf /var/cache/apk/*
+
+# Java 환경 변수
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk
+ENV PATH="$JAVA_HOME/bin:$PATH"
+ENV LD_LIBRARY_PATH="$JAVA_HOME/lib/server:$JAVA_HOME/lib:$LD_LIBRARY_PATH"
+
+# =====================================
+# Stage 2: Build Dependencies
+# =====================================
+FROM base AS builder
+
+# 빌드 도구들 (임시로만 설치)
+RUN apk add --no-cache \
+    build-base \
+    libffi-dev \
+    openssl-dev \
+    rust \
+    cargo
+
+# pip 업그레이드 및 pipenv 설치
+RUN pip install --no-cache-dir --upgrade pip pipenv
 
 WORKDIR /app
 
-# Setup apt properly with GPG keys
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends gnupg2 dirmngr apt-transport-https ca-certificates && \
-    apt-key update && \
-    apt-get update && \
-    apt-get install -y --no-install-recommends \
-    build-essential \
-    python3-dev \
-    libffi-dev \
-    openjdk-17-jre-headless \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
+# pipenv Python 버전 설정
+RUN pipenv --python /usr/local/bin/python
 
-# Install SQLite 3.45.3 or higher
-RUN wget https://www.sqlite.org/2024/sqlite-autoconf-3450300.tar.gz && \
-    tar xvfz sqlite-autoconf-3450300.tar.gz && \
-    cd sqlite-autoconf-3450300 && \
-    ./configure && \
-    make && \
-    make install && \
-    cd .. && \
-    rm -rf sqlite-autoconf-3450300*
-
-# Python이 새로 설치한 SQLite를 사용하도록 설정
-ENV LD_LIBRARY_PATH="/usr/local/lib:${LD_LIBRARY_PATH}"
-ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
-ENV PATH="$JAVA_HOME/bin:$PATH"
-
-# Python 재설치 (새 SQLite를 사용하도록)
-RUN cd /tmp && \
-    wget https://www.python.org/ftp/python/3.12.0/Python-3.12.0.tgz && \
-    tar xzf Python-3.12.0.tgz && \
-    cd Python-3.12.0 && \
-    ./configure --enable-optimizations && \
-    make -j $(nproc) && \
-    make altinstall && \
-    cd .. && \
-    rm -rf Python-3.12.0*
-
-RUN pip install --no-cache-dir --upgrade pip pipenv
-
-RUN pipenv --python /usr/local/bin/python3.12
-
+# 의존성 파일만 먼저 복사 (캐시 최적화)
 COPY Pipfile Pipfile.lock ./
 
+# 의존성 설치 (캐시될 가능성이 높은 레이어)
 RUN pipenv install --deploy --ignore-pipfile
 
+# NLTK 데이터 다운로드
 RUN pipenv run python -m nltk.downloader stopwords
 
-COPY . .
+# =====================================
+# Stage 3: Production
+# =====================================
+FROM base AS production
 
+# 작업 디렉토리 설정
+WORKDIR /app
+
+# pip 설치 (builder에서 설치한 pipenv는 가져오지 않음)
+RUN pip install --no-cache-dir --upgrade pip pipenv
+
+# pipenv Python 버전 설정
+RUN pipenv --python /usr/local/bin/python
+
+# builder 스테이지에서 가상환경 복사
+COPY --from=builder /root/.local/share/virtualenvs /root/.local/share/virtualenvs
+
+# Pipfile도 복사 (pipenv가 올바른 가상환경을 찾을 수 있도록)
+COPY --from=builder /app/Pipfile /app/Pipfile.lock ./
+
+# 애플리케이션 코드 복사 (가장 마지막에)
+COPY app/ ./app/
+
+# 환경 변수 파일 복사
 COPY .env /app/.env
 
 # 로그 디렉토리 생성
 RUN mkdir -p /app/logs
 
+# 포트 노출
 EXPOSE 8000
 
-CMD ["pipenv", "run", "uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+# 애플리케이션 실행
+CMD ["pipenv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

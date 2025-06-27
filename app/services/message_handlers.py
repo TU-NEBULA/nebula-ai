@@ -25,7 +25,8 @@ from app.external.openai_service import OpenAIService
 from app.schemas.profile_schemas import (
     ProfileUpdateRequest,
     ProfileRefreshRequest,
-    RecommendationRefreshRequest
+    RecommendationRefreshRequest,
+    ActivityData
 )
 
 
@@ -62,43 +63,66 @@ class ProfileMessageHandler:
                 # 점진적 업데이트 실행
                 if request.incremental_update and request.source_data:
                     # 기존 프로필 조회
-                    existing_profile = await processor.user_profile_repo.get_or_create_profile(
+                    existing_profile = await repos['user_profile_repo'].get_or_create_profile(
                         session, request.user_id
                     )
 
                     # 새로운 데이터만으로 벡터 업데이트
-                    result_vector, result_metadata = await processor.update_vector_incrementally(
-                        session=session,
+                    # 기존 벡터가 None이거나 비어있으면 기본 벡터 사용
+                    current_vector = existing_profile.profile_vector
+                    if current_vector is None or (hasattr(current_vector, '__len__') and len(current_vector) == 0):
+                        current_vector = [0.0] * 1536
+                    
+                    # 새로운 활동 데이터 준비 (source_data에서 추출)
+                    new_activities = []
+                    if request.source_data:
+                        for activity_data in request.source_data:
+                            new_activities.append({
+                                'activity_type': activity_data.activity_type,
+                                'content': activity_data.content,
+                                'timestamp': activity_data.timestamp,
+                                'metadata': activity_data.metadata,
+                                'weight': activity_data.weight
+                            })
+                    
+                    # 증분 업데이트 실행
+                    result = await processor.update_vector_incrementally(
+                        session,
                         user_id=request.user_id,
-                        current_vector=existing_profile.profile_vector or [0.0] * 1536
+                        current_vector=current_vector,
+                        learning_rate=0.1
                     )
+                    
+                    result_vector = result[0] if result else None
+                    result_metadata = result[1] if len(result) > 1 else {}
 
-                    # 결과 형식 맞춤
+                    # 결과에서 필요한 값 추출
                     result = {
                         "vector_strength": result_metadata.get("vector_strength", 0.0),
                         "processing_time": result_metadata.get("processing_time", 0.0)
                     }
                 else:
-                    # 전체 데이터 재수집하여 업데이트
-                    result_vector, result_metadata = (
-                        await processor.generate_profile_vector_advanced(
-                            session=session,
-                            user_id=request.user_id
-                        )
-                    )
-
-                    # 프로필 저장
-                    await processor.user_profile_repo.update_profile(
+                    # 전체 데이터 재수집하여 업데이트 - user_profile_tasks의 방식 사용
+                    interests_data = await processor.extract_user_interests(session, request.user_id)
+                    result_vector = await processor.generate_profile_vector(interests_data)
+                    
+                    # 프로필 업데이트
+                    await repos['user_profile_repo'].update_profile(
                         session,
                         request.user_id,
+                        keywords_frequency=interests_data.get("keyword_frequency", {}),
+                        categories_distribution=interests_data.get("category_distribution", {}),
+                        activity_patterns=interests_data.get("activity_patterns", {}),
                         profile_vector=result_vector,
-                        vector_metadata=result_metadata,
-                        vector_strength=result_metadata.get("vector_strength", 0.0)
+                        data_sources_count=interests_data.get("data_sources", {}),
+                        preferences={}
                     )
-
-                    result = {
-                        "vector_strength": result_metadata.get("vector_strength", 0.0),
-                        "processing_time": result_metadata.get("processing_time", 0.0)
+                    
+                    result_metadata = {
+                        "vector_strength": float(sum(x*x for x in result_vector)**0.5) if result_vector else 0.0,
+                        "processing_time": 0.0,
+                        "keywords_count": len(interests_data.get("keywords", [])),
+                        "categories_count": len(interests_data.get("categories", []))
                     }
 
                 # 수동 관심사 조정 처리
@@ -169,27 +193,27 @@ class ProfileMessageHandler:
                 })
 
                 # 전체 프로필 재생성
-                result_vector, result_metadata = (
-                    await processor.generate_profile_vector_advanced(
-                        session=session,
-                        user_id=request.user_id
-                    )
-                )
-
-                # 프로필 저장
-                await processor.user_profile_repo.update_profile(
+                interests_data = await processor.extract_user_interests(session, request.user_id)
+                result_vector = await processor.generate_profile_vector(interests_data)
+                
+                # 프로필 업데이트
+                await repos['user_profile_repo'].update_profile(
                     session,
                     request.user_id,
+                    keywords_frequency=interests_data.get("keyword_frequency", {}),
+                    categories_distribution=interests_data.get("category_distribution", {}),
+                    activity_patterns=interests_data.get("activity_patterns", {}),
                     profile_vector=result_vector,
-                    vector_metadata=result_metadata,
-                    vector_strength=result_metadata.get("vector_strength", 0.0)
+                    data_sources_count=interests_data.get("data_sources", {}),
+                    preferences={}
                 )
-
-                # 진행 상태 업데이트
-                await self._update_job_status(request.job_id, {
-                    "progress_percentage": 75,
-                    "current_step": "유사도 계산 중"
-                })
+                
+                result_metadata = {
+                    "vector_strength": float(sum(x*x for x in result_vector)**0.5) if result_vector else 0.0,
+                    "processing_time": 0.0,
+                    "keywords_count": len(interests_data.get("keywords", [])),
+                    "categories_count": len(interests_data.get("categories", []))
+                }
 
                 # 의존성 재계산 (유사도, 추천 등)
                 if "similarities" in request.recalculate_dependencies:
@@ -258,7 +282,7 @@ class ProfileMessageHandler:
                 )
 
                 # 사용자 프로필 조회
-                profile = await processor.user_profile_repo.get_or_create_profile(
+                profile = await repos['user_profile_repo'].get_or_create_profile(
                     session, request.user_id
                 )
                 if not profile:
@@ -269,20 +293,34 @@ class ProfileMessageHandler:
                     }
 
                 # 유사한 사용자들을 기반으로 추천 생성 (단순화된 형태)
-                similar_users = await processor.user_profile_repo.get_similar_users(
+                similar_users = await repos['user_profile_repo'].get_similar_users(
                     session, request.user_id, min_similarity=0.7, limit=10
                 )
 
-                count = len(similar_users)
+                # 사용자 프로필 기반 추천 생성
+                interests_data = await processor.extract_user_interests(session, request.user_id)
+                
+                # 간단한 추천 생성 (유사 사용자 기반)
+                recommendations = []
+                for user in similar_users:
+                    recommendations.append({
+                        "user_id": user.user_id,
+                        "similarity_score": user.similarity_score,
+                        "type": "user_similarity"
+                    })
+
                 logger.info(
-                    f"추천 갱신 완료: user_id={request.user_id}, count={count}"
+                    f"추천 갱신 완료: user_id={request.user_id}, "
+                    f"추천 수: {len(recommendations)}"
                 )
 
                 return {
                     "success": True,
                     "user_id": request.user_id,
-                    "recommendations_generated": count,
-                    "categories": request.categories
+                    "recommendations_count": len(recommendations),
+                    "similar_users_count": len(similar_users),
+                    "categories": request.categories or [],
+                    "limit": request.limit
                 }
 
             except (ValueError, KeyError, TypeError) as e:
@@ -346,15 +384,17 @@ class RabbitMQConsumer:  # pylint: disable=too-few-public-methods
     def __init__(self, connection_url: str):
         self.connection_url = connection_url
         self.handler = ProfileMessageHandler()
+        self.connection = None
+        self.channel = None
 
     async def setup_queues_and_consumers(self):
         """큐 설정 및 컨슈머 등록"""
-        connection = await aio_pika.connect_robust(self.connection_url)
-        channel = await connection.channel()
+        self.connection = await aio_pika.connect_robust(self.connection_url)
+        self.channel = await self.connection.channel()
 
         try:
             # 프로필 업데이트 큐
-            profile_update_queue = await channel.declare_queue(
+            profile_update_queue = await self.channel.declare_queue(
                 "profile.update.queue",
                 durable=True,
                 arguments={"x-message-ttl": 3600000}  # 1시간 TTL
@@ -362,7 +402,7 @@ class RabbitMQConsumer:  # pylint: disable=too-few-public-methods
         except aio_pika.exceptions.ChannelPreconditionFailed:
             # 이미 존재하는 큐 사용 (설정 충돌 시)
             logger.warning("profile.update.queue 이미 존재함 - 기존 설정 사용")
-            profile_update_queue = await channel.declare_queue(
+            profile_update_queue = await self.channel.declare_queue(
                 "profile.update.queue",
                 durable=True,
                 passive=True  # 기존 큐 사용
@@ -370,7 +410,7 @@ class RabbitMQConsumer:  # pylint: disable=too-few-public-methods
 
         try:
             # 프로필 재생성 큐
-            profile_refresh_queue = await channel.declare_queue(
+            profile_refresh_queue = await self.channel.declare_queue(
                 "profile.refresh.queue",
                 durable=True,
                 arguments={"x-message-ttl": 3600000}  # 1시간 TTL (기존과 동일)
@@ -378,7 +418,7 @@ class RabbitMQConsumer:  # pylint: disable=too-few-public-methods
         except aio_pika.exceptions.ChannelPreconditionFailed:
             # 이미 존재하는 큐 사용 (설정 충돌 시)
             logger.warning("profile.refresh.queue 이미 존재함 - 기존 설정 사용")
-            profile_refresh_queue = await channel.declare_queue(
+            profile_refresh_queue = await self.channel.declare_queue(
                 "profile.refresh.queue",
                 durable=True,
                 passive=True  # 기존 큐 사용
@@ -386,14 +426,14 @@ class RabbitMQConsumer:  # pylint: disable=too-few-public-methods
 
         try:
             # 추천 갱신 큐
-            recommendation_refresh_queue = await channel.declare_queue(
+            recommendation_refresh_queue = await self.channel.declare_queue(
                 "recommendation.refresh.queue",
                 durable=True
             )
         except aio_pika.exceptions.ChannelPreconditionFailed:
             # 이미 존재하는 큐 사용 (설정 충돌 시)
             logger.warning("recommendation.refresh.queue 이미 존재함 - 기존 설정 사용")
-            recommendation_refresh_queue = await channel.declare_queue(
+            recommendation_refresh_queue = await self.channel.declare_queue(
                 "recommendation.refresh.queue",
                 durable=True,
                 passive=True  # 기존 큐 사용
@@ -407,7 +447,23 @@ class RabbitMQConsumer:  # pylint: disable=too-few-public-methods
         )
 
         logger.info("RabbitMQ 컨슈머 설정 완료")
-        return connection
+        return self.connection
+    
+    async def close_connection(self):
+        """RabbitMQ 연결 정리"""
+        try:
+            if self.channel and not self.channel.is_closed:
+                await self.channel.close()
+                logger.info("RabbitMQ 채널 정리 완료")
+        except Exception as e:
+            logger.warning(f"RabbitMQ 채널 정리 중 오류: {e}")
+        
+        try:
+            if self.connection and not self.connection.is_closed:
+                await self.connection.close()
+                logger.info("RabbitMQ 연결 정리 완료")
+        except Exception as e:
+            logger.warning(f"RabbitMQ 연결 정리 중 오류: {e}")
 
     async def _handle_profile_update_message(self, message: aio_pika.IncomingMessage):
         """프로필 업데이트 메시지 처리 래퍼"""

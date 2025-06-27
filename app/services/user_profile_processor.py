@@ -60,7 +60,7 @@ class UserProfileProcessor:
 
         try:
             # 1. 기존 프로필 조회
-            existing_profile = await self.repositories['user_profile_repo'].get_profile(user_id)
+            existing_profile = await self.repositories['user_profile_repo'].get_or_create_profile(user_id)
 
             # 2. 사용자 활동 데이터 수집
             activities = await self._collect_user_activities(user_id, include_historical_data)
@@ -127,7 +127,7 @@ class UserProfileProcessor:
         try:
             # 기존 벡터가 없으면 조회
             if existing_vector is None:
-                profile = await self.repositories['user_profile_repo'].get_profile(user_id)
+                profile = await self.repositories['user_profile_repo'].get_or_create_profile(user_id)
                 existing_vector = profile.profile_vector if profile else None
                 existing_metadata = profile.vector_metadata if profile else {}
 
@@ -198,7 +198,7 @@ class UserProfileProcessor:
 
         try:
             # 기준 사용자 프로필 조회
-            user_profile = await self.repositories['user_profile_repo'].get_profile(user_id)
+            user_profile = await self.repositories['user_profile_repo'].get_or_create_profile(user_id)
             if not user_profile or not user_profile.profile_vector:
                 return []
 
@@ -359,13 +359,21 @@ class UserProfileProcessor:
     ):
         """프로필을 저장합니다."""
         try:
-            await self.repositories['user_profile_repo'].update_profile(
-                user_id=user_id,
-                profile_vector=vector,
-                vector_metadata=metadata,
-                vector_strength=metadata.get('vector_strength', 0.0),
-                last_updated=datetime.now()
-            )
+            from app.core.database import get_async_session
+            
+            async for session in get_async_session():
+                # keywords_frequency를 metadata에서 추출하여 별도 필드로 저장
+                keywords_frequency = metadata.get('keywords_frequency', {})
+                
+                await self.repositories['user_profile_repo'].update_profile(
+                    session=session,
+                    user_id=user_id,
+                    profile_vector=vector,
+                    vector_metadata=metadata,
+                    keywords_frequency=keywords_frequency,  # 🆕 키워드 빈도 직접 저장
+                    vector_strength=metadata.get('vector_strength', 0.0),
+                    last_updated=datetime.now()
+                )
         except (ValueError, KeyError) as e:
             logger.error(f"프로필 저장 실패: {e}")
             raise
@@ -403,6 +411,7 @@ class UserProfileProcessor:
         self,
         user_id: int,
         interests: List[str],
+        keywords_frequency: Dict[str, Dict[str, Any]],
         activity_patterns: Dict[str, Any],
         ai_profile_data: Any
     ) -> Dict[str, Any]:
@@ -412,6 +421,7 @@ class UserProfileProcessor:
         Args:
             user_id: 사용자 ID
             interests: AI Profile에서 추출한 관심사 키워드
+            keywords_frequency: 키워드별 빈도 및 가중치 정보
             activity_patterns: 활동 패턴 정보
             ai_profile_data: AI Profile 원본 데이터
             
@@ -422,33 +432,30 @@ class UserProfileProcessor:
         logger.info(f"🔄 AI Profile → User Profile 동기화 시작 - User ID: {user_id}")
         
         try:
-            # 1. 기존 User Profile 조회
-            existing_profile = await self.repositories['user_profile_repo'].get_profile(user_id)
-            
-            # 2. AI Profile 데이터로부터 관심사 텍스트 구성
+            # 1. AI Profile 데이터로부터 관심사 텍스트 구성
             interests_text = " ".join(interests[:50])  # 상위 50개 키워드
             
-            # 3. 벡터 생성 (간단하고 빠르게)
+            # 2. 벡터 생성 (간단하고 빠르게)
             embedding = await self.openai_service.create_embedding(
                 text=interests_text,
                 model="text-embedding-3-small"
             )
             profile_vector = embedding.data[0].embedding
             
-            # 4. 메타데이터 구성
+            # 3. 메타데이터 구성 (실제 키워드 빈도 사용)
             vector_metadata = {
                 "generation_method": "ai_profile_sync",
                 "sync_timestamp": datetime.now().isoformat(),
-                "keywords_frequency": {kw: 1.0 for kw in interests[:20]},
+                "keywords_frequency": keywords_frequency,
                 "activity_patterns": activity_patterns,
                 "categories_distribution": self._extract_categories_from_keywords(interests),
-                "vector_strength": min(len(interests) / 30.0, 1.0),  # 키워드 수에 따른 강도
+                "vector_strength": min(len(interests) / 50.0, 1.0),
                 "data_sources": ["ai_profile"],
                 "total_activities_processed": activity_patterns.get("total_sessions", 0),
                 "completeness_score": self._calculate_completeness_score(interests, activity_patterns)
             }
             
-            # 5. User Profile 저장
+            # 4. User Profile 저장 (키워드 빈도 포함)
             await self._save_profile(user_id, profile_vector, vector_metadata)
             
             processing_time = time.time() - start_time
@@ -461,6 +468,7 @@ class UserProfileProcessor:
                 "vector_dimensions": len(profile_vector),
                 "vector_strength": vector_metadata["vector_strength"],
                 "keywords_count": len(interests),
+                "keywords_frequency_count": len(keywords_frequency),
                 "completeness_score": vector_metadata["completeness_score"],
                 "activity_summary": {
                     "total_sessions": activity_patterns.get("total_sessions", 0),
@@ -471,7 +479,8 @@ class UserProfileProcessor:
             
             logger.info(
                 f"✅ AI Profile 동기화 완료 - User ID: {user_id}, "
-                f"키워드: {len(interests)}개, 강도: {vector_metadata['vector_strength']:.3f}, "
+                f"키워드: {len(interests)}개, 빈도정보: {len(keywords_frequency)}개, "
+                f"강도: {vector_metadata['vector_strength']:.3f}, "
                 f"소요시간: {processing_time:.2f}s"
             )
             
@@ -526,7 +535,7 @@ class UserProfileProcessor:
         score = 0
         
         # 키워드 개수 (최대 40점)
-        keyword_score = min(len(interests) * 2, 40)  # 키워드 당 2점, 최대 40점
+        keyword_score = min(len(interests) * 0.8, 40)  # 50개 키워드 기준으로 조정 (키워드당 0.8점)
         score += keyword_score
         
         # 활동 세션 수 (최대 30점)
@@ -678,7 +687,7 @@ class UserProfileProcessor:
         logger.info(f"📊 프로필 품질 평가 시작 - User ID: {user_id}")
 
         try:
-            profile = await self.repositories['user_profile_repo'].get_profile(user_id)
+            profile = await self.repositories['user_profile_repo'].get_or_create_profile(user_id)
             if not profile:
                 return {
                     "overall_quality": "no_profile",

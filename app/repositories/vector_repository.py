@@ -6,7 +6,7 @@ PostgreSQL의 pgvector 확장을 사용하여 벡터 임베딩을 저장하고 �
 """
 import hashlib
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Any, Tuple
 
 from sqlmodel import select, and_, text
@@ -421,5 +421,5 @@ class VectorRepository:
             "total_vectors": total_vectors,
             "unique_users": unique_users,
             "unique_sources": unique_sources,
-            "last_updated": datetime.utcnow()
+            "last_updated": datetime.now(timezone.utc)
         } 

@@ -9,7 +9,8 @@ from loguru import logger
 from app.core.config import settings
 import logging
 
-# Celery 인스턴스 생성 (브로커로 RabbitMQ, 백엔드로 Redis 사용)
+# Celery 인스턴스 생성 (브로커로 RabbitMQ, 백엔드로 PostgreSQL Database 사용)
+# Redis read-only 에러 방지를 위해 Database 백엔드 사용
 celery = Celery(
     "nebula",
     broker=settings.RABBITMQ_URL,
@@ -90,3 +91,23 @@ except ImportError as e:
     # 태스크 모듈이 아직 구현되지 않은 경우 무시
     logger.warning(f"일부 태스크 모듈을 로드할 수 없습니다: {e}")
     pass
+
+def setup_all_schedules():
+    """모든 스케줄 설정 초기화"""
+    from app.tasks.daily_profile_monitor import setup_daily_monitoring_schedule
+    from app.tasks.profile_sync_task import setup_realtime_sync_schedule
+    
+    # 새벽 배치 스케줄 설정
+    setup_daily_monitoring_schedule()
+    
+    # 실시간 동기화 스케줄 설정  
+    setup_realtime_sync_schedule()
+    
+    logger.info("📅 모든 Celery 스케줄 설정 완료")
+
+# 애플리케이션 시작 시 스케줄 자동 설정
+try:
+    setup_all_schedules()
+    logger.info("🚀 Celery 스케줄 자동 설정 완료")
+except Exception as e:
+    logger.error(f"❌ Celery 스케줄 설정 실패: {e}")

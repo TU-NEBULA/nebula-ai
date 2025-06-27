@@ -31,13 +31,24 @@ logger.add(
 
 # RabbitMQ 컨슈머를 위한 전역 변수
 RABBITMQ_CONSUMER = None
+CONSUMER_TASKS = []  # 백그라운드 태스크 추적용
 
 
 @asynccontextmanager
 async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
     """애플리케이션 시작/종료 시 실행할 코드"""
+    global RABBITMQ_CONSUMER, CONSUMER_TASKS  # pylint: disable=global-statement
+    
     # 시작 시
     await init_db()
+
+    # Celery 스케줄러 설정 초기화
+    try:
+        from app.core.celery_worker import setup_all_schedules
+        setup_all_schedules()
+        logger.info("📅 Celery 스케줄러 설정 완료")
+    except Exception as e:
+        logger.error(f"Celery 스케줄러 설정 실패: {e}")
 
     # RabbitMQ 컨슈머 설정 (환경변수에 RabbitMQ URL이 있는 경우에만)
     try:
@@ -46,13 +57,14 @@ async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
         if (hasattr(settings, 'RABBITMQ_HOST') and settings.RABBITMQ_HOST and 
             hasattr(settings, 'RABBITMQ_USERNAME') and settings.RABBITMQ_USERNAME):
             
-            global RABBITMQ_CONSUMER  # pylint: disable=global-statement
             RABBITMQ_CONSUMER = RabbitMQConsumer(rabbitmq_url)
 
-            # 백그라운드에서 모든 컨슈머들 실행
-            asyncio.create_task(RABBITMQ_CONSUMER.setup_queues_and_consumers())
-            asyncio.create_task(start_bookmark_save_consumer())
-            asyncio.create_task(start_extract_consumer())
+            # 백그라운드에서 모든 컨슈머들 실행 (태스크 추적)
+            task1 = asyncio.create_task(RABBITMQ_CONSUMER.setup_queues_and_consumers())
+            task2 = asyncio.create_task(start_bookmark_save_consumer())
+            task3 = asyncio.create_task(start_extract_consumer())
+            
+            CONSUMER_TASKS.extend([task1, task2, task3])
             logger.info("🚀 모든 RabbitMQ 컨슈머 설정 완료")
         else:
             logger.warning("RabbitMQ URL이 설정되지 않음 - MQ 기능 비활성화")
@@ -62,7 +74,29 @@ async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
     yield
 
     # 종료 시
-    logger.info("애플리케이션 종료")
+    logger.info("애플리케이션 종료 시작")
+    
+    # RabbitMQ 컨슈머 정리
+    if RABBITMQ_CONSUMER:
+        try:
+            await RABBITMQ_CONSUMER.close_connection()
+        except Exception as e:
+            logger.error(f"RabbitMQ 연결 정리 실패: {e}")
+    
+    # 백그라운드 태스크들 정리
+    if CONSUMER_TASKS:
+        logger.info(f"백그라운드 태스크 {len(CONSUMER_TASKS)}개 정리 중...")
+        for task in CONSUMER_TASKS:
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    logger.debug("태스크 취소 완료")
+                except Exception as e:
+                    logger.warning(f"태스크 정리 중 오류: {e}")
+    
+    logger.info("애플리케이션 종료 완료")
 
 
 # FastAPI 애플리케이션 초기화

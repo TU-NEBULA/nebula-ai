@@ -150,6 +150,15 @@ class ProfileMetricsResponse(BaseModel):
 
 
 # === 프로필 업데이트 요청 (MQ 메시지용) ===
+class ActivityData(BaseModel):
+    """활동 데이터 구조"""
+    activity_type: str = Field(default="chat", description="활동 유형")
+    content: str = Field(default="", description="활동 내용")
+    timestamp: Optional[datetime] = Field(None, description="활동 시간")
+    metadata: Dict[str, Any] = Field(default={}, description="추가 메타데이터")
+    weight: float = Field(default=1.0, description="가중치")
+
+
 class ProfileUpdateRequest(BaseModel):
     """프로필 업데이트 요청 (MQ 메시지)"""
     user_id: int = Field(..., description="사용자 ID")
@@ -159,7 +168,7 @@ class ProfileUpdateRequest(BaseModel):
     remove_interests: Optional[List[str]] = Field(None, description="제거할 관심사")
     preference_adjustments: Optional[Dict[str, float]] = Field(None, description="선호도 조정")
     force_recalculation: bool = Field(False, description="강제 재계산 여부")
-    source_data: Optional[Dict[str, Any]] = Field(None, description="소스 데이터")
+    source_data: Optional[List[ActivityData]] = Field(None, description="활동 데이터 리스트")
 
 
 class ProfileRefreshRequest(BaseModel):
