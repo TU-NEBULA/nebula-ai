@@ -174,11 +174,11 @@ async def _run_incremental_clustering(new_user_ids: List[int]) -> Dict[str, Any]
                     "users_processed": len(result.user_ids)
                 }
             
-            # 증분 클러스터링 실행 (현재는 전체 클러스터링으로 대체)
-            # TODO: incremental_update 메서드 구현 필요
-            logger.warning("증분 클러스터링이 아직 구현되지 않아 전체 클러스터링을 수행합니다.")
-            result = await clustering_service.perform_clustering(
-                job_type="incremental_fallback_to_full"
+            # 증분 클러스터링 실행
+            logger.info(f"📊 {len(new_user_ids)}명의 새 사용자에 대해 증분 클러스터링 수행")
+            result = await clustering_service.incremental_update(
+                new_user_ids=new_user_ids,
+                update_centers=True  # 클러스터 중심점도 업데이트
             )
             
             execution_time = (datetime.utcnow() - start_time).total_seconds()
@@ -187,12 +187,12 @@ async def _run_incremental_clustering(new_user_ids: List[int]) -> Dict[str, Any]
             
             return {
                 "status": "success",
-                "mode": "incremental_fallback_to_full",
+                "mode": "incremental",
                 "execution_time": execution_time,
-                "clusters_created": result.n_clusters,
+                "clusters_updated": result.n_clusters,
                 "users_processed": len(result.user_ids),
                 "existing_clusters": len(existing_clusters),
-                "silhouette_score": result.silhouette_score
+                "processing_time": result.processing_time
             }
     
     except Exception as e:

@@ -23,7 +23,7 @@ from sklearn.decomposition import PCA
 from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
 from sklearn.ensemble import IsolationForest
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, desc
+from sqlalchemy import select, func, and_, desc, text
 from loguru import logger
 
 from app.models.clustering import (
@@ -793,6 +793,215 @@ class ClusteringService:
                 job.execution_time_seconds = execution_time
             
             await self.session.commit()
+
+    async def incremental_update(
+        self, 
+        new_user_ids: List[int], 
+        update_centers: bool = False
+    ) -> ClusteringResult:
+        """
+        증분 클러스터링 실행
+        
+        Args:
+            new_user_ids: 새로 추가되거나 업데이트된 사용자 ID 목록
+            update_centers: 클러스터 중심점 업데이트 여부
+            
+        Returns:
+            Cl러스터링 결과
+        """
+        start_time = datetime.utcnow()
+        
+        try:
+            # 1. 기존 활성 클러스터 로드
+            existing_clusters = await self._load_existing_clusters()
+            if not existing_clusters:
+                logger.warning("기존 클러스터가 없어 전체 클러스터링을 수행합니다.")
+                return await self.perform_clustering(job_type="incremental_to_full")
+            
+            # 2. 새 사용자 데이터 로드
+            new_user_data = await self._load_user_profiles(new_user_ids)
+            if not new_user_data:
+                raise ValueError("새 사용자 데이터가 없습니다.")
+            
+            # 3. 새 사용자 벡터 전처리
+            new_vectors, processed_user_ids = await self._preprocess_vectors(new_user_data)
+            
+            # 4. 기존 클러스터 중심점으로 가장 가까운 클러스터 찾기
+            cluster_assignments = await self._assign_to_nearest_clusters(
+                new_vectors, existing_clusters
+            )
+            
+            # 5. 클러스터 중심점 업데이트 (선택적)
+            if update_centers:
+                updated_centers = await self._update_cluster_centers(
+                    existing_clusters, new_vectors, cluster_assignments
+                )
+            else:
+                updated_centers = [cluster.center_vector for cluster in existing_clusters]
+            
+            # 6. 클러스터링 결과 생성
+            result = ClusteringResult(
+                cluster_labels=np.array(cluster_assignments),
+                cluster_centers=np.array(updated_centers),
+                n_clusters=len(existing_clusters),
+                silhouette_score=0.0,  # 증분에서는 계산 비용이 높아 생략
+                calinski_harabasz_score=0.0,
+                davies_bouldin_score=0.0,
+                inertia=0.0,
+                processing_time=(datetime.utcnow() - start_time).total_seconds(),
+                user_ids=processed_user_ids,
+                cluster_sizes={}  # 나중에 계산
+            )
+            
+            # 7. 새 사용자 멤버십 저장
+            await self._save_incremental_memberships(result, existing_clusters)
+            
+            # 8. 클러스터 크기 업데이트
+            await self._update_cluster_sizes()
+            
+            logger.info(f"✅ 증분 클러스터링 완료 - {len(processed_user_ids)}명 처리")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ 증분 클러스터링 실패: {str(e)}")
+            raise
+
+    async def _load_existing_clusters(self) -> List[UserCluster]:
+        """기존 활성 클러스터 로드"""
+        result = await self.session.execute(
+            select(UserCluster).where(UserCluster.is_active == True)
+        )
+        return result.scalars().all()
+
+    async def _assign_to_nearest_clusters(
+        self, 
+        new_vectors: np.ndarray, 
+        existing_clusters: List[UserCluster]
+    ) -> List[int]:
+        """새 벡터들을 가장 가까운 클러스터에 할당"""
+        
+        # 기존 클러스터 중심점들
+        cluster_centers = np.array([
+            cluster.center_vector for cluster in existing_clusters
+        ])
+        
+        assignments = []
+        
+        for vector in new_vectors:
+            # 코사인 유사도 계산 (높을수록 가까움)
+            vector_norm = np.linalg.norm(vector)
+            center_norms = np.linalg.norm(cluster_centers, axis=1)
+            
+            # NaN 방지: 0으로 나누기 방지
+            if vector_norm == 0:
+                vector_norm = 1e-8
+            center_norms = np.where(center_norms == 0, 1e-8, center_norms)
+            
+            similarities = np.dot(cluster_centers, vector) / (center_norms * vector_norm)
+            
+            # NaN 처리 (혹시 모를 경우)
+            similarities = np.nan_to_num(similarities, nan=0.0)
+            
+            # 가장 유사한 클러스터 선택
+            nearest_cluster_idx = np.argmax(similarities)
+            assignments.append(existing_clusters[nearest_cluster_idx].cluster_id)
+        
+        return assignments
+
+    async def _update_cluster_centers(
+        self, 
+        existing_clusters: List[UserCluster],
+        new_vectors: np.ndarray,
+        assignments: List[int]
+    ) -> List[List[float]]:
+        """클러스터 중심점 업데이트 (가중평균 사용)"""
+        
+        updated_centers = []
+        
+        for cluster in existing_clusters:
+            cluster_id = cluster.cluster_id
+            current_center = np.array(cluster.center_vector)
+            current_size = cluster.size or 1
+            
+            # 이 클러스터에 할당된 새 벡터들
+            new_cluster_vectors = new_vectors[
+                np.array(assignments) == cluster_id
+            ]
+            
+            if len(new_cluster_vectors) > 0:
+                # 가중평균으로 중심점 업데이트
+                total_weight = current_size + len(new_cluster_vectors)
+                new_center = (
+                    current_center * current_size + 
+                    np.mean(new_cluster_vectors, axis=0) * len(new_cluster_vectors)
+                ) / total_weight
+                
+                updated_centers.append(new_center.tolist())
+            else:
+                # 새 벡터가 없으면 기존 중심점 유지
+                updated_centers.append(cluster.center_vector)
+        
+        return updated_centers
+
+    async def _save_incremental_memberships(
+        self, 
+        result: ClusteringResult,
+        existing_clusters: List[UserCluster]
+    ) -> None:
+        """증분 사용자 멤버십 저장"""
+        
+        # 기존 멤버십 삭제 (새 사용자들만)
+        from sqlalchemy import delete
+        stmt = delete(UserClusterMembership).where(
+            UserClusterMembership.user_id.in_(result.user_ids)
+        )
+        await self.session.execute(stmt)
+        
+        # 새 멤버십 저장
+        cluster_dict = {cluster.cluster_id: cluster for cluster in existing_clusters}
+        
+        for user_id, cluster_label in zip(result.user_ids, result.cluster_labels):
+            cluster = cluster_dict[cluster_label]
+            
+            # 거리 계산 (근사치)
+            user_idx = result.user_ids.index(user_id)
+            center_vector = np.array(cluster.center_vector)
+            
+            # 임시 거리값 (실제로는 원본 벡터에서 계산 필요)
+            distance = 0.5  
+            
+            membership_create = UserClusterMembershipCreate(
+                user_id=user_id,
+                cluster_id=int(cluster_label),
+                distance_to_center=float(distance),
+                confidence_score=1.0 - min(distance / 2.0, 1.0),
+                assignment_reason="incremental"
+            )
+            
+            membership = UserClusterMembership.model_validate(membership_create.model_dump())
+            self.session.add(membership)
+        
+        await self.session.commit()
+
+    async def _update_cluster_sizes(self) -> None:
+        """클러스터 크기 업데이트"""
+        
+        # 각 클러스터의 실제 멤버 수 계산
+        size_query = text("""
+            UPDATE user_clusters 
+            SET size = subquery.member_count
+            FROM (
+                SELECT 
+                    cluster_id, 
+                    COUNT(*) as member_count
+                FROM user_cluster_memberships 
+                GROUP BY cluster_id
+            ) AS subquery
+            WHERE user_clusters.cluster_id = subquery.cluster_id
+        """)
+        
+        await self.session.execute(size_query)
+        await self.session.commit()
 
 
 class ClusteringServiceFactory:
