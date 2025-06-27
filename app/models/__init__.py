@@ -89,3 +89,22 @@ __all__ = [
     "BookmarkRelationshipMessage", "BookmarkNodeData", "SimilarBookmarkData",
     "ExtractDataModel"
 ]
+
+# 새로 추가된 클러스터링 모델들
+from .clustering import (
+    # 클러스터 관련 모델
+    UserCluster, UserClusterCreate, UserClusterRead, UserClusterUpdate,
+    UserClusterMembership, UserClusterMembershipCreate, UserClusterMembershipRead,
+    ClusterKeywords, ClusterKeywordsCreate, ClusterKeywordsRead,
+    ClusterQualityMetrics, ClusterQualityMetricsCreate, ClusterQualityMetricsRead,
+    ClusteringJobHistory, ClusteringJobHistoryCreate, ClusteringJobHistoryRead
+)
+
+__all__ += [
+    # 새로 추가된 클러스터링 모델들
+    "UserCluster", "UserClusterCreate", "UserClusterRead", "UserClusterUpdate",
+    "UserClusterMembership", "UserClusterMembershipCreate", "UserClusterMembershipRead",
+    "ClusterKeywords", "ClusterKeywordsCreate", "ClusterKeywordsRead",
+    "ClusterQualityMetrics", "ClusterQualityMetricsCreate", "ClusterQualityMetricsRead",
+    "ClusteringJobHistory", "ClusteringJobHistoryCreate", "ClusteringJobHistoryRead",
+]
