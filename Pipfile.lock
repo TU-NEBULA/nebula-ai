@@ -1,7 +1,7 @@
 {
     "_meta": {
         "hash": {
-            "sha256": "5506032b90425cc7b485300cd1c967a955baf5f16da53e3e9cc63dc391a3c906"
+            "sha256": "b728b64a22aba4ebaad1aefa4db3b1ae5c1d7eea973ee974f2b8150a144197bc"
         },
         "pipfile-spec": 6,
         "requires": {
@@ -1516,6 +1516,24 @@
             ],
             "markers": "python_version >= '3.9'",
             "version": "==4.3.8"
+        },
+        "prometheus-client": {
+            "hashes": [
+                "sha256:190f1331e783cf21eb60bca559354e0a4d4378facecf78f5428c39b675d20d28",
+                "sha256:cca895342e308174341b2cbf99a56bef291fbc0ef7b9e5412a0f26d653ba7094"
+            ],
+            "index": "pypi",
+            "markers": "python_version >= '3.9'",
+            "version": "==0.22.1"
+        },
+        "prometheus-fastapi-instrumentator": {
+            "hashes": [
+                "sha256:978130f3c0bb7b8ebcc90d35516a6fe13e02d2eb358c8f83887cdef7020c31e9",
+                "sha256:be7cd61eeea4e5912aeccb4261c6631b3f227d8924542d79eaf5af3f439cbe5e"
+            ],
+            "index": "pypi",
+            "markers": "python_version >= '3.8'",
+            "version": "==7.1.0"
         },
         "prompt-toolkit": {
             "hashes": [

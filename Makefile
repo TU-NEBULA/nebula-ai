@@ -360,3 +360,91 @@ test-help:
 	@echo "test-logs       : 테스트 서비스 로그 확인"
 	@echo ""
 	@echo "📚 자세한 가이드: docs/testing/TESTING_GUIDE.md"
+
+# 모니터링 관련 명령어들
+.PHONY: monitoring
+monitoring: monitoring-stop monitoring-start
+
+.PHONY: monitoring-start
+monitoring-start:
+	@echo "📊 모니터링 시스템 시작..."
+	docker-compose -f docker-compose.monitoring.yml up -d
+	@echo "✅ 모니터링 시스템이 시작되었습니다!"
+	@echo "🔍 프로메테우스: http://localhost:9090"
+	@echo "📈 그라파나: http://localhost:3000 (admin/nebula2024!)"
+
+.PHONY: monitoring-stop
+monitoring-stop:
+	@echo "🛑 모니터링 시스템 중지..."
+	docker-compose -f docker-compose.monitoring.yml down
+
+.PHONY: monitoring-restart
+monitoring-restart: monitoring-stop monitoring-start
+
+.PHONY: monitoring-logs
+monitoring-logs:
+	@echo "📋 모니터링 시스템 로그 확인..."
+	docker-compose -f docker-compose.monitoring.yml logs -f
+
+.PHONY: monitoring-logs-prometheus
+monitoring-logs-prometheus:
+	@echo "📋 프로메테우스 로그 확인..."
+	docker-compose -f docker-compose.monitoring.yml logs -f prometheus
+
+.PHONY: monitoring-logs-grafana
+monitoring-logs-grafana:
+	@echo "📋 그라파나 로그 확인..."
+	docker-compose -f docker-compose.monitoring.yml logs -f grafana
+
+.PHONY: monitoring-status
+monitoring-status:
+	@echo "📊 모니터링 서비스 상태..."
+	docker-compose -f docker-compose.monitoring.yml ps
+
+.PHONY: monitoring-clean
+monitoring-clean:
+	@echo "🧹 모니터링 시스템 정리 (볼륨 포함)..."
+	docker-compose -f docker-compose.monitoring.yml down --volumes
+
+.PHONY: monitoring-reset
+monitoring-reset: monitoring-clean monitoring-start
+	@echo "♻️  모니터링 시스템 완전 초기화 완료!"
+
+.PHONY: metrics-check
+metrics-check:
+	@echo "🔍 애플리케이션 메트릭 확인..."
+	@if curl -s http://localhost:8000/metrics > /dev/null 2>&1; then \
+		echo "✅ 메트릭 엔드포인트 정상 작동"; \
+		echo "📊 메트릭 수: $$(curl -s http://localhost:8000/metrics | grep -c '^[a-zA-Z]')"; \
+	else \
+		echo "❌ 메트릭 엔드포인트 접근 실패"; \
+	fi
+
+.PHONY: prometheus-reload
+prometheus-reload:
+	@echo "🔄 프로메테우스 설정 리로드..."
+	curl -X POST http://localhost:9090/-/reload
+
+.PHONY: full-monitoring
+full-monitoring: dev-start monitoring-start
+	@echo "🚀 전체 시스템 (애플리케이션 + 모니터링) 시작 완료!"
+	@echo ""
+	@echo "📱 애플리케이션 서비스:"
+	@echo "   - 메인 API: http://localhost:8001"
+	@echo "   - 헬스체크: http://localhost:8001/health"
+	@echo "   - API 문서: http://localhost:8001/docs"
+	@echo "   - 메트릭: http://localhost:8001/metrics"
+	@echo ""
+	@echo "📊 모니터링 서비스:"
+	@echo "   - 프로메테우스: http://localhost:9090"
+	@echo "   - 그라파나: http://localhost:3000 (admin/nebula2024!)"
+	@echo "   - 노드 익스포터: http://localhost:9100"
+	@echo ""
+	@echo "🎯 빠른 시작 가이드:"
+	@echo "   1. 그라파나에 로그인하여 'Nebula AI' 대시보드 확인"
+	@echo "   2. 프로메테우스에서 메트릭 수집 상태 확인"
+	@echo "   3. API 호출 후 메트릭 변화 관찰"
+
+.PHONY: stop-all
+stop-all: dev-stop monitoring-stop
+	@echo "🛑 모든 서비스 중지 완료"
