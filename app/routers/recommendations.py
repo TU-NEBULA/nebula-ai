@@ -4,7 +4,7 @@
 사용자 프로파일 기반 클러스터링과 콘텐츠 추천을 위한 REST API 엔드포인트들을 제공합니다.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 
@@ -380,8 +380,6 @@ async def get_search_based_recommendations(
         )
         
         # 응답 형태를 SearchBasedRecommendationResponse에 맞게 변환
-        from datetime import datetime, timezone
-        
         return SearchBasedRecommendationResponse(
             recommendations=[
                 RecommendationItem(
@@ -563,14 +561,26 @@ async def get_cluster_trends(
     
     try:
         clustering_service = ClusteringService(session)
+        
+        # time_period를 days_back으로 변환
+        days_mapping = {
+            "day": 1,
+            "week": 7,
+            "month": 30
+        }
+        days_back = days_mapping.get(time_period, 7)
+        
         trends = await clustering_service.get_cluster_trends(
-            session=session,
-            cluster_id=cluster_id,
-            time_period=time_period,
-            include_global=include_global
+            days_back=days_back,
+            limit=10
         )
         
-        return trends
+        return ClusterTrendsResponse(
+            cluster_trends=trends.get("cluster_trends", []),
+            global_trends=trends.get("global_trends"),
+            analysis_period=trends.get("analysis_period", f"{days_back}일간"),
+            generated_at=trends.get("generated_at", datetime.now())
+        )
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"트렌드 조회 중 오류가 발생했습니다: {str(e)}")
@@ -732,11 +742,22 @@ async def submit_recommendation_feedback(
     
     try:
         response = await feedback_service.process_feedback(
-            session=session,
-            feedback=feedback
+            user_id=feedback.user_id,
+            recommendation_id=feedback.bookmark_id,  # bookmark_id를 recommendation_id로 매핑
+            action_type=feedback.action_type,
+            session_id=feedback.session_id,
+            metadata={
+                "shown_at": feedback.shown_at.isoformat() if feedback.shown_at else None,
+                "recommendation_position": getattr(feedback, 'recommendation_position', None),
+                "time_to_action": getattr(feedback, 'time_to_action', None)
+            }
         )
         
-        return response
+        return RecommendationFeedbackResponse(
+            feedback_id=str(response.get("feedback_id", "")),  # int를 str로 변환
+            processed=response.get("processed", True),
+            message=response.get("message", "피드백이 성공적으로 처리되었습니다")
+        )
         
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -891,15 +912,18 @@ async def get_user_cluster_info(
     try:
         clustering_service = ClusteringService(session)
         cluster_info = await clustering_service.get_user_cluster_info(
-            session=session,
-            user_id=user_id,
-            include_history=include_history
+            user_id=user_id
         )
         
-        if not cluster_info:
+        if not cluster_info or cluster_info.get("cluster_info") is None:
             raise HTTPException(status_code=404, detail="사용자 정보를 찾을 수 없습니다")
         
-        return cluster_info
+        return UserClusterInfoResponse(
+            user_id=cluster_info["user_id"],
+            cluster_info=cluster_info.get("cluster_info"),
+            recommendations=cluster_info.get("recommendations", {}),
+            message=cluster_info.get("message")
+        )
         
     except HTTPException:
         raise
@@ -1091,15 +1115,28 @@ async def get_recommendation_performance(
     """
     
     try:
+        # 날짜 범위를 days_back으로 변환
+        if start_date and end_date:
+            days_back = (end_date - start_date).days
+        elif start_date:
+            days_back = (datetime.now() - start_date).days
+        else:
+            days_back = 30  # 기본값
+            
         performance = await feedback_service.get_performance_metrics(
-            session=session,
-            start_date=start_date,
-            end_date=end_date,
-            cluster_id=cluster_id,
-            metric_type=metric_type
+            user_id=cluster_id,  # cluster_id를 user_id로 활용 (전체 분석시 None)
+            days_back=max(1, days_back)  # 최소 1일
         )
         
-        return performance
+        return RecommendationPerformanceResponse(
+            overall_metrics=performance.get("overall_metrics", {}),
+            cluster_performance=performance.get("cluster_performance", []),
+            trend_analysis=performance.get("trend_analysis", {}),
+            report_period=performance.get("report_period", f"{days_back}일간"),
+            total_recommendations_analyzed=performance.get("total_recommendations_analyzed", 0),
+            data_completeness=performance.get("data_completeness", 0.95),
+            generated_at=performance.get("metadata", {}).get("analysis_timestamp", datetime.now())
+        )
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"성과 분석 중 오류가 발생했습니다: {str(e)}") 

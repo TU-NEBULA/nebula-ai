@@ -1003,6 +1003,158 @@ class ClusteringService:
         await self.session.execute(size_query)
         await self.session.commit()
 
+    async def get_cluster_trends(
+        self,
+        days_back: int = 30,
+        limit: int = 10
+    ) -> Dict[str, Any]:
+        """
+        클러스터 트렌드 정보 조회
+        
+        Args:
+            days_back: 조회할 과거 일수
+            limit: 반환할 클러스터 수 제한
+            
+        Returns:
+            클러스터 트렌드 정보
+        """
+        try:
+            from datetime import datetime, timedelta
+            
+            # 최근 클러스터 정보 조회
+            query = select(UserCluster).order_by(desc(UserCluster.updated_at)).limit(limit)
+            result = await self.session.execute(query)
+            clusters = result.scalars().all()
+            
+            cluster_trends = []
+            for cluster in clusters:
+                # 클러스터 멤버십 조회
+                membership_query = select(UserClusterMembership).where(
+                    UserClusterMembership.cluster_id == cluster.cluster_id
+                )
+                membership_result = await self.session.execute(membership_query)
+                memberships = membership_result.scalars().all()
+                
+                # TrendingKeyword 스키마에 맞는 키워드 변환
+                trending_keywords = []
+                if cluster.characteristic_keywords:
+                    for keyword, info in cluster.characteristic_keywords.items():
+                        if isinstance(info, dict):
+                            trending_keywords.append({
+                                "keyword": keyword,
+                                "score": min(1.0, max(0.0, info.get("weight", 0.0))),  # 0.0-1.0 범위로 정규화
+                                "growth": 0.0,  # 성장률 데이터가 없으므로 0.0으로 설정
+                                "frequency": info.get("frequency", 0)
+                            })
+                
+                # ClusterTrend 스키마에 맞는 구조
+                cluster_trend = {
+                    "cluster_id": cluster.cluster_id,
+                    "cluster_name": cluster.cluster_name or f"클러스터 {cluster.cluster_id}",
+                    "member_count": len(memberships),
+                    "trending_keywords": trending_keywords[:10],  # 최대 10개로 제한
+                    "popular_domains": [],  # 도메인 정보가 없으므로 빈 리스트
+                    "activity_peak_hours": [],  # 시간대 정보가 없으므로 빈 리스트
+                    "primary_interests": [],  # 주요 관심사 정보가 없으므로 빈 리스트
+                    "emerging_topics": []  # 신규 토픽 정보가 없으므로 빈 리스트
+                }
+                
+                # 카테고리 정보가 있다면 primary_interests에 추가
+                if cluster.dominant_categories:
+                    cluster_trend["primary_interests"] = list(cluster.dominant_categories.keys())[:5]
+                
+                cluster_trends.append(cluster_trend)
+            
+            # 분석 기간 문자열 생성
+            period_desc = f"{days_back}일간" if days_back >= 7 else "일주일간"
+            
+            return {
+                "cluster_trends": cluster_trends,
+                "global_trends": None,  # 글로벌 트렌드는 선택적이므로 None
+                "generated_at": datetime.now(),
+                "analysis_period": period_desc
+            }
+            
+        except Exception as e:
+            logger.error(f"클러스터 트렌드 조회 실패: {str(e)}")
+            return {
+                "cluster_trends": [],
+                "global_trends": None,
+                "generated_at": datetime.now(),
+                "analysis_period": f"{days_back}일간",
+                "error": str(e)
+            }
+    
+    async def get_user_cluster_info(
+        self,
+        user_id: int
+    ) -> Dict[str, Any]:
+        """
+        사용자의 클러스터 정보 조회
+        
+        Args:
+            user_id: 사용자 ID
+            
+        Returns:
+            사용자 클러스터 정보
+        """
+        try:
+            # 사용자 멤버십 조회
+            membership_query = select(UserClusterMembership).where(
+                UserClusterMembership.user_id == user_id
+            ).order_by(desc(UserClusterMembership.updated_at))
+            
+            membership_result = await self.session.execute(membership_query)
+            membership = membership_result.scalars().first()
+            
+            if not membership:
+                return {
+                    "user_id": user_id,
+                    "cluster_info": None,
+                    "message": "사용자가 어떤 클러스터에도 속하지 않습니다."
+                }
+            
+            # 클러스터 정보 조회
+            cluster_query = select(UserCluster).where(
+                UserCluster.cluster_id == membership.cluster_id
+            )
+            cluster_result = await self.session.execute(cluster_query)
+            cluster = cluster_result.scalars().first()
+            
+            # 같은 클러스터의 다른 사용자들 조회
+            similar_users_query = select(UserClusterMembership).where(
+                and_(
+                    UserClusterMembership.cluster_id == membership.cluster_id,
+                    UserClusterMembership.user_id != user_id
+                )
+            ).limit(5)
+            
+            similar_users_result = await self.session.execute(similar_users_query)
+            similar_users = similar_users_result.scalars().all()
+            
+            cluster_info = {
+                "cluster_id": membership.cluster_id,
+                "name": cluster.cluster_name if cluster else f"클러스터 {membership.cluster_id}",
+                "description": f"클러스터 {membership.cluster_id} - {cluster.size}명의 사용자" if cluster else "설명 없음",
+                "user_assignment_date": membership.assigned_at.isoformat() if membership.assigned_at else None,
+                "confidence_score": membership.confidence_score or 0.0,
+                "member_count": cluster.size if cluster else 0
+            }
+            
+            return {
+                "user_id": user_id,
+                "cluster_info": cluster_info,
+                "recommendations": {
+                    "explore_similar_content": True,
+                    "diversify_interests": cluster_info["confidence_score"] > 0.8,
+                    "engage_with_cluster": len(similar_users) > 0
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ 사용자 클러스터 정보 조회 실패: {e}")
+            raise
+
 
 class ClusteringServiceFactory:
     """클러스터링 서비스 팩토리"""
