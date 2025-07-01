@@ -1,6 +1,27 @@
 version: '3.8'
 
 services:
+  # Redis - 캐시 및 Celery 백엔드 (로컬 개발용)
+  redis:
+    image: redis:7-alpine
+    container_name: nebula-redis-dev
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_dev_data:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    environment:
+      - REDIS_PASSWORD=dev_password_123
+    mem_limit: 512m
+
   web:
     build:
       context: .
@@ -8,7 +29,7 @@ services:
       target: production
     image: nebula-ai:latest
     container_name: nebula-ai-dev
-    restart: always
+    restart: unless-stopped
     command: pipenv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
       - "8000:8000"
@@ -17,21 +38,31 @@ services:
     volumes:
       - ./app:/app/app
       - ./tests:/app/tests
+    depends_on:
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://:dev_password_123@redis:6379/0
 
   celery_worker:
     image: nebula-ai:latest
     container_name: celery_worker-dev
-    command: pipenv run celery -A app.core.celery_worker worker --loglevel=info -Q bookmark_save,user_profile,user_analysis,recommendations,analytics,monitoring
+    restart: unless-stopped
+    command: pipenv run celery -A app.core.celery_worker worker --loglevel=info -Q bookmark_save,user_profile,user_analysis,recommendations,analytics,monitoring,clustering --concurrency=4
     env_file:
       - .env
     volumes:
       - ./app:/app/app
     depends_on:
-      - web
+      redis:
+        condition: service_healthy
+    environment:
+      - REDIS_URL=redis://:dev_password_123@redis:6379/0
 
   celery_beat:
     image: nebula-ai:latest
     container_name: celery_beat-dev
+    restart: unless-stopped
     command: pipenv run celery -A app.core.celery_worker beat --loglevel=info
     env_file:
       - .env
@@ -39,14 +70,24 @@ services:
       - ./app:/app/app
     depends_on:
       - celery_worker
+    environment:
+      - REDIS_URL=redis://:dev_password_123@redis:6379/0
 
   flower:
-    image: mher/flower
+    image: mher/flower:latest
     container_name: flower-dev
-    restart: always
+    restart: unless-stopped
     environment:
       - FLOWER_PORT=5555
+      - CELERY_RESULT_BACKEND=redis://:dev_password_123@redis:6379/0
     env_file:
       - .env
     ports:
       - "5555:5555"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis_dev_data:
+    driver: local

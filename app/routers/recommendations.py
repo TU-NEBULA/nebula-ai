@@ -37,7 +37,6 @@ router = APIRouter(
 )
 
 recommendation_engine = RecommendationEngine()
-clustering_service = ClusteringService()
 feedback_service = RecommendationFeedbackService()
 
 
@@ -514,6 +513,7 @@ async def get_cluster_trends(
     """
     
     try:
+        clustering_service = ClusteringService(session)
         trends = await clustering_service.get_cluster_trends(
             session=session,
             cluster_id=cluster_id,
@@ -840,6 +840,7 @@ async def get_user_cluster_info(
     """
     
     try:
+        clustering_service = ClusteringService(session)
         cluster_info = await clustering_service.get_user_cluster_info(
             session=session,
             user_id=user_id,

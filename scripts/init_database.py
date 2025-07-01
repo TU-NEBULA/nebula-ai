@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from sqlmodel import SQLModel
 from app.core.database import engine
 from app.models.user_profile import UserProfile
-from app.models.bookmark import Bookmark
+from app.models.bookmark import BookmarkAIStatus
 from app.models.chat import Chat
 from app.models.clustering import UserCluster, ClusteringMetadata
 from app.models.extract_data import DocumentVector

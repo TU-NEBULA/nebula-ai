@@ -20,7 +20,7 @@ from sqlmodel import SQLModel, Field
 
 from app.core.database import get_async_session
 from app.models.user_profile import UserProfile
-from app.models.bookmark import Bookmark
+from app.models.bookmark import BookmarkAIStatus
 from app.services.vector_service import VectorService
 from app.repositories.user_profile_repository import UserProfileRepository
 

@@ -19,7 +19,7 @@ from sqlmodel import select, and_, desc, func
 from app.core.config import settings
 from app.core.database import get_async_session
 from app.models.user_profile import UserProfile, Recommendation, RecommendationCreate
-from app.models.bookmark import Bookmark
+from app.models.bookmark import BookmarkAIStatus
 from app.models.chat import DocumentVector
 from app.repositories.vector_repository import VectorRepository
 from app.services.vector_service import VectorService

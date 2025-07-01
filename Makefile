@@ -135,32 +135,127 @@ dev-fix:
 	@docker network prune -f
 	@echo "✅ 문제 해결 완료!"
 
+# Redis 관리 명령어들 (로컬 컨테이너)
+.PHONY: redis-ping
+redis-ping:
+	@echo "🏓 Redis 연결 테스트..."
+	docker exec nebula-redis-dev redis-cli -a dev_password_123 ping
+
+.PHONY: redis-info
+redis-info:
+	@echo "ℹ️  Redis 정보 확인..."
+	docker exec nebula-redis-dev redis-cli -a dev_password_123 info
+
+.PHONY: redis-memory
+redis-memory:
+	@echo "🧠 Redis 메모리 사용량..."
+	docker exec nebula-redis-dev redis-cli -a dev_password_123 info memory
+
+.PHONY: redis-clients
+redis-clients:
+	@echo "👥 Redis 클라이언트 연결 상태..."
+	docker exec nebula-redis-dev redis-cli -a dev_password_123 client list
+
+.PHONY: redis-slowlog
+redis-slowlog:
+	@echo "🐌 Redis 슬로우 로그 (최근 10개)..."
+	docker exec nebula-redis-dev redis-cli -a dev_password_123 slowlog get 10
+
+.PHONY: redis-keys
+redis-keys:
+	@echo "🔑 Redis 키 목록 (최대 100개)..."
+	docker exec nebula-redis-dev redis-cli -a dev_password_123 --scan --count 100
+
+.PHONY: redis-celery-keys
+redis-celery-keys:
+	@echo "🔑 Celery 관련 키 목록..."
+	docker exec nebula-redis-dev redis-cli -a dev_password_123 keys "celery*"
+
+.PHONY: redis-flush-dev
+redis-flush-dev:
+	@echo "⚠️  개발용 Redis 데이터 모두 삭제 (주의!)..."
+	@read -p "정말로 모든 Redis 데이터를 삭제하시겠습니까? (y/N): " confirm && \
+	if [ "$$confirm" = "y" ] || [ "$$confirm" = "Y" ]; then \
+		docker exec nebula-redis-dev redis-cli -a dev_password_123 --eval "for i=0,15 do redis.call('select', i) local keys = redis.call('keys', '*') if #keys > 0 then redis.call('del', unpack(keys)) end end return 'OK'" 0; \
+		echo "✅ Redis 데이터 삭제 완료"; \
+	else \
+		echo "❌ 취소됨"; \
+	fi
+
+.PHONY: redis-benchmark
+redis-benchmark:
+	@echo "🏃‍♂️ Redis 성능 벤치마크 실행..."
+	docker exec nebula-redis-dev redis-benchmark -a dev_password_123 -t set,get -n 10000 -q
+
+.PHONY: redis-logs
+redis-logs:
+	@echo "📋 Redis 로그 확인..."
+	docker-compose -f docker-compose.dev.yml logs -f redis
+
+.PHONY: redis-restart
+redis-restart:
+	@echo "🔄 Redis 재시작..."
+	docker-compose -f docker-compose.dev.yml restart redis
+
+.PHONY: redis-start
+redis-start:
+	@echo "🚀 Redis 시작..."
+	docker-compose -f docker-compose.dev.yml up -d redis
+
+.PHONY: redis-stop
+redis-stop:
+	@echo "🛑 Redis 중지..."
+	docker-compose -f docker-compose.dev.yml stop redis
+
 .PHONY: dev-help
 dev-help:
 	@echo "🛠️  개발 환경 명령어 도움말"
 	@echo "=========================="
-	@echo "dev             : 테스트 + 개발 환경 전체 재시작"
-	@echo "dev-no-test     : 테스트 없이 개발 환경 재시작"
-	@echo "dev-quick       : 빠른 재시작 (캐시 사용)"
-	@echo "dev-start       : 개발 환경 시작"
-	@echo "dev-stop        : 개발 환경 중지"
-	@echo "dev-build       : 개발 환경 이미지 빌드 (캐시 무시)"
-	@echo "dev-build-quick : 개발 환경 빠른 빌드 (캐시 사용)"
-	@echo "dev-rebuild     : 전체 재빌드 (캐시 무시)"
-	@echo "dev-restart     : 개발 환경 재시작"
-	@echo "dev-logs        : 모든 서비스 로그 실시간 확인"
-	@echo "dev-logs-web    : 웹 서비스 로그만 확인"
-	@echo "dev-logs-celery : Celery 워커 로그만 확인"
-	@echo "dev-status      : 서비스 상태 확인"
-	@echo "dev-shell       : 웹 컨테이너 쉘 접속"
-	@echo "dev-shell-celery: Celery 컨테이너 쉘 접속"
-	@echo "dev-clean       : 모든 컨테이너/이미지/볼륨 삭제"
-	@echo "dev-reset       : 개발 환경 완전 초기화"
-	@echo "dev-fix         : 개발 환경 문제 해결 (buildx, 정리)"
+	@echo "📦 환경 관리:"
+	@echo "  dev             : 테스트 + 개발 환경 전체 재시작"
+	@echo "  dev-no-test     : 테스트 없이 개발 환경 재시작"
+	@echo "  dev-quick       : 빠른 재시작 (캐시 사용)"
+	@echo "  dev-start       : 개발 환경 시작"
+	@echo "  dev-stop        : 개발 환경 중지"
+	@echo "  dev-build       : 개발 환경 이미지 빌드 (캐시 무시)"
+	@echo "  dev-build-quick : 개발 환경 빠른 빌드 (캐시 사용)"
+	@echo "  dev-rebuild     : 전체 재빌드 (캐시 무시)"
+	@echo "  dev-restart     : 개발 환경 재시작"
 	@echo ""
-	@echo "💡 개발 시: 'make dev' 실행 후 http://localhost:8000 접속"
+	@echo "📋 로그 및 상태:"
+	@echo "  dev-logs        : 모든 서비스 로그 실시간 확인"
+	@echo "  dev-logs-web    : 웹 서비스 로그만 확인"
+	@echo "  dev-logs-celery : Celery 워커 로그만 확인"
+	@echo "  dev-status      : 서비스 상태 확인"
+	@echo ""
+	@echo "💻 접속 및 쉘:"
+	@echo "  dev-shell       : 웹 컨테이너 쉘 접속"
+	@echo "  dev-shell-celery: Celery 컨테이너 쉘 접속"
+	@echo ""
+	@echo "🔴 Redis 관리 (로컬 컨테이너):"
+	@echo "  redis-start     : Redis 시작"
+	@echo "  redis-stop      : Redis 중지"
+	@echo "  redis-restart   : Redis 재시작"
+	@echo "  redis-ping      : Redis 연결 테스트"
+	@echo "  redis-info      : Redis 정보 확인"
+	@echo "  redis-memory    : Redis 메모리 사용량"
+	@echo "  redis-clients   : Redis 클라이언트 연결 상태"
+	@echo "  redis-slowlog   : Redis 슬로우 로그"
+	@echo "  redis-keys      : Redis 키 목록"
+	@echo "  redis-celery-keys: Celery 관련 키"
+	@echo "  redis-benchmark : Redis 성능 테스트"
+	@echo "  redis-logs      : Redis 로그 확인"
+	@echo "  redis-flush-dev : Redis 데이터 삭제 (주의!)"
+	@echo ""
+	@echo "🧹 정리 및 문제 해결:"
+	@echo "  dev-clean       : 모든 컨테이너/이미지/볼륨 삭제"
+	@echo "  dev-reset       : 개발 환경 완전 초기화"
+	@echo "  dev-fix         : 개발 환경 문제 해결 (buildx, 정리)"
+	@echo ""
+	@echo "💡 개발 시작: 'make dev' 실행 후 http://localhost:8000 접속"
 	@echo "📝 코드 변경 시 자동으로 컨테이너에 반영됩니다"
 	@echo "🚀 빠른 재시작: 'make dev-quick' 사용"
+	@echo "🔴 Redis 연결 문제 시: 'make redis-ping' 또는 'make redis-restart'"
 	@echo "🛠️  문제 발생 시: 'make dev-fix' 실행"
 
 .PHONY: test

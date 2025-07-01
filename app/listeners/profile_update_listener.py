@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_async_session
 from app.models.user_profile import UserProfile
-from app.models.bookmark import Bookmark
+from app.models.bookmark import BookmarkAIStatus
 from app.services.user_profile_processor import UserProfileProcessor
 from app.services.clustering_service import ClusteringService
 from app.services.vector_service import VectorService
