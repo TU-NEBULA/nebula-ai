@@ -21,7 +21,8 @@ from app.schemas.recommendation_schemas import (
     RecommendationFeedbackRequest,
     RecommendationFeedbackResponse,
     UserClusterInfoResponse,
-    RecommendationPerformanceResponse
+    RecommendationPerformanceResponse,
+    RecommendationItem
 )
 from app.services.recommendation_engine import RecommendationEngine
 from app.services.clustering_service import ClusteringService
@@ -160,21 +161,44 @@ async def get_general_recommendations(
     """
     
     try:
-        request = GeneralRecommendationRequest(
+        recommendations = await recommendation_engine.get_general_recommendations(
             user_id=user_id,
             limit=limit,
-            category=category,
-            exclude_viewed=exclude_viewed,
-            diversify=diversify,
-            time_range=time_range
+            exclude_user_bookmarks=exclude_viewed,
+            diversity_boost=diversify
         )
         
-        recommendations = await recommendation_engine.get_general_recommendations(
-            session=session,
-            request=request
+        # 추천 엔진 결과를 스키마 형식에 맞게 변환
+        recommendation_items = []
+        for rec in recommendations:
+            recommendation_item = RecommendationItem(
+                bookmark_id=str(rec.get('source_id', rec.get('document_id', ''))),
+                title=rec.get('title', '제목 없음'),
+                url=rec.get('url', ''),
+                score=min(1.0, max(0.0, rec.get('recommendation_score', 0.0))),
+                reason_type=rec.get('recommendation_type', 'general'),
+                reason_details={
+                    'algorithm': rec.get('recommendation_type', 'general'),
+                    'similarity_score': rec.get('content_similarity'),
+                    'cluster_score': rec.get('cluster_score'),
+                    'popularity_score': rec.get('popularity_score')
+                },
+                keywords=rec.get('keywords', []),
+                summary=rec.get('summary'),
+                published_at=rec.get('created_at')
+            )
+            recommendation_items.append(recommendation_item)
+        
+        # 응답 형식에 맞게 변환
+        response = GeneralRecommendationResponse(
+            recommendations=recommendation_items,
+            user_cluster_id=None,  # 실제 클러스터 ID는 나중에 추가 가능
+            cluster_description="",
+            total_recommendations=len(recommendation_items),
+            generated_at=datetime.utcnow()
         )
         
-        return recommendations
+        return response
         
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
@@ -349,11 +373,36 @@ async def get_search_based_recommendations(
     
     try:
         recommendations = await recommendation_engine.get_search_based_recommendations(
-            session=session,
-            request=request
+            user_id=request.user_id,
+            search_query=request.query,
+            limit=request.limit,
+            personalization_weight=0.4 if request.boost_user_preferences else 0.0
         )
         
-        return recommendations
+        # 응답 형태를 SearchBasedRecommendationResponse에 맞게 변환
+        from datetime import datetime, timezone
+        
+        return SearchBasedRecommendationResponse(
+            recommendations=[
+                RecommendationItem(
+                    bookmark_id=rec.get('source_id', str(rec.get('document_id', ''))),
+                    title=rec.get('title', 'Untitled'),
+                    url=rec.get('url', ''),
+                    score=rec.get('recommendation_score', 0.0),
+                    reason_type=rec.get('recommendation_type', 'search_based'),
+                    reason_details=rec.get('reasoning', {}),
+                    domain=rec.get('url', '').split('/')[2] if rec.get('url') and '/' in rec.get('url', '') else None,
+                    keywords=rec.get('keywords', []),
+                    summary=rec.get('summary')
+                ) for rec in recommendations
+            ],
+            query_keywords=request.query.split(),
+            expanded_concepts=[],
+            search_intent=None,
+            total_recommendations=len(recommendations),
+            processing_time_ms=None,
+            similarity_threshold_used=None
+        )
         
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))

@@ -12,9 +12,11 @@ from fastapi import FastAPI
 from app.routers.chat_stream import router as chat_stream_router
 from app.routers.profile import router as profile_router
 from app.routers.recommendations import router as recommendations_router
+from app.routers.analytics import router as analytics_router
 
 def init_routers(app: FastAPI) -> None:
     """라우터 초기화 함수"""
     app.include_router(chat_stream_router)
     app.include_router(profile_router)
     app.include_router(recommendations_router)
+    app.include_router(analytics_router)

@@ -7,7 +7,7 @@
 import asyncio
 import logging
 from typing import List, Dict, Any, Optional, Tuple
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
@@ -74,7 +74,7 @@ class RecommendationEngine:
 
                 # 3. 콘텐츠 기반 추천 후보 수집
                 content_candidates = []
-                if user_profile.profile_vector:
+                if user_profile.profile_vector is not None and len(user_profile.profile_vector) > 0:
                     content_candidates = await self._get_content_based_candidates(
                         session, user_id, user_profile.profile_vector, limit * 2
                     )
@@ -158,7 +158,7 @@ class RecommendationEngine:
                 )
 
                 # 4. 개인화 가중치 적용
-                if user_profile and user_profile.profile_vector and personalization_weight > 0:
+                if user_profile and user_profile.profile_vector is not None and len(user_profile.profile_vector) > 0 and personalization_weight > 0:
                     semantic_candidates = await self._apply_personalization_weights(
                         semantic_candidates, user_profile.profile_vector, personalization_weight
                     )
@@ -221,8 +221,8 @@ class RecommendationEngine:
                 and_(
                     UserProfile.similarity_cluster == cluster_id,
                     DocumentVector.user_id != user_id,
-                    DocumentVector.source_type == "bookmark",
-                    DocumentVector.created_at >= datetime.utcnow() - timedelta(days=90)
+                    DocumentVector.source_type == "bookmark_content",
+                    DocumentVector.created_at >= datetime.now(timezone.utc) - timedelta(days=90)
                 )
             ).order_by(desc(DocumentVector.created_at)).limit(limit)
 
@@ -258,7 +258,7 @@ class RecommendationEngine:
             similar_documents = await VectorRepository.similarity_search(
                 session=session,
                 query_embedding=user_vector,
-                source_types=["bookmark"],
+                source_types=["bookmark_content"],
                 limit=limit,
                 similarity_threshold=0.6
             )
@@ -298,8 +298,8 @@ class RecommendationEngine:
                 func.count(DocumentVector.id).label('bookmark_count')
             ).where(
                 and_(
-                    DocumentVector.source_type == "bookmark",
-                    DocumentVector.created_at >= datetime.utcnow() - timedelta(days=30)
+                    DocumentVector.source_type == "bookmark_content",
+                    DocumentVector.created_at >= datetime.now(timezone.utc) - timedelta(days=30)
                 )
             ).group_by(DocumentVector.url).subquery()
 
@@ -382,7 +382,13 @@ class RecommendationEngine:
         if not created_at:
             return 0.0
         
-        days_old = (datetime.utcnow() - created_at).days
+        # timezone-aware datetime 사용
+        now = datetime.now(timezone.utc)
+        if created_at.tzinfo is None:
+            # created_at이 timezone-naive인 경우 UTC로 가정
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        
+        days_old = (now - created_at).days
         if days_old <= 1:
             return 0.3
         elif days_old <= 7:
@@ -399,7 +405,7 @@ class RecommendationEngine:
                 select(DocumentVector.url).where(
                     and_(
                         DocumentVector.user_id == user_id,
-                        DocumentVector.source_type == "bookmark"
+                        DocumentVector.source_type == "bookmark_content"
                     )
                 ).distinct()
             )
@@ -447,7 +453,7 @@ class RecommendationEngine:
             similar_documents = await VectorRepository.similarity_search(
                 session=session,
                 query_embedding=search_embedding.tolist(),
-                source_types=["bookmark"],
+                source_types=["bookmark_content"],
                 limit=limit,
                 similarity_threshold=0.5
             )
@@ -518,7 +524,7 @@ class RecommendationEngine:
             ).where(
                 and_(
                     UserProfile.similarity_cluster == cluster_id,
-                    DocumentVector.source_type == "bookmark"
+                    DocumentVector.source_type == "bookmark_content"
                 )
             ).group_by(DocumentVector.url)
             
