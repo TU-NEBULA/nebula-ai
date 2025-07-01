@@ -434,15 +434,28 @@ class RecommendationEngine:
     async def _create_search_embedding(self, search_query: str) -> np.ndarray:
         """검색어에 대한 임베딩 생성"""
         try:
-            # OpenAI Embedding API 사용
-            response = await openai.Embedding.acreate(
-                model="text-embedding-ada-002",
-                input=search_query
-            )
-            embedding = np.array(response['data'][0]['embedding'])
+            log.info(f"검색어 임베딩 생성 시작: '{search_query}'")
+            import asyncio
+            from concurrent.futures import ThreadPoolExecutor
+            
+            # OpenAI Embeddings API 사용 (새버전 방식)
+            loop = asyncio.get_event_loop()
+            with ThreadPoolExecutor() as executor:
+                response = await loop.run_in_executor(
+                    executor,
+                    lambda: openai.embeddings.create(
+                        model="text-embedding-ada-002",
+                        input=search_query
+                    )
+                )
+            
+            embedding = np.array(response.data[0].embedding)
+            log.info(f"검색어 임베딩 생성 성공: {search_query[:50]}..., 크기: {len(embedding)}, 첫 5개 값: {embedding[:5].tolist()}")
             return embedding
+            
         except Exception as e:
             log.error(f"검색어 임베딩 생성 오류: {e}")
+            log.error(f"검색어 임베딩 생성 실패")
             return np.zeros(1536)  # OpenAI ada-002 차원
 
     async def _get_semantic_search_candidates(
@@ -455,12 +468,16 @@ class RecommendationEngine:
                 query_embedding=search_embedding.tolist(),
                 source_types=["bookmark_content"],
                 limit=limit,
-                similarity_threshold=0.5
+                similarity_threshold=0.01  # 0.1에서 0.01로 더 낮춤
             )
+            
+            log.info(f"벡터 유사도 검색 원본 결과 수: {len(similar_documents)}")
 
             candidates = []
+            filtered_count = 0
             for doc, similarity_score in similar_documents:
                 if doc.user_id == user_id:
+                    filtered_count += 1
                     continue
 
                 candidates.append({
@@ -477,6 +494,9 @@ class RecommendationEngine:
                     'recommendation_type': 'search_based'
                 })
 
+            log.info(f"사용자 {user_id} 자신의 북마크 필터링: {filtered_count}개")
+            log.info(f"최종 검색 기반 추천 후보 수: {len(candidates)}")
+            
             return candidates
 
         except Exception as e:
