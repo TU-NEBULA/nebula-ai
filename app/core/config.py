@@ -124,6 +124,32 @@ class Settings(BaseSettings):
         description="메시지 발행 재시도 지연시간 (초)"
     )
 
+    # 모니터링 설정
+    ENABLE_METRICS: bool = Field(
+        default=False,
+        description="Prometheus 메트릭 수집 활성화 여부"
+    )
+    PROMETHEUS_PORT: int = Field(
+        default=9090,
+        description="Prometheus 서버 포트"
+    )
+    GRAFANA_PORT: int = Field(
+        default=3000,
+        description="Grafana 서버 포트"
+    )
+    GRAFANA_ADMIN_USER: str = Field(
+        default="admin",
+        description="Grafana 관리자 사용자명"
+    )
+    GRAFANA_ADMIN_PASSWORD: str = Field(
+        default="admin",
+        description="Grafana 관리자 비밀번호"
+    )
+    METRICS_COLLECTION_INTERVAL: int = Field(
+        default=15,
+        description="메트릭 수집 간격 (초)"
+    )
+
     @property
     def RABBITMQ_URL(self) -> str:
         """

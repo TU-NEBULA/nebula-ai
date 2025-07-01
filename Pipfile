@@ -33,6 +33,8 @@ aiohttp = "*"
 pgvector = "*"
 psutil = "*"
 sqlalchemy = "*"
+prometheus-fastapi-instrumentator = "*"
+prometheus-client = "*"
 
 [dev-packages]
 pytest-asyncio = "*"

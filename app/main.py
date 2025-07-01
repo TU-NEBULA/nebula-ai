@@ -21,6 +21,7 @@ from app.consumers.bookmark_save_rmq import start_bookmark_save_consumer
 from app.consumers.extract_data_rmq import start_extract_consumer
 from app.listeners.profile_update_listener import RealTimeProfileUpdateListener
 from app.services.recommendation_feedback import RecommendationFeedbackService
+from app.core.monitoring import setup_prometheus_metrics, start_system_metrics_collector
 
 # 로그 설정
 logger.add(
@@ -36,15 +37,23 @@ RABBITMQ_CONSUMER = None
 CONSUMER_TASKS = []  # 백그라운드 태스크 추적용
 PROFILE_UPDATE_LISTENER = None
 RECOMMENDATION_FEEDBACK_SERVICE = None
+METRICS_COLLECTOR_TASK = None  # 메트릭 수집기 태스크
 
 
 @asynccontextmanager
 async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
     """애플리케이션 시작/종료 시 실행할 코드"""
-    global RABBITMQ_CONSUMER, CONSUMER_TASKS, PROFILE_UPDATE_LISTENER, RECOMMENDATION_FEEDBACK_SERVICE  # pylint: disable=global-statement
+    global RABBITMQ_CONSUMER, CONSUMER_TASKS, PROFILE_UPDATE_LISTENER, RECOMMENDATION_FEEDBACK_SERVICE, METRICS_COLLECTOR_TASK  # pylint: disable=global-statement
     
     # 시작 시
     await init_db()
+
+    # 메트릭 수집기 시작
+    try:
+        METRICS_COLLECTOR_TASK = asyncio.create_task(start_system_metrics_collector())
+        logger.info("📊 Prometheus 메트릭 수집기 시작 완료")
+    except Exception as e:
+        logger.error(f"메트릭 수집기 시작 실패: {e}")
 
     # Celery 스케줄러 설정 초기화
     try:
@@ -98,6 +107,17 @@ async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
     # 종료 시
     logger.info("애플리케이션 종료 시작")
     
+    # 메트릭 수집기 정리
+    if METRICS_COLLECTOR_TASK:
+        try:
+            METRICS_COLLECTOR_TASK.cancel()
+            await METRICS_COLLECTOR_TASK
+            logger.info("메트릭 수집기 정리 완료")
+        except asyncio.CancelledError:
+            logger.info("메트릭 수집기 취소 완료")
+        except Exception as e:
+            logger.error(f"메트릭 수집기 정리 실패: {e}")
+    
     # 프로파일 업데이트 리스너 정리
     if PROFILE_UPDATE_LISTENER:
         try:
@@ -145,6 +165,13 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Prometheus 메트릭 설정 적용
+try:
+    setup_prometheus_metrics(app)
+    logger.info("🔍 Prometheus 메트릭 설정 완료")
+except Exception as e:
+    logger.error(f"Prometheus 메트릭 설정 실패: {e}")
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 실제 배포시에는 특정 도메인으로 제한
@@ -166,7 +193,8 @@ async def root():
         "endpoints": {
             "profiles": "/api/v1/profiles",
             "docs": "/docs",
-            "health": "/health"
+            "health": "/health",
+            "metrics": "/metrics"
         }
     }
 
@@ -180,6 +208,7 @@ async def health_check():
     profile_listener_status = "running" if (PROFILE_UPDATE_LISTENER and PROFILE_UPDATE_LISTENER.is_processing) else "stopped"
     feedback_service_status = "running" if (RECOMMENDATION_FEEDBACK_SERVICE and RECOMMENDATION_FEEDBACK_SERVICE.is_processing) else "stopped"
     rabbitmq_status = "connected" if RABBITMQ_CONSUMER else "disabled"
+    metrics_status = "running" if (METRICS_COLLECTOR_TASK and not METRICS_COLLECTOR_TASK.done()) else "stopped"
     
     return {
         "status": "healthy",
@@ -187,13 +216,28 @@ async def health_check():
             "database": "connected",
             "rabbitmq": rabbitmq_status,
             "profile_update_listener": profile_listener_status,
-            "recommendation_feedback_service": feedback_service_status
+            "recommendation_feedback_service": feedback_service_status,
+            "metrics_collector": metrics_status
         },
         "processing_stats": {
             "profile_events_processed": PROFILE_UPDATE_LISTENER.processed_events_count if PROFILE_UPDATE_LISTENER else 0,
             "feedback_queue_size": RECOMMENDATION_FEEDBACK_SERVICE.feedback_queue.qsize() if RECOMMENDATION_FEEDBACK_SERVICE else 0
         }
     }
+
+
+@app.get("/metrics", include_in_schema=False)
+async def get_metrics():
+    """Prometheus 메트릭 엔드포인트 (테스트용)"""
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    from fastapi import Response
+    
+    # 기본 메트릭 생성
+    metrics_data = generate_latest()
+    return Response(
+        content=metrics_data,
+        media_type=CONTENT_TYPE_LATEST
+    )
 
 
 # 전역 서비스 접근을 위한 헬퍼 함수들
