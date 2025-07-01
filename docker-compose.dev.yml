@@ -79,7 +79,9 @@ services:
     restart: unless-stopped
     environment:
       - FLOWER_PORT=5555
+      - CELERY_BROKER_URL=pyamqp://guest:guest@15.165.20.194:5672//
       - CELERY_RESULT_BACKEND=redis://:dev_password_123@redis:6379/0
+      - FLOWER_BASIC_AUTH=admin:admin123
     env_file:
       - .env
     ports:
@@ -87,6 +89,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   redis_dev_data:
