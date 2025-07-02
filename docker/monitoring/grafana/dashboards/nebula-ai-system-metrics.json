@@ -1,0 +1,231 @@
+{
+  "id": null,
+  "title": "Nebula AI - 시스템 리소스 모니터링",
+  "uid": "nebula-system-monitoring",
+  "tags": ["nebula-ai", "system", "resources"],
+  "style": "dark",
+  "timezone": "browser",
+  "refresh": "15s",
+  "schemaVersion": 27,
+  "version": 1,
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": ["5s", "10s", "15s", "30s", "1m", "5m", "15m", "30m", "1h"]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "💾 메모리 사용량",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "memory_usage_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "시스템 메모리 (GB)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 4},
+              {"color": "red", "value": 6}
+            ]
+          },
+          "unit": "decbytes"
+        }
+      },
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0}
+    },
+    {
+      "id": 2,
+      "title": "⚡ CPU 사용률",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "cpu_usage_percent",
+          "legendFormat": "CPU 사용률 (%)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 70},
+              {"color": "red", "value": 90}
+            ]
+          },
+          "unit": "percent"
+        }
+      },
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0}
+    },
+    {
+      "id": 3,
+      "title": "🔌 네트워크 연결",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "sum(network_connections_active)",
+          "legendFormat": "총 연결 수"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0}
+    },
+    {
+      "id": 4,
+      "title": "🔄 활성 프로세스",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "system_processes_active",
+          "legendFormat": "활성 프로세스"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0}
+    },
+    {
+      "id": 5,
+      "title": "📈 메모리 사용량 추이",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "memory_usage_bytes / 1024 / 1024 / 1024",
+          "legendFormat": "시스템 메모리 (GB)"
+        },
+        {
+          "expr": "process_resident_memory_bytes / 1024 / 1024",
+          "legendFormat": "FastAPI 프로세스 (MB)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "none"
+          },
+          "unit": "bytes"
+        }
+      },
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "id": 6,
+      "title": "⚡ CPU 사용률 추이",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "cpu_usage_percent",
+          "legendFormat": "전체 CPU 사용률"
+        },
+        {
+          "expr": "system_cpu_usage_per_process",
+          "legendFormat": "프로세스당 평균 CPU"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "percent"
+        }
+      },
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 8}
+    },
+    {
+      "id": 7,
+      "title": "🔌 네트워크 연결 상태",
+      "type": "piechart",
+      "targets": [
+        {
+          "expr": "network_connections_active",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "displayMode": "table",
+            "pieType": "pie"
+          }
+        }
+      },
+      "gridPos": {"h": 9, "w": 8, "x": 0, "y": 17}
+    },
+    {
+      "id": 8,
+      "title": "📊 프로세스 상태",
+      "type": "piechart",
+      "targets": [
+        {
+          "expr": "system_processes_by_status",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "displayMode": "table",
+            "pieType": "pie"
+          }
+        }
+      },
+      "gridPos": {"h": 9, "w": 8, "x": 8, "y": 17}
+    },
+    {
+      "id": 9,
+      "title": "🗂️ 파일 디스크립터",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "process_open_fds",
+          "legendFormat": "열린 FD"
+        },
+        {
+          "expr": "process_max_fds",
+          "legendFormat": "최대 FD"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 9, "w": 8, "x": 16, "y": 17}
+    }
+  ]
+} 

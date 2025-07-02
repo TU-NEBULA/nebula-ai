@@ -14,15 +14,17 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
-from app.routers import init_routers
-from app.core.database import init_db
-from app.core.config import settings
-from app.services.message_handlers import RabbitMQConsumer
 from app.consumers.bookmark_save_rmq import start_bookmark_save_consumer
 from app.consumers.extract_data_rmq import start_extract_consumer
+from app.core.config import settings
+from app.core.database import init_db
+from app.core.monitoring import (get_prometheus_metrics,
+                                 setup_prometheus_metrics,
+                                 start_system_metrics_collector)
 from app.listeners.profile_update_listener import RealTimeProfileUpdateListener
+from app.routers import init_routers
+from app.services.message_handlers import RabbitMQConsumer
 from app.services.recommendation_feedback import RecommendationFeedbackService
-from app.core.monitoring import setup_prometheus_metrics, start_system_metrics_collector, get_prometheus_metrics
 
 # 로그 설정
 logger.add(
@@ -45,7 +47,7 @@ METRICS_COLLECTOR_TASK = None  # 메트릭 수집기 태스크
 async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
     """애플리케이션 시작/종료 시 실행할 코드"""
     global RABBITMQ_CONSUMER, CONSUMER_TASKS, PROFILE_UPDATE_LISTENER, RECOMMENDATION_FEEDBACK_SERVICE, METRICS_COLLECTOR_TASK  # pylint: disable=global-statement
-    
+
     # 시작 시
     await init_db()
 
@@ -86,16 +88,16 @@ async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
     try:
         rabbitmq_url = settings.RABBITMQ_URL
         # 필수 환경변수가 설정되어 있는지 확인
-        if (hasattr(settings, 'RABBITMQ_HOST') and settings.RABBITMQ_HOST and 
+        if (hasattr(settings, 'RABBITMQ_HOST') and settings.RABBITMQ_HOST and
             hasattr(settings, 'RABBITMQ_USERNAME') and settings.RABBITMQ_USERNAME):
-            
+
             RABBITMQ_CONSUMER = RabbitMQConsumer(rabbitmq_url)
 
             # 백그라운드에서 모든 컨슈머들 실행 (태스크 추적)
             task1 = asyncio.create_task(RABBITMQ_CONSUMER.setup_queues_and_consumers())
             task2 = asyncio.create_task(start_bookmark_save_consumer())
             task3 = asyncio.create_task(start_extract_consumer())
-            
+
             CONSUMER_TASKS.extend([task1, task2, task3])
             logger.info("🚀 모든 RabbitMQ 컨슈머 설정 완료")
         else:
@@ -107,7 +109,7 @@ async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
 
     # 종료 시
     logger.info("애플리케이션 종료 시작")
-    
+
     # 메트릭 수집기 정리
     if METRICS_COLLECTOR_TASK:
         try:
@@ -118,7 +120,7 @@ async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
             logger.info("메트릭 수집기 취소 완료")
         except Exception as e:
             logger.error(f"메트릭 수집기 정리 실패: {e}")
-    
+
     # 프로파일 업데이트 리스너 정리
     if PROFILE_UPDATE_LISTENER:
         try:
@@ -126,7 +128,7 @@ async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
             logger.info("프로파일 업데이트 리스너 정리 완료")
         except Exception as e:
             logger.error(f"프로파일 업데이트 리스너 정리 실패: {e}")
-    
+
     # 추천 피드백 서비스 정리
     if RECOMMENDATION_FEEDBACK_SERVICE:
         try:
@@ -134,14 +136,14 @@ async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
             logger.info("추천 피드백 서비스 정리 완료")
         except Exception as e:
             logger.error(f"추천 피드백 서비스 정리 실패: {e}")
-    
+
     # RabbitMQ 컨슈머 정리
     if RABBITMQ_CONSUMER:
         try:
             await RABBITMQ_CONSUMER.close_connection()
         except Exception as e:
             logger.error(f"RabbitMQ 연결 정리 실패: {e}")
-    
+
     # 백그라운드 태스크들 정리
     if CONSUMER_TASKS:
         logger.info(f"백그라운드 태스크 {len(CONSUMER_TASKS)}개 정리 중...")
@@ -154,7 +156,7 @@ async def lifespan(fastapi_app: FastAPI):  # pylint: disable=unused-argument
                     logger.debug("태스크 취소 완료")
                 except Exception as e:
                     logger.warning(f"태스크 정리 중 오류: {e}")
-    
+
     logger.info("애플리케이션 종료 완료")
 
 
@@ -178,31 +180,31 @@ except Exception as e:
 async def track_requests(request: Request, call_next):
     """HTTP 요청을 추적하는 미들웨어"""
     start_time = time.time()
-    
+
     # 요청 처리
     response = await call_next(request)
-    
+
     # 메트릭 수집
     duration = time.time() - start_time
     metrics = get_prometheus_metrics()
-    
+
     # HTTP 메트릭 수집
     endpoint = str(request.url.path)
     method = request.method
     status_code = response.status_code
-    
+
     # 메트릭 업데이트
     metrics.http_requests_total.labels(
         method=method,
         endpoint=endpoint,
         status=status_code
     ).inc()
-    
+
     metrics.http_request_duration.labels(
         method=method,
         endpoint=endpoint
     ).observe(duration)
-    
+
     return response
 
 app.add_middleware(
@@ -236,13 +238,13 @@ async def root():
 async def health_check():
     """헬스 체크 엔드포인트"""
     global PROFILE_UPDATE_LISTENER, RECOMMENDATION_FEEDBACK_SERVICE, RABBITMQ_CONSUMER
-    
+
     # 서비스 상태 확인
     profile_listener_status = "running" if (PROFILE_UPDATE_LISTENER and PROFILE_UPDATE_LISTENER.is_processing) else "stopped"
     feedback_service_status = "running" if (RECOMMENDATION_FEEDBACK_SERVICE and RECOMMENDATION_FEEDBACK_SERVICE.is_processing) else "stopped"
     rabbitmq_status = "connected" if RABBITMQ_CONSUMER else "disabled"
     metrics_status = "running" if (METRICS_COLLECTOR_TASK and not METRICS_COLLECTOR_TASK.done()) else "stopped"
-    
+
     return {
         "status": "healthy",
         "services": {
@@ -263,9 +265,10 @@ async def health_check():
 async def get_metrics():
     """Prometheus 메트릭 엔드포인트"""
     from fastapi import Response
-    
+
     try:
-        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
         # 메트릭 데이터 생성
         metrics_data = generate_latest()
         return Response(
@@ -296,12 +299,12 @@ def get_feedback_service() -> RecommendationFeedbackService:
 async def test_bookmark_metrics():
     """북마크 메트릭 테스트용 엔드포인트"""
     metrics = get_prometheus_metrics()
-    
+
     # 다양한 북마크 작업 메트릭 생성
     metrics.increment_bookmark_operation("get_user_bookmarks", "success")
     metrics.increment_bookmark_operation("get_recent_bookmarks", "success")
     metrics.increment_bookmark_operation("save", "success")
     metrics.increment_bookmark_operation("save", "started")
     metrics.increment_bookmark_operation("get_for_analysis", "success")
-    
+
     return {"message": "북마크 메트릭 테스트 완료", "generated_metrics": 5}

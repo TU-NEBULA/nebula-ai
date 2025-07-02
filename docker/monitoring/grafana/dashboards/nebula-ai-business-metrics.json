@@ -1,0 +1,202 @@
+{
+  "id": null,
+  "title": "Nebula AI - 비즈니스 메트릭 & DB/Queue",
+  "uid": "nebula-business-monitoring",
+  "tags": ["nebula-ai", "business", "database", "celery"],
+  "style": "dark",
+  "timezone": "browser",
+  "refresh": "30s",
+  "schemaVersion": 27,
+  "version": 1,
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "📚 북마크 작업",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "rate(bookmark_operations_total[5m])",
+          "legendFormat": "{{operation_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "ops"
+        }
+      },
+      "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0}
+    },
+    {
+      "id": 2,
+      "title": "🎯 추천 요청",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "rate(recommendation_requests_total[5m])",
+          "legendFormat": "{{recommendation_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "reqps"
+        }
+      },
+      "gridPos": {"h": 8, "w": 6, "x": 6, "y": 0}
+    },
+    {
+      "id": 3,
+      "title": "🔍 벡터 연산",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "rate(vector_operations_total[5m])",
+          "legendFormat": "{{operation_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "ops"
+        }
+      },
+      "gridPos": {"h": 8, "w": 6, "x": 12, "y": 0}
+    },
+    {
+      "id": 4,
+      "title": "🔗 클러스터링 작업",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "rate(clustering_operations_total[5m])",
+          "legendFormat": "{{operation_type}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "ops"
+        }
+      },
+      "gridPos": {"h": 8, "w": 6, "x": 18, "y": 0}
+    },
+    {
+      "id": 5,
+      "title": "🗄️ 데이터베이스 연결 풀",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "database_connections_pool",
+          "legendFormat": "{{status}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 9, "w": 12, "x": 0, "y": 8}
+    },
+    {
+      "id": 6,
+      "title": "🔄 Celery 큐 상태",
+      "type": "timeseries",
+      "targets": [
+        {
+          "expr": "celery_tasks_pending",
+          "legendFormat": "대기 중"
+        },
+        {
+          "expr": "celery_tasks_active",
+          "legendFormat": "실행 중"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10
+          },
+          "unit": "short"
+        }
+      },
+      "gridPos": {"h": 9, "w": 12, "x": 12, "y": 8}
+    },
+    {
+      "id": 7,
+      "title": "❌ Celery 실패 작업",
+      "type": "stat",
+      "targets": [
+        {
+          "expr": "rate(celery_tasks_failed_total[5m])",
+          "legendFormat": "실패/분"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {"color": "green", "value": null},
+              {"color": "yellow", "value": 0.1},
+              {"color": "red", "value": 1}
+            ]
+          },
+          "unit": "ops"
+        }
+      },
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 17}
+    },
+    {
+      "id": 8,
+      "title": "📊 작업 처리 시간",
+      "type": "histogram",
+      "targets": [
+        {
+          "expr": "celery_task_duration_seconds_bucket",
+          "legendFormat": "{{le}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "s"
+        }
+      },
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 17}
+    },
+    {
+      "id": 9,
+      "title": "🚀 HTTP 응답 시간 분포",
+      "type": "histogram",
+      "targets": [
+        {
+          "expr": "http_request_duration_seconds_bucket",
+          "legendFormat": "{{le}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {"mode": "palette-classic"},
+          "unit": "s"
+        }
+      },
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 17}
+    }
+  ]
+} 
