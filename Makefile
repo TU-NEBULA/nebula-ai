@@ -6,6 +6,20 @@
 # 📦 기본 개발 명령어 (가장 자주 사용)
 # ============================================================================
 
+.PHONY: help-lint
+help-lint:
+	@echo "🔍 린트 관련 명령어:"
+	@echo "  make lint                     - 전체 프로젝트 린트 검사"
+	@echo "  make lint-file FILE=파일경로   - 특정 파일 린트 검사"
+	@echo "  make lint-fix-file FILE=파일경로 - 특정 파일 자동 수정 후 린트 검사"
+	@echo "  ./scripts/lint_file.sh 파일경로 - 스크립트로 파일 린트 (기본: 검사만)"
+	@echo "  ./scripts/lint_file.sh --fix 파일경로 - 스크립트로 파일 자동 수정"
+	@echo ""
+	@echo "예시:"
+	@echo "  make lint-file FILE=app/main.py"
+	@echo "  ./scripts/lint_file.sh app/main.py"
+	@echo "  ./scripts/lint_file.sh --fix app/main.py"
+
 .PHONY: dev
 dev: test stop build start
 	@echo "🎉 개발 환경이 준비되었습니다!"
@@ -177,6 +191,51 @@ format:
 	@echo "=== Trailing whitespace 제거 ==="
 	@find $(FASTAPI_SRC) -type f -name '*.py' \
 	  -exec sed -i 's/[[:blank:]]\+$$//' {} +
+
+.PHONY: lint-file
+lint-file:
+	@if [ -z "$(FILE)" ]; then \
+		echo "❌ 사용법: make lint-file FILE=파일경로"; \
+		echo "예시: make lint-file FILE=app/main.py"; \
+		exit 1; \
+	fi
+	@echo "🔍 $(FILE) 파일 린트 검사 중..."
+	@if [ -f $(PYLINTRC) ]; then \
+		pylint $(FILE) --rcfile=$(PYLINTRC); \
+	else \
+		pylint $(FILE); \
+	fi
+
+.PHONY: lint-fix-file
+lint-fix-file:
+	@if [ -z "$(FILE)" ]; then \
+		echo "❌ 사용법: make lint-fix-file FILE=파일경로"; \
+		echo "예시: make lint-fix-file FILE=app/main.py"; \
+		exit 1; \
+	fi
+	@echo "🔧 $(FILE) 파일 자동 수정 중..."
+	@# autopep8로 자동 수정 (설치되어 있다면)
+	@if command -v autopep8 >/dev/null 2>&1; then \
+		autopep8 --in-place --aggressive --aggressive $(FILE); \
+		echo "✅ autopep8 자동 수정 완료"; \
+	fi
+	@# isort로 import 정렬 (설치되어 있다면)
+	@if command -v isort >/dev/null 2>&1; then \
+		isort $(FILE); \
+		echo "✅ import 정렬 완료"; \
+	fi
+	@# black으로 포매팅 (설치되어 있다면)
+	@if command -v black >/dev/null 2>&1; then \
+		black $(FILE); \
+		echo "✅ black 포매팅 완료"; \
+	fi
+	@# 마지막에 pylint 검사
+	@echo "🔍 최종 pylint 검사..."
+	@if [ -f $(PYLINTRC) ]; then \
+		pylint $(FILE) --rcfile=$(PYLINTRC) || true; \
+	else \
+		pylint $(FILE) || true; \
+	fi
 
 # ============================================================================
 # 🔴 Redis 관리 명령어
