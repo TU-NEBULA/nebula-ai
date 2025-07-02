@@ -2,19 +2,23 @@ version: '3.8'
 
 services:
   web:
-    image: wonjun0120/nebula-ai
+    build: .
     container_name: nebula-ai
     restart: always
     command: pipenv run uvicorn app.main:app --host 0.0.0.0 --port 8000
     ports:
       - "8000:8000"
+    volumes:
+      - ./app:/app/app  # 로컬 app 디렉토리를 컨테이너에 마운트
     env_file:
       - .env
 
   celery_worker:
-    image: wonjun0120/nebula-ai
+    build: .
     container_name: celery_worker
     command: pipenv run celery -A app.core.celery_worker worker --loglevel=info -Q bookmark_save,user_profile,user_analysis,recommendations,analytics,monitoring
+    volumes:
+      - ./app:/app/app  # 로컬 app 디렉토리를 컨테이너에 마운트
     env_file:
       - .env
 

@@ -7,6 +7,7 @@ OpenAI API를 이용한 스트리밍 채팅과 관련 로직을 처리합니다.
 import json
 import uuid
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Tuple, AsyncGenerator
 
@@ -15,9 +16,12 @@ from loguru import logger
 from openai import AsyncOpenAI
 
 from app.core.config import settings
+from app.core.monitoring import get_prometheus_metrics
 from app.schemas.chat import ChatRequestModel
 from app.repositories.chat_repository import ChatRepository
 # 같은 패키지 내 서비스들은 상대 import 사용하지 않고 직접 인스턴스 생성
+
+prometheus_metrics = get_prometheus_metrics()
 
 
 class ChatStreamService:
@@ -121,9 +125,20 @@ class ChatStreamService:
 
     async def _perform_rag_search(self, user_id: int, message: str) -> List[Tuple[str, Dict[str, Any]]]:
         """RAG 검색 수행"""
+        start_time = time.time()
         try:
-            return await self.rag_search_service.retrieve_context(user_id, message)
+            result = await self.rag_search_service.retrieve_context(user_id, message)
+            
+            # 벡터 검색 메트릭 기록
+            duration = time.time() - start_time
+            prometheus_metrics.increment_vector_operations("rag_search", "success")
+            prometheus_metrics.record_external_api_call("vector_search", "rag_search", duration)
+            
+            return result
         except Exception as e:
+            duration = time.time() - start_time
+            prometheus_metrics.increment_vector_operations("rag_search", "error")
+            prometheus_metrics.record_external_api_call("vector_search", "rag_search_error", duration)
             logger.error(f"❌ 컨텍스트 검색 실패: {e}")
             return []
 
@@ -146,59 +161,71 @@ class ChatStreamService:
         ctx_blocks: List[Tuple[str, Dict[str, Any]]]
     ) -> AsyncGenerator[Dict[str, Any], None]:
         """LLM 응답 스트리밍"""
+        start_time = time.time()
         logger.info("🤖 OpenAI LLM 호출 준비 중...")
         
-        # LLM 설정
-        llm = ChatOpenAI(
-            model=settings.OPENAI_MODEL,
-            streaming=True,
-            temperature=0.7,
-            timeout=30,
-            max_retries=1,
-            model_kwargs={
-                "stream_options": {"include_usage": False},
+        try:
+            # LLM 설정
+            llm = ChatOpenAI(
+                model=settings.OPENAI_MODEL,
+                streaming=True,
+                temperature=0.7,
+                timeout=30,
+                max_retries=1,
+                model_kwargs={
+                    "stream_options": {"include_usage": False},
+                }
+            )
+
+            # 스트리밍 시작 알림
+            yield {
+                "type": "stream_start", 
+                "data": {"timestamp": datetime.now(timezone.utc).isoformat()}
             }
-        )
 
-        # 스트리밍 시작 알림
-        yield {
-            "type": "stream_start", 
-            "data": {"timestamp": datetime.now(timezone.utc).isoformat()}
-        }
+            # 응답 스트리밍
+            token_count = 0
+            chunk_buffer = ""
 
-        # 응답 스트리밍
-        token_count = 0
-        chunk_buffer = ""
-
-        for chunk in llm.stream(messages):
-            if chunk.content:
-                token_count += 1
-                chunk_buffer += chunk.content
-                
-                should_send = self._should_send_chunk(chunk_buffer, chunk.content, token_count)
-                
-                if should_send:
-                    logger.debug(f"📝 토큰 {token_count}: 청크 전송 - {chunk_buffer[:20]}...")
-                    yield {"type": "chunk", "data": chunk_buffer, "content": chunk_buffer}
-                    chunk_buffer = ""
+            for chunk in llm.stream(messages):
+                if chunk.content:
+                    token_count += 1
+                    chunk_buffer += chunk.content
                     
-                    # 진행 상황 알림
-                    if token_count % self.progress_interval == 0:
-                        yield {
-                            "type": "progress", 
-                            "data": {"token_count": token_count, "status": "generating"}
-                        }
+                    should_send = self._should_send_chunk(chunk_buffer, chunk.content, token_count)
                     
-                    await asyncio.sleep(self.stream_delay)
-        
-        # 남은 버퍼 전송
-        if chunk_buffer:
-            logger.debug(f"📝 마지막 청크 전송: {chunk_buffer}")
-            yield {"type": "chunk", "data": chunk_buffer, "content": chunk_buffer}
-        
-        # 스트리밍 완료
-        yield {"type": "stream_complete", "data": "응답 생성 완료"}
-        logger.info(f"✅ 스트림 완료 - {token_count}개 토큰 생성")
+                    if should_send:
+                        logger.debug(f"📝 토큰 {token_count}: 청크 전송 - {chunk_buffer[:20]}...")
+                        yield {"type": "chunk", "data": chunk_buffer, "content": chunk_buffer}
+                        chunk_buffer = ""
+                        
+                        # 진행 상황 알림
+                        if token_count % self.progress_interval == 0:
+                            yield {
+                                "type": "progress", 
+                                "data": {"token_count": token_count, "status": "generating"}
+                            }
+                        
+                        await asyncio.sleep(self.stream_delay)
+            
+            # 남은 버퍼 전송
+            if chunk_buffer:
+                logger.debug(f"📝 마지막 청크 전송: {chunk_buffer}")
+                yield {"type": "chunk", "data": chunk_buffer, "content": chunk_buffer}
+            
+            # 스트리밍 완료
+            yield {"type": "stream_complete", "data": "응답 생성 완료"}
+            
+            # OpenAI API 호출 메트릭 기록
+            duration = time.time() - start_time
+            prometheus_metrics.record_external_api_call("openai", "chat_completion", duration)
+            logger.info(f"🤖 OpenAI LLM 응답 완료 - 토큰: {token_count}개 (소요시간: {duration:.2f}초)")
+            
+        except Exception as e:
+            duration = time.time() - start_time
+            prometheus_metrics.record_external_api_call("openai", "chat_completion_error", duration)
+            logger.error(f"❌ LLM 응답 스트리밍 실패: {e}")
+            raise
 
     def _should_send_chunk(self, chunk_buffer: str, current_content: str, token_count: int) -> bool:
         """청크 전송 여부 결정"""
@@ -216,55 +243,61 @@ class ChatStreamService:
         start_time: datetime,
         ctx_blocks: List[Tuple[str, Dict[str, Any]]]
     ):
-        """AI 응답 저장"""
+        """AI 응답을 데이터베이스에 저장"""
+        save_start_time = time.time()
         try:
-            end_time = datetime.now(timezone.utc)
-            response_time_ms = int((end_time - start_time).total_seconds() * 1000)
-
-            # AI 메시지 저장
-            ai_message = await ChatRepository.save_message(
-                session=None,
+            chat_repo = ChatRepository()
+            
+            # AI 메시지 생성 및 저장
+            ai_message = await chat_repo.save_ai_message(
                 session_id=session_id,
-                content=ai_response,
-                role="assistant",
+                response=ai_response,
                 user_id=user_id,
-                metadata={
-                    "response_time_ms": response_time_ms,
-                    "token_count": len(ai_response.split()),  # 간단한 토큰 추정
-                    "model": settings.OPENAI_MODEL
-                }
+                duration=datetime.now(timezone.utc) - start_time
             )
 
-            # RAG 참조 저장
+            # RAG 참조 정보 저장
             if ctx_blocks:
                 await self._save_rag_references(ai_message.id, ctx_blocks)
 
+            # DB 저장 메트릭 기록
+            duration = time.time() - save_start_time
+            prometheus_metrics.record_database_query("insert", "chats", duration)
+            
+            logger.info(f"💾 AI 응답 저장 완료 - ID: {ai_message.id} (소요시간: {duration:.3f}초)")
             return ai_message
 
-        except Exception as save_error:
-            logger.error(f"❌ AI 메시지 저장 실패: {save_error}")
-            return type('TempMessage', (), {'id': uuid.uuid4()})()
+        except Exception as e:
+            duration = time.time() - save_start_time
+            prometheus_metrics.record_database_query("insert_error", "chats", duration)
+            logger.error(f"❌ AI 응답 저장 실패: {e}")
+            return None
 
     async def _save_rag_references(self, message_id: uuid.UUID, ctx_blocks: List[Tuple[str, Dict[str, Any]]]):
         """RAG 참조 정보 저장"""
+        save_start_time = time.time()
         try:
-            rag_references = []
-            for content, metadata in ctx_blocks:
-                rag_references.append({
-                    "snippet": content,
-                    "title": metadata.get("title", ""),
-                    "url": metadata.get("url", ""),
-                    "source_id": metadata.get("source_id", ""),
-                    "score": float(metadata.get("score", 0.0))
-                })
+            chat_repo = ChatRepository()
+            
+            for content_block, metadata in ctx_blocks:
+                await chat_repo.save_rag_reference(
+                    message_id=message_id,
+                    source_type=metadata.get('source_type', 'unknown'),
+                    source_id=metadata.get('source_id', ''),
+                    relevance_score=float(metadata.get('score', 0.0)),
+                    content_snippet=content_block[:500]  # 처음 500자만 저장
+                )
 
-            await ChatRepository.save_rag_references(
-                session=None,
-                message_id=message_id,
-                references=rag_references
-            )
-        except Exception as rag_error:
-            logger.error(f"❌ RAG 참조 저장 실패: {rag_error}")
+            # RAG 참조 저장 메트릭 기록
+            duration = time.time() - save_start_time
+            prometheus_metrics.record_database_query("insert", "rag_references", duration)
+            
+            logger.debug(f"🔗 RAG 참조 {len(ctx_blocks)}개 저장 완료 (소요시간: {duration:.3f}초)")
+
+        except Exception as e:
+            duration = time.time() - save_start_time
+            prometheus_metrics.record_database_query("insert_error", "rag_references", duration)
+            logger.error(f"❌ RAG 참조 저장 실패: {e}")
 
     async def _update_user_profile(
         self,
@@ -275,17 +308,29 @@ class ChatStreamService:
         start_time: datetime
     ) -> Dict[str, Any]:
         """사용자 프로필 업데이트"""
-        end_time = datetime.now(timezone.utc)
-        session_duration_minutes = (end_time - start_time).total_seconds() / 60
-        
-        return await self.profile_update_service.update_user_ai_profile_after_chat(
-            user_id=request.user_id,
-            user_message=request.message,
-            ai_response=ai_response,
-            ctx_blocks=ctx_blocks,
-            session_id=session_id,
-            session_duration_minutes=session_duration_minutes
-        )
+        profile_start_time = time.time()
+        try:
+            # 프로필 업데이트 서비스 호출
+            result = await self.profile_update_service.process_chat_interaction(
+                user_id=request.user_id,
+                user_message=request.message,
+                ai_response=ai_response,
+                context_blocks=ctx_blocks,
+                session_id=str(session_id)
+            )
+
+            # 프로필 업데이트 메트릭 기록
+            duration = time.time() - profile_start_time
+            prometheus_metrics.record_database_query("update", "user_profiles", duration)
+            
+            logger.info(f"👤 사용자 프로필 업데이트 완료 - User ID: {request.user_id} (소요시간: {duration:.3f}초)")
+            return result
+
+        except Exception as e:
+            duration = time.time() - profile_start_time
+            prometheus_metrics.record_database_query("update_error", "user_profiles", duration)
+            logger.error(f"❌ 사용자 프로필 업데이트 실패: {e}")
+            return {"error": str(e)}
 
     async def _create_completion_message(
         self,
@@ -296,28 +341,23 @@ class ChatStreamService:
         profile_result: Dict[str, Any]
     ) -> str:
         """완료 메시지 생성"""
-        graph_payload = self.visualization_service.create_bookmark_visualization(ctx_blocks, request.message)
+        processing_time = (datetime.now(timezone.utc) - start_time).total_seconds()
         
         completion_data = {
-            "type": "session_end",
+            "type": "chat_complete",
             "data": {
-                "message_id": str(ai_message.id),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "graph_payload": graph_payload,
-                "session_info": {
-                    "user_id": request.user_id,
-                    "session_id": str(request.session_id),
-                    "total_messages": 2,
-                    "processing_time": f"{(datetime.now(timezone.utc) - start_time).total_seconds():.2f}s"
-                },
-                "rag_summary": {
-                    "documents_found": len(ctx_blocks),
-                    "search_successful": len(ctx_blocks) > 0,
-                    "avg_similarity": graph_payload['statistics']['avg_similarity'] if ctx_blocks else 0
-                },
-                "profile_update": profile_result
+                "message_id": str(ai_message.id) if ai_message else None,
+                "session_id": str(request.session_id) if hasattr(request, 'session_id') else None,
+                "user_id": request.user_id,
+                "processing_time": round(processing_time, 2),
+                "context_sources": len(ctx_blocks),
+                "profile_updated": "error" not in profile_result,
+                "profile_update_result": profile_result,
+                "timestamp": datetime.now(timezone.utc).isoformat()
             }
         }
+        
+        logger.info(f"✅ 채팅 완료 - 사용자: {request.user_id}, 처리시간: {processing_time:.2f}초, 컨텍스트: {len(ctx_blocks)}개")
         return f"data: {json.dumps(completion_data, ensure_ascii=False)}\n\n"
 
     async def _get_conversation_history(
@@ -326,89 +366,90 @@ class ChatStreamService:
         user_id: int,
         limit: int = 20
     ) -> List[Dict[str, str]]:
-        """현재 세션의 대화 히스토리를 가져옵니다."""
+        """대화 히스토리 조회"""
+        history_start_time = time.time()
         try:
-            # 현재 세션의 메시지들을 가져옴 (현재 사용자 메시지 제외)
-            messages = await ChatRepository.get_session_messages(
-                session=None,
-                session_id=session_id,
-                user_id=user_id,
+            chat_repo = ChatRepository()
+            messages = await chat_repo.get_session_messages(
+                session_id=session_id, 
+                user_id=user_id, 
                 limit=limit
             )
             
-            # ChatMessage 객체를 딕셔너리로 변환
+            # 대화 히스토리를 langchain 형태로 변환
             conversation_history = []
-            for message in messages:
-                conversation_history.append({
-                    "role": message.role,
-                    "content": message.content
-                })
+            for msg in messages:
+                if msg.message_type == "user":
+                    conversation_history.append({
+                        "role": "user",
+                        "content": msg.content
+                    })
+                elif msg.message_type == "assistant":
+                    conversation_history.append({
+                        "role": "assistant", 
+                        "content": msg.content
+                    })
+
+            # DB 조회 메트릭 기록
+            duration = time.time() - history_start_time
+            prometheus_metrics.record_database_query("select", "chats", duration)
             
-            logger.info(f"📜 대화 히스토리 조회 - session_id: {session_id}, 메시지 수: {len(conversation_history)}")
+            logger.debug(f"📚 대화 히스토리 조회 - 세션: {session_id}, 메시지: {len(conversation_history)}개 (소요시간: {duration:.3f}초)")
             return conversation_history
-            
+
         except Exception as e:
+            duration = time.time() - history_start_time
+            prometheus_metrics.record_database_query("select_error", "chats", duration)
             logger.error(f"❌ 대화 히스토리 조회 실패: {e}")
             return []
 
     async def generate_session_title(self, user_message: str) -> str:
-        """
-        사용자의 첫 번째 메시지를 기반으로 적절한 세션 제목을 생성합니다.
-        
-        Args:
-            user_message: 사용자의 첫 번째 메시지
-            
-        Returns:
-            생성된 세션 제목 (최대 50자)
-        """
+        """사용자 메시지를 기반으로 세션 제목 생성"""
+        title_start_time = time.time()
         try:
-            # 제목 생성을 위한 프롬프트
-            title_prompt = f"""다음 사용자 메시지를 바탕으로 대화 세션의 적절한 제목을 생성해주세요.
+            # 제목 생성을 위한 간단한 프롬프트
+            title_prompt = [
+                {
+                    "role": "system",
+                    "content": (
+                        "사용자의 메시지를 바탕으로 간단하고 명확한 대화 제목을 한국어로 생성해주세요. "
+                        "제목은 15자 이하로 작성하고, 대화의 핵심 주제를 담아주세요. "
+                        "제목만 반환하고 다른 설명은 포함하지 마세요."
+                    )
+                },
+                {
+                    "role": "user", 
+                    "content": f"다음 메시지의 제목을 생성해주세요: {user_message[:200]}"
+                }
+            ]
 
-사용자 메시지: "{user_message}"
-
-요구사항:
-- 한국어로 작성
-- 최대 50자 이내
-- 메시지의 핵심 주제나 의도를 간결하게 표현
-- 구체적이고 의미있는 제목
-- 특수문자나 이모지 사용 금지
-
-예시:
-- "Python 리스트 정렬 방법" (정렬에 대한 질문인 경우)
-- "React 컴포넌트 최적화" (React 성능에 대한 질문인 경우)
-- "데이터베이스 설계 조언" (DB 설계에 대한 질문인 경우)
-
-제목만 응답해주세요:"""
-
+            # OpenAI API 호출
             response = await self.client.chat.completions.create(
-                model="gpt-3.5-turbo",  # 간단한 제목 생성이므로 가벼운 모델 사용
-                messages=[
-                    {"role": "system", "content": "당신은 대화 제목을 생성하는 전문가입니다. 간결하고 명확한 제목을 만들어주세요."},
-                    {"role": "user", "content": title_prompt}
-                ],
-                max_tokens=100,
-                temperature=0.7,
-                timeout=10.0  # 10초 타임아웃
+                model=settings.OPENAI_MODEL,
+                messages=title_prompt,
+                max_tokens=50,
+                temperature=0.5,
+                timeout=10
             )
-            
-            generated_title = response.choices[0].message.content.strip()
-            
-            # 제목 길이 제한 및 정리
-            if len(generated_title) > 50:
-                generated_title = generated_title[:47] + "..."
+
+            if response.choices and response.choices[0].message.content:
+                title = response.choices[0].message.content.strip().replace('"', '')
                 
-            # 따옴표 제거
-            generated_title = generated_title.strip('"\'')
-            
-            logger.info(f"🏷️ 세션 제목 생성 완료: '{generated_title}'")
-            return generated_title
-            
-        except asyncio.TimeoutError:
-            logger.warning("⏰ 제목 생성 타임아웃 - 기본 제목 사용")
-            return self._generate_fallback_title(user_message)
+                # 제목 생성 성공 메트릭
+                duration = time.time() - title_start_time
+                prometheus_metrics.record_external_api_call("openai", "title_generation", duration)
+                
+                logger.info(f"📝 세션 제목 생성 완료: '{title}' (소요시간: {duration:.2f}초)")
+                return title
+            else:
+                # 응답이 없는 경우
+                prometheus_metrics.record_external_api_call("openai", "title_generation_empty", time.time() - title_start_time)
+                return self._generate_fallback_title(user_message)
+
         except Exception as e:
-            logger.error(f"❌ 제목 생성 실패: {e} - 기본 제목 사용")
+            duration = time.time() - title_start_time
+            prometheus_metrics.record_external_api_call("openai", "title_generation_error", duration)
+            logger.error(f"❌ 제목 생성 실패: {e}")
             return self._generate_fallback_title(user_message)
     
     def _generate_fallback_title(self, user_message: str) -> str:

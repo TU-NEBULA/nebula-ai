@@ -34,6 +34,7 @@ results = await vector_service.similarity_search_with_chunk_aggregation(
 )
 ```
 """
+import time
 from typing import List, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from langchain_openai import OpenAIEmbeddings
@@ -41,6 +42,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from loguru import logger
 
 from app.core.config import settings
+from app.core.monitoring import prometheus_metrics
 from app.repositories.vector_repository import VectorRepository
 from app.models.chat import DocumentVector
 
@@ -87,6 +89,7 @@ class VectorService:
         Returns:
             저장된 DocumentVector 객체들의 리스트
         """
+        start_time = time.time()
         source_id = source_data.get('source_id')
         source_type = source_data.get('source_type')
         title = kwargs.get('title')
@@ -97,39 +100,65 @@ class VectorService:
 
         logger.info(f"📝 문서 처리 시작 - user_id: {user_id}, source_id: {source_id}")
 
-        # 1. 텍스트를 청크로 분할
-        chunks = self.text_splitter.split_text(content)
-        logger.info(f"📄 텍스트 분할 완료 - 청크 수: {len(chunks)}")
+        try:
+            # 벡터 작업 시작 메트릭
+            prometheus_metrics.increment_vector_operations("save_document", "started")
 
-        if not chunks:
-            logger.warning("분할된 청크가 없습니다")
-            return []
+            # 1. 텍스트를 청크로 분할
+            chunks = self.text_splitter.split_text(content)
+            logger.info(f"📄 텍스트 분할 완료 - 청크 수: {len(chunks)}")
 
-        # 2. 각 청크에 대해 임베딩 생성
-        logger.info("🧠 임베딩 생성 중...")
-        embeddings = await self.embeddings.aembed_documents(chunks)
-        logger.info(f"✅ 임베딩 생성 완료 - 벡터 수: {len(embeddings)}")
+            if not chunks:
+                logger.warning("분할된 청크가 없습니다")
+                prometheus_metrics.increment_vector_operations("save_document", "no_chunks")
+                return []
 
-        # 3. 벡터 저장소에 저장
-        saved_vectors = await VectorRepository.save_document_vectors(
-            session=session,
-            user_id=user_id,
-            source_id=source_id,
-            source_type=source_type,
-            chunks=chunks,
-            embeddings=embeddings,
-            title=title,
-            url=url,
-            keywords=keywords,
-            summary=summary,
-            embedding_model=self.embeddings.model,
-            chunk_size=getattr(self.text_splitter, 'chunk_size', 1000),
-            chunk_overlap=getattr(self.text_splitter, 'chunk_overlap', 200),
-            extra_metadata=extra_metadata
-        )
+            # 2. 각 청크에 대해 임베딩 생성
+            logger.info("🧠 임베딩 생성 중...")
+            embedding_start = time.time()
+            embeddings = await self.embeddings.aembed_documents(chunks)
+            embedding_duration = time.time() - embedding_start
+            logger.info(f"✅ 임베딩 생성 완료 - 벡터 수: {len(embeddings)}")
+            
+            # OpenAI API 호출 시간 기록
+            prometheus_metrics.record_external_api_call("openai", "embeddings", embedding_duration)
 
-        logger.info(f"🎉 문서 저장 완료 - user_id: {user_id}, source_id: {source_id}")
-        return saved_vectors
+            # 3. 벡터 저장소에 저장
+            db_start = time.time()
+            saved_vectors = await VectorRepository.save_document_vectors(
+                session=session,
+                user_id=user_id,
+                source_id=source_id,
+                source_type=source_type,
+                chunks=chunks,
+                embeddings=embeddings,
+                title=title,
+                url=url,
+                keywords=keywords,
+                summary=summary,
+                embedding_model=self.embeddings.model,
+                chunk_size=getattr(self.text_splitter, 'chunk_size', 1000),
+                chunk_overlap=getattr(self.text_splitter, 'chunk_overlap', 200),
+                extra_metadata=extra_metadata
+            )
+            db_duration = time.time() - db_start
+            
+            # 데이터베이스 저장 시간 기록
+            prometheus_metrics.record_database_query("insert", "document_vectors", db_duration)
+
+            # 성공 메트릭 기록
+            total_duration = time.time() - start_time
+            prometheus_metrics.increment_vector_operations("save_document", "success")
+
+            logger.info(f"🎉 문서 저장 완료 - user_id: {user_id}, source_id: {source_id}")
+            return saved_vectors
+
+        except Exception as e:
+            # 실패 메트릭 기록
+            total_duration = time.time() - start_time
+            prometheus_metrics.increment_vector_operations("save_document", "error")
+            logger.error(f"❌ 문서 저장 실패 - user_id: {user_id}, source_id: {source_id}, 오류: {e}")
+            raise
 
     async def save_document_chunk(
         self,
@@ -221,6 +250,7 @@ class VectorService:
         Returns:
             (DocumentVector, similarity_score) 튜플들의 리스트
         """
+        start_time = time.time()
         user_id = kwargs.get('user_id')
         source_types = kwargs.get('source_types')
         limit = kwargs.get('limit', 10)
@@ -230,9 +260,17 @@ class VectorService:
         logger.info(f"📊 검색 설정 - limit: {limit}, threshold: {similarity_threshold}")
 
         try:
+            # 벡터 검색 시작 메트릭
+            prometheus_metrics.increment_vector_operations("similarity_search", "started")
+
             # 쿼리를 임베딩으로 변환
             logger.info("🧠 쿼리 임베딩 생성 중...")
+            embedding_start = time.time()
             query_embedding = await self.embeddings.aembed_query(query)
+            embedding_duration = time.time() - embedding_start
+            
+            # OpenAI API 호출 시간 기록
+            prometheus_metrics.record_external_api_call("openai", "query_embedding", embedding_duration)
             
             # 임베딩 검증
             embedding_magnitude = sum(abs(x) for x in query_embedding)
@@ -243,6 +281,7 @@ class VectorService:
                 
             # 벡터 유사도 검색 수행
             logger.info("🔍 데이터베이스 벡터 검색 수행 중...")
+            db_start = time.time()
             results = await VectorRepository.similarity_search(
                 session=session,
                 query_embedding=query_embedding,
@@ -251,6 +290,14 @@ class VectorService:
                 limit=limit,
                 similarity_threshold=similarity_threshold
             )
+            db_duration = time.time() - db_start
+            
+            # 데이터베이스 검색 시간 기록
+            prometheus_metrics.record_database_query("vector_search", "document_vectors", db_duration)
+
+            # 성공 메트릭 기록
+            total_duration = time.time() - start_time
+            prometheus_metrics.increment_vector_operations("similarity_search", "success")
 
             if results:
                 logger.info(f"✅ 벡터 검색 성공 - 결과 수: {len(results)}")
@@ -258,10 +305,14 @@ class VectorService:
                     logger.info(f"  🔍 {i+1}. '{doc.title[:30]}...' (점수: {score:.3f})")
             else:
                 logger.warning("⚠️ 벡터 검색 결과가 없습니다")
+                prometheus_metrics.increment_vector_operations("similarity_search", "no_results")
             
             return results
             
         except Exception as e:
+            # 실패 메트릭 기록
+            total_duration = time.time() - start_time
+            prometheus_metrics.increment_vector_operations("similarity_search", "error")
             logger.error(f"❌ 벡터 검색 중 오류 발생: {e}")
             return []
 

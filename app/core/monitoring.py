@@ -8,8 +8,57 @@
 import time
 import asyncio
 import psutil
-from prometheus_client import Counter, Histogram, Gauge, start_http_server, generate_latest
-from prometheus_fastapi_instrumentator import Instrumentator, metrics
+try:
+    from prometheus_client import Counter, Histogram, Gauge, start_http_server, generate_latest
+    from prometheus_fastapi_instrumentator import Instrumentator, metrics
+    PROMETHEUS_AVAILABLE = True
+except ImportError:
+    # Prometheus가 설치되지 않은 경우 더미 클래스들을 정의
+    PROMETHEUS_AVAILABLE = False
+    
+    class Counter:
+        def __init__(self, *args, **kwargs):
+            pass
+        def labels(self, *args, **kwargs):
+            return self
+        def inc(self, *args, **kwargs):
+            pass
+    
+    class Histogram:
+        def __init__(self, *args, **kwargs):
+            pass
+        def labels(self, *args, **kwargs):
+            return self
+        def observe(self, *args, **kwargs):
+            pass
+    
+    class Gauge:
+        def __init__(self, *args, **kwargs):
+            pass
+        def set(self, *args, **kwargs):
+            pass
+    
+    class Instrumentator:
+        def __init__(self, *args, **kwargs):
+            pass
+        def add(self, *args, **kwargs):
+            return self
+        def instrument(self, *args, **kwargs):
+            pass
+        def expose(self, *args, **kwargs):
+            pass
+    
+    class metrics:
+        @staticmethod
+        def request_size(*args, **kwargs):
+            pass
+        @staticmethod
+        def response_size(*args, **kwargs):
+            pass
+    
+    def generate_latest():
+        return "# Prometheus not available\n"
+
 from fastapi import FastAPI, Request, Response
 from typing import Callable
 from loguru import logger
@@ -134,6 +183,14 @@ class PrometheusMetrics:
         """Celery 작업 시간 기록"""
         self.celery_task_duration.labels(task_name=task_name, status=status).observe(duration)
     
+    def increment_vector_operations(self, operation: str, status: str = "success"):
+        """벡터 연산 메트릭 증가"""
+        self.vector_operations_total.labels(operation=operation, status=status).inc()
+    
+    def increment_clustering_operations(self, operation: str, status: str = "success"):
+        """클러스터링 작업 메트릭 증가"""
+        self.clustering_operations_total.labels(operation=operation, status=status).inc()
+    
     def update_system_metrics(self):
         """시스템 리소스 메트릭 업데이트"""
         try:
@@ -163,6 +220,10 @@ def setup_prometheus_metrics(app: FastAPI) -> Instrumentator:
     Returns:
         Instrumentator 인스턴스
     """
+    
+    if not PROMETHEUS_AVAILABLE:
+        logger.warning("Prometheus client not available - metrics will be disabled")
+        return Instrumentator()
     
     # Instrumentator 초기화
     instrumentator = Instrumentator(
@@ -213,8 +274,8 @@ def setup_prometheus_metrics(app: FastAPI) -> Instrumentator:
     # 애플리케이션에 설정 적용
     instrumentator.instrument(app)
     
-    # 메트릭 엔드포인트 노출
-    instrumentator.expose(app, endpoint="/metrics")
+    # 메트릭 엔드포인트는 main.py에서 수동으로 설정됨
+    # instrumentator.expose(app, endpoint="/metrics")
     
     return instrumentator
 

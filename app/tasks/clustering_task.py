@@ -12,6 +12,7 @@
 """
 
 import asyncio
+import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 from celery import Celery
@@ -21,6 +22,7 @@ from sqlalchemy import select, func, and_, desc
 
 from app.core.celery_worker import celery as celery_app
 from app.core.database import get_async_session
+from app.core.monitoring import prometheus_metrics
 from app.services.clustering_service import ClusteringService, ClusteringConfig
 from app.models.clustering import (
     UserCluster, ClusteringJobHistory, ClusterQualityMetrics
@@ -41,7 +43,31 @@ def full_clustering_task(self, config_override: Optional[Dict[str, Any]] = None)
     Returns:
         Dict: 작업 결과
     """
-    return asyncio.run(_run_full_clustering(config_override))
+    start_time = time.time()
+    
+    try:
+        # 클러스터링 작업 시작 메트릭
+        prometheus_metrics.increment_clustering_operations("full_clustering", "started")
+        
+        result = asyncio.run(_run_full_clustering(config_override))
+        
+        # 성공/실패에 따른 메트릭 기록
+        duration = time.time() - start_time
+        if result.get("status") == "success":
+            prometheus_metrics.record_celery_task("full_clustering", "success", duration)
+            prometheus_metrics.increment_clustering_operations("full_clustering", "success")
+        else:
+            prometheus_metrics.record_celery_task("full_clustering", "error", duration)
+            prometheus_metrics.increment_clustering_operations("full_clustering", "error")
+        
+        return result
+        
+    except Exception as e:
+        # 예외 발생 시 메트릭 기록
+        duration = time.time() - start_time
+        prometheus_metrics.record_celery_task("full_clustering", "error", duration)
+        prometheus_metrics.increment_clustering_operations("full_clustering", "error")
+        raise
 
 
 @celery_app.task(bind=True, name="clustering.incremental_clustering")
@@ -66,7 +92,31 @@ def quality_monitoring_task(self):
     Returns:
         Dict: 모니터링 결과
     """
-    return asyncio.run(_run_quality_monitoring())
+    start_time = time.time()
+    
+    try:
+        # 모니터링 작업 시작 메트릭
+        prometheus_metrics.increment_clustering_operations("quality_monitoring", "started")
+        
+        result = asyncio.run(_run_quality_monitoring())
+        
+        # 성공/실패에 따른 메트릭 기록
+        duration = time.time() - start_time
+        if result.get("status") == "success":
+            prometheus_metrics.record_celery_task("quality_monitoring", "success", duration)
+            prometheus_metrics.increment_clustering_operations("quality_monitoring", "success")
+        else:
+            prometheus_metrics.record_celery_task("quality_monitoring", "error", duration)
+            prometheus_metrics.increment_clustering_operations("quality_monitoring", "error")
+        
+        return result
+        
+    except Exception as e:
+        # 예외 발생 시 메트릭 기록
+        duration = time.time() - start_time
+        prometheus_metrics.record_celery_task("quality_monitoring", "error", duration)
+        prometheus_metrics.increment_clustering_operations("quality_monitoring", "error")
+        raise
 
 
 @celery_app.task(bind=True, name="clustering.auto_reclustering")

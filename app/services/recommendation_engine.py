@@ -6,6 +6,7 @@
 """
 import asyncio
 import logging
+import time
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
@@ -18,6 +19,7 @@ from sqlmodel import select, and_, desc, func
 
 from app.core.config import settings
 from app.core.database import get_async_session
+from app.core.monitoring import get_prometheus_metrics
 from app.models.user_profile import UserProfile, Recommendation, RecommendationCreate
 from app.models.bookmark import BookmarkAIStatus
 from app.models.chat import DocumentVector
@@ -26,6 +28,7 @@ from app.services.vector_service import VectorService
 from app.services.similarity_service import SimilarityService
 
 log = logging.getLogger(__name__)
+prometheus_metrics = get_prometheus_metrics()
 
 
 class RecommendationEngine:
@@ -57,12 +60,14 @@ class RecommendationEngine:
         Returns:
             추천 북마크 리스트
         """
+        start_time = time.time()
         try:
             async for session in get_async_session():
                 # 1. 사용자 프로파일 조회
                 user_profile = await self._get_user_profile(session, user_id)
                 if not user_profile:
                     log.warning(f"사용자 {user_id}의 프로파일이 없습니다.")
+                    prometheus_metrics.increment_recommendation_request("general", "no_profile")
                     return []
 
                 # 2. 클러스터 기반 추천 후보 수집
@@ -115,10 +120,18 @@ class RecommendationEngine:
                         rec, user_profile
                     )
 
-                log.info(f"사용자 {user_id}에게 {len(final_recommendations)}개의 일반 추천 생성")
+                # 메트릭 기록
+                duration = time.time() - start_time
+                prometheus_metrics.increment_recommendation_request("general", "success")
+                prometheus_metrics.record_external_api_call("recommendation_engine", "general", duration)
+                
+                log.info(f"사용자 {user_id}에게 {len(final_recommendations)}개의 일반 추천 생성 (소요시간: {duration:.2f}초)")
                 return final_recommendations
 
         except Exception as e:
+            duration = time.time() - start_time
+            prometheus_metrics.increment_recommendation_request("general", "error")
+            prometheus_metrics.record_external_api_call("recommendation_engine", "general_error", duration)
             log.error(f"일반 추천 생성 중 오류: {e}")
             return []
 
@@ -141,12 +154,14 @@ class RecommendationEngine:
         Returns:
             검색어 기반 추천 북마크 리스트
         """
+        start_time = time.time()
         try:
             async for session in get_async_session():
                 # 1. 검색어 임베딩 생성
                 search_embedding = await self._create_search_embedding(search_query)
                 if np.allclose(search_embedding, 0.0):
                     log.warning("검색어 임베딩 생성 실패")
+                    prometheus_metrics.increment_recommendation_request("search_based", "embedding_error")
                     return []
 
                 # 2. 사용자 프로파일 조회
@@ -189,10 +204,18 @@ class RecommendationEngine:
                     )
                     rec['search_query'] = search_query
 
-                log.info(f"검색어 '{search_query}'로 사용자 {user_id}에게 {len(final_recommendations)}개 추천 생성")
+                # 메트릭 기록
+                duration = time.time() - start_time
+                prometheus_metrics.increment_recommendation_request("search_based", "success")
+                prometheus_metrics.record_external_api_call("recommendation_engine", "search_based", duration)
+
+                log.info(f"검색어 '{search_query}'로 사용자 {user_id}에게 {len(final_recommendations)}개 추천 생성 (소요시간: {duration:.2f}초)")
                 return final_recommendations
 
         except Exception as e:
+            duration = time.time() - start_time
+            prometheus_metrics.increment_recommendation_request("search_based", "error")
+            prometheus_metrics.record_external_api_call("recommendation_engine", "search_based_error", duration)
             log.error(f"검색 기반 추천 생성 중 오류: {e}")
             return []
 
@@ -200,12 +223,21 @@ class RecommendationEngine:
 
     async def _get_user_profile(self, session: AsyncSession, user_id: int) -> Optional[UserProfile]:
         """사용자 프로파일 조회"""
+        start_time = time.time()
         try:
             result = await session.execute(
                 select(UserProfile).where(UserProfile.user_id == user_id)
             )
-            return result.scalar_one_or_none()
+            profile = result.scalar_one_or_none()
+            
+            # DB 쿼리 시간 기록
+            duration = time.time() - start_time
+            prometheus_metrics.record_database_query("select", "user_profiles", duration)
+            
+            return profile
         except Exception as e:
+            duration = time.time() - start_time
+            prometheus_metrics.record_database_query("select_error", "user_profiles", duration)
             log.error(f"사용자 프로파일 조회 오류: {e}")
             return None
 

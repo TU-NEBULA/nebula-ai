@@ -51,7 +51,7 @@
         "type": "stat",
         "targets": [
           {
-            "expr": "avg(http_request_duration_seconds)",
+            "expr": "http_request_duration_seconds_sum / http_request_duration_seconds_count",
             "legendFormat": "평균 응답시간"
           }
         ],
@@ -88,7 +88,7 @@
         "type": "stat",
         "targets": [
           {
-            "expr": "rate(http_requests_total{status=~\"4..|5..\"}[5m]) / rate(http_requests_total[5m]) * 100",
+            "expr": "(sum(http_requests_total{status=~\"4..|5..\"}) or vector(0)) / sum(http_requests_total) * 100",
             "legendFormat": "에러율"
           }
         ],
@@ -270,7 +270,7 @@
         "type": "timeseries",
         "targets": [
           {
-            "expr": "rate(bookmark_operations_total[5m])",
+            "expr": "bookmark_operations_total",
             "legendFormat": "{{operation}} - {{status}}"
           }
         ],
@@ -295,7 +295,7 @@
         "type": "timeseries",
         "targets": [
           {
-            "expr": "rate(recommendation_requests_total[5m])",
+            "expr": "recommendation_requests_total",
             "legendFormat": "{{type}} - {{status}}"
           }
         ],
@@ -304,7 +304,7 @@
             "color": {
               "mode": "palette-classic"
             },
-            "unit": "ops"
+            "unit": "short"
           }
         },
         "gridPos": {
@@ -348,8 +348,8 @@
         "type": "timeseries",
         "targets": [
           {
-            "expr": "histogram_quantile(0.95, rate(database_query_duration_seconds_bucket[5m]))",
-            "legendFormat": "95th percentile - {{query_type}}"
+            "expr": "database_query_duration_seconds_count",
+            "legendFormat": "쿼리 수 - {{query_type}} - {{table}}"
           }
         ],
         "fieldConfig": {
@@ -373,8 +373,8 @@
         "type": "timeseries",
         "targets": [
           {
-            "expr": "histogram_quantile(0.95, rate(external_api_duration_seconds_bucket[5m]))",
-            "legendFormat": "95th percentile - {{service}}"
+            "expr": "external_api_duration_seconds_count",
+            "legendFormat": "API 호출 수 - {{service}}"
           }
         ],
         "fieldConfig": {

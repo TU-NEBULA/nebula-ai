@@ -17,6 +17,7 @@ import asyncio
 import logging
 import concurrent.futures
 from datetime import datetime
+import time
 
 from loguru import logger
 from app.core.celery_worker import celery
@@ -31,6 +32,7 @@ from app.tasks.user_profile_tasks import create_repositories
 from app.services.vector_generator import ActivityData, ActivityType
 from app.services.vector_generator import VectorGenerator
 from app.external.openai_service import OpenAIService
+from app.core.monitoring import prometheus_metrics
 
 # 서비스 인스턴스들
 similarity_service = SimilarityService()
@@ -657,6 +659,7 @@ def save_bookmark_task(_self, bookmark_data_dict: dict) -> dict:
     Returns:
         dict: 처리 결과 및 상세 정보
     """
+    start_time = time.time()
     user_id = bookmark_data_dict.get("user_id", "unknown")
     star_id = bookmark_data_dict.get("star_id", "unknown")
     
@@ -666,6 +669,9 @@ def save_bookmark_task(_self, bookmark_data_dict: dict) -> dict:
     )
 
     try:
+        # 북마크 작업 메트릭 증가
+        prometheus_metrics.increment_bookmark_operation("save", "started")
+        
         bookmark_data = BookmarkData(**bookmark_data_dict)
         result = _save_bookmark_logic(bookmark_data)
 
@@ -676,6 +682,15 @@ def save_bookmark_task(_self, bookmark_data_dict: dict) -> dict:
                 "status": "error",
                 "error": "처리 결과가 None입니다."
             }
+            # 실패 메트릭 기록
+            duration = time.time() - start_time
+            prometheus_metrics.record_celery_task("save_bookmark", "error", duration)
+            prometheus_metrics.increment_bookmark_operation("save", "error")
+        else:
+            # 성공 메트릭 기록
+            duration = time.time() - start_time
+            prometheus_metrics.record_celery_task("save_bookmark", "success", duration)
+            prometheus_metrics.increment_bookmark_operation("save", "success")
 
         logger.info(
             "✅ 북마크 완전 처리 태스크 완료 - star_id: {}, 결과: {}",
@@ -685,6 +700,11 @@ def save_bookmark_task(_self, bookmark_data_dict: dict) -> dict:
         return result
 
     except (ConnectionError, TimeoutError) as e:
+        # 네트워크 오류 메트릭 기록
+        duration = time.time() - start_time
+        prometheus_metrics.record_celery_task("save_bookmark", "network_error", duration)
+        prometheus_metrics.increment_bookmark_operation("save", "network_error")
+        
         error_msg = f"북마크 처리 태스크 네트워크 오류 - user_id: {user_id}, star_id: {star_id}, 오류: {e}"
         logger.error(f"❌ {error_msg}")
         
@@ -700,6 +720,11 @@ def save_bookmark_task(_self, bookmark_data_dict: dict) -> dict:
         raise
         
     except ValueError as e:
+        # 데이터 오류 메트릭 기록
+        duration = time.time() - start_time
+        prometheus_metrics.record_celery_task("save_bookmark", "data_error", duration)
+        prometheus_metrics.increment_bookmark_operation("save", "data_error")
+        
         error_msg = f"북마크 처리 태스크 데이터 오류 - user_id: {user_id}, star_id: {star_id}, 오류: {e}"
         logger.error(f"❌ {error_msg}")
         
@@ -710,6 +735,11 @@ def save_bookmark_task(_self, bookmark_data_dict: dict) -> dict:
         raise
         
     except Exception as e:
+        # 일반 오류 메트릭 기록
+        duration = time.time() - start_time
+        prometheus_metrics.record_celery_task("save_bookmark", "error", duration)
+        prometheus_metrics.increment_bookmark_operation("save", "error")
+        
         error_msg = f"북마크 처리 태스크 실패 - user_id: {user_id}, star_id: {star_id}, 오류: {e}"
         logger.error(f"❌ {error_msg}")
         

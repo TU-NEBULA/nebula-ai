@@ -7,9 +7,10 @@ Nebula AI 애플리케이션의 메인 진입점 모듈
 """
 
 import asyncio
+import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
@@ -21,7 +22,7 @@ from app.consumers.bookmark_save_rmq import start_bookmark_save_consumer
 from app.consumers.extract_data_rmq import start_extract_consumer
 from app.listeners.profile_update_listener import RealTimeProfileUpdateListener
 from app.services.recommendation_feedback import RecommendationFeedbackService
-from app.core.monitoring import setup_prometheus_metrics, start_system_metrics_collector
+from app.core.monitoring import setup_prometheus_metrics, start_system_metrics_collector, get_prometheus_metrics
 
 # 로그 설정
 logger.add(
@@ -172,6 +173,38 @@ try:
 except Exception as e:
     logger.error(f"Prometheus 메트릭 설정 실패: {e}")
 
+# HTTP 요청 추적 미들웨어
+@app.middleware("http")
+async def track_requests(request: Request, call_next):
+    """HTTP 요청을 추적하는 미들웨어"""
+    start_time = time.time()
+    
+    # 요청 처리
+    response = await call_next(request)
+    
+    # 메트릭 수집
+    duration = time.time() - start_time
+    metrics = get_prometheus_metrics()
+    
+    # HTTP 메트릭 수집
+    endpoint = str(request.url.path)
+    method = request.method
+    status_code = response.status_code
+    
+    # 메트릭 업데이트
+    metrics.http_requests_total.labels(
+        method=method,
+        endpoint=endpoint,
+        status=status_code
+    ).inc()
+    
+    metrics.http_request_duration.labels(
+        method=method,
+        endpoint=endpoint
+    ).observe(duration)
+    
+    return response
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # 실제 배포시에는 특정 도메인으로 제한
@@ -228,16 +261,23 @@ async def health_check():
 
 @app.get("/metrics", include_in_schema=False)
 async def get_metrics():
-    """Prometheus 메트릭 엔드포인트 (테스트용)"""
-    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    """Prometheus 메트릭 엔드포인트"""
     from fastapi import Response
     
-    # 기본 메트릭 생성
-    metrics_data = generate_latest()
-    return Response(
-        content=metrics_data,
-        media_type=CONTENT_TYPE_LATEST
-    )
+    try:
+        from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+        # 메트릭 데이터 생성
+        metrics_data = generate_latest()
+        return Response(
+            content=metrics_data,
+            media_type=CONTENT_TYPE_LATEST
+        )
+    except ImportError:
+        # Prometheus가 설치되지 않은 경우
+        return Response(
+            content="# Prometheus client not available\n",
+            media_type="text/plain"
+        )
 
 
 # 전역 서비스 접근을 위한 헬퍼 함수들
@@ -249,3 +289,19 @@ def get_profile_listener() -> RealTimeProfileUpdateListener:
 def get_feedback_service() -> RecommendationFeedbackService:
     """추천 피드백 서비스 인스턴스 반환"""
     return RECOMMENDATION_FEEDBACK_SERVICE
+
+
+# 테스트용 북마크 메트릭 엔드포인트 추가
+@app.get("/test/bookmark-metrics")
+async def test_bookmark_metrics():
+    """북마크 메트릭 테스트용 엔드포인트"""
+    metrics = get_prometheus_metrics()
+    
+    # 다양한 북마크 작업 메트릭 생성
+    metrics.increment_bookmark_operation("get_user_bookmarks", "success")
+    metrics.increment_bookmark_operation("get_recent_bookmarks", "success")
+    metrics.increment_bookmark_operation("save", "success")
+    metrics.increment_bookmark_operation("save", "started")
+    metrics.increment_bookmark_operation("get_for_analysis", "success")
+    
+    return {"message": "북마크 메트릭 테스트 완료", "generated_metrics": 5}
