@@ -12,6 +12,10 @@ services:
       - ./app:/app/app  # 로컬 app 디렉토리를 컨테이너에 마운트
     env_file:
       - .env
+    cap_add:              # ptrace 허용
+      - SYS_PTRACE
+    security_opt:
+      - seccomp:unconfined
 
   celery_worker:
     build: .
@@ -31,3 +35,19 @@ services:
       - CELERY_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
     ports:
       - "5555:5555"
+
+  # py-spy 프로파일링 전용 사이드카 컨테이너
+  profiler:
+    image: python:3.11-slim
+    container_name: nebula-profiler
+    pid: "host"           # 호스트 PID 네임스페이스 공유
+    privileged: true      # ptrace 가능
+    volumes:
+      - ./profiles:/profiles
+    profiles:
+      - profiling         # 프로파일링 시에만 실행
+    command: >
+      bash -c "
+      pip install py-spy &&
+      py-spy --help
+      "

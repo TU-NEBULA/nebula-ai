@@ -194,6 +194,12 @@ logs/*
 
 # End of https://www.toptal.com/developers/gitignore/api/python
 
+# Performance Profiling Results
+profiles/
+*.prof
+*.svg
+*.speedscope
+
 # Taskmaster AI Configuration and Files
 .taskmaster/
 # Keep only the templates directory for sharing

@@ -313,6 +313,207 @@ redis-flush-dev:
 	fi
 
 # ============================================================================
+# 🔍 성능 프로파일링 명령어
+# ============================================================================
+
+# 프로파일 결과 저장 디렉토리 생성
+.PHONY: profile-setup
+profile-setup:
+	@echo "📁 프로파일 디렉토리 설정..."
+	@mkdir -p profiles/{baseline,load_test,services,analysis,detailed}
+
+# 기본 프로파일링 (30초)
+.PHONY: profile
+profile: profile-setup
+	@echo "🔍 기본 프로파일링 시작 (30초)..."
+	@APP_PID=$$(docker inspect --format '{{.State.Pid}}' nebula-ai 2>/dev/null || echo ""); \
+	if [ -z "$$APP_PID" ]; then \
+		echo "❌ nebula-ai 컨테이너가 실행 중이지 않습니다. 'make start' 먼저 실행하세요."; \
+		exit 1; \
+	fi; \
+	docker-compose --profile profiling run --rm profiler bash -c " \
+		pip install py-spy > /dev/null 2>&1 && \
+		echo '🔍 프로파일링 시작 (PID: $$APP_PID)...' && \
+		py-spy record -o /profiles/baseline_\$$(date +%s).svg --pid $$APP_PID -d 30 && \
+		echo '✅ 프로파일링 완료! profiles/ 디렉토리 확인하세요.' \
+	"
+
+# 빠른 프로파일링 (10초)
+.PHONY: profile-quick
+profile-quick: profile-setup
+	@echo "⚡ 빠른 프로파일링 시작 (10초)..."
+	@APP_PID=$$(docker inspect --format '{{.State.Pid}}' nebula-ai 2>/dev/null || echo ""); \
+	if [ -z "$$APP_PID" ]; then \
+		echo "❌ nebula-ai 컨테이너가 실행 중이지 않습니다."; \
+		exit 1; \
+	fi; \
+	docker-compose --profile profiling run --rm profiler bash -c " \
+		pip install py-spy > /dev/null 2>&1 && \
+		py-spy record -o /profiles/quick_\$$(date +%s).svg --pid $$APP_PID -d 10 \
+	"
+
+# 부하 테스트와 함께 프로파일링
+.PHONY: profile-load
+profile-load: profile-setup
+	@echo "🚀 부하 테스트와 함께 프로파일링..."
+	@APP_PID=$$(docker inspect --format '{{.State.Pid}}' nebula-ai 2>/dev/null || echo ""); \
+	if [ -z "$$APP_PID" ]; then \
+		echo "❌ nebula-ai 컨테이너가 실행 중이지 않습니다."; \
+		exit 1; \
+	fi; \
+	echo "🔍 백그라운드에서 프로파일링 시작..."; \
+	docker-compose --profile profiling run --rm profiler bash -c " \
+		pip install py-spy > /dev/null 2>&1 && \
+		py-spy record -o /profiles/load_test_\$$(date +%s).svg --pid $$APP_PID -d 60 \
+	" & \
+	echo "⏳ 5초 대기 후 부하 테스트 시작..."; \
+	sleep 5; \
+	echo "🚀 API 부하 테스트 실행 (100회 요청)..."; \
+	for i in $$(seq 1 100); do \
+		curl -s http://localhost:8000/ > /dev/null & \
+		if [ $$((i % 10)) -eq 0 ]; then echo "진행: $$i/100"; fi; \
+	done; \
+	wait; \
+	echo "✅ 부하 테스트 완료! 프로파일링 결과를 기다리는 중..."
+
+# 상세 프로파일링 (speedscope 형식)
+.PHONY: profile-detailed
+profile-detailed: profile-setup
+	@echo "📊 상세 프로파일링 시작 (speedscope 형식)..."
+	@APP_PID=$$(docker inspect --format '{{.State.Pid}}' nebula-ai 2>/dev/null || echo ""); \
+	if [ -z "$$APP_PID" ]; then \
+		echo "❌ nebula-ai 컨테이너가 실행 중이지 않습니다."; \
+		exit 1; \
+	fi; \
+	docker-compose --profile profiling run --rm profiler bash -c " \
+		pip install py-spy > /dev/null 2>&1 && \
+		py-spy record -f speedscope -o /profiles/detailed/detailed_\$$(date +%s).json --pid $$APP_PID -d 45 \
+	"
+
+# 실시간 프로파일링 (top 형식)
+.PHONY: profile-top
+profile-top:
+	@echo "📊 실시간 성능 모니터링 (Ctrl+C로 종료)..."
+	@APP_PID=$$(docker inspect --format '{{.State.Pid}}' nebula-ai 2>/dev/null || echo ""); \
+	if [ -z "$$APP_PID" ]; then \
+		echo "❌ nebula-ai 컨테이너가 실행 중이지 않습니다."; \
+		exit 1; \
+	fi; \
+	docker-compose --profile profiling run --rm profiler bash -c " \
+		pip install py-spy > /dev/null 2>&1 && \
+		py-spy top --pid $$APP_PID \
+	"
+
+# GIL 경합 프로파일링
+.PHONY: profile-gil
+profile-gil: profile-setup
+	@echo "🔒 GIL 경합 프로파일링..."
+	@APP_PID=$$(docker inspect --format '{{.State.Pid}}' nebula-ai 2>/dev/null || echo ""); \
+	if [ -z "$$APP_PID" ]; then \
+		echo "❌ nebula-ai 컨테이너가 실행 중이지 않습니다."; \
+		exit 1; \
+	fi; \
+	docker-compose --profile profiling run --rm profiler bash -c " \
+		pip install py-spy > /dev/null 2>&1 && \
+		py-spy record --gil -o /profiles/gil_contention_\$$(date +%s).svg --pid $$APP_PID -d 30 \
+	"
+
+# 특정 API 엔드포인트 프로파일링
+.PHONY: profile-api
+profile-api: profile-setup
+	@if [ -z "$(ENDPOINT)" ]; then \
+		echo "❌ 사용법: make profile-api ENDPOINT=/path/to/api"; \
+		echo "예시: make profile-api ENDPOINT=/chat/stream"; \
+		exit 1; \
+	fi
+	@echo "🎯 API 엔드포인트 프로파일링: $(ENDPOINT)"
+	@APP_PID=$$(docker inspect --format '{{.State.Pid}}' nebula-ai 2>/dev/null || echo ""); \
+	if [ -z "$$APP_PID" ]; then \
+		echo "❌ nebula-ai 컨테이너가 실행 중이지 않습니다."; \
+		exit 1; \
+	fi; \
+	echo "🔍 백그라운드에서 프로파일링 시작..."; \
+	docker-compose --profile profiling run --rm profiler bash -c " \
+		pip install py-spy > /dev/null 2>&1 && \
+		py-spy record -o /profiles/api_$$(echo '$(ENDPOINT)' | sed 's/[^a-zA-Z0-9]/_/g')_\$$(date +%s).svg --pid $$APP_PID -d 30 \
+	" & \
+	sleep 3; \
+	echo "🚀 API 요청 실행: $(ENDPOINT)"; \
+	for i in $$(seq 1 20); do \
+		curl -s http://localhost:8000$(ENDPOINT) > /dev/null & \
+	done; \
+	wait
+
+# 프로파일 결과 열기 (macOS)
+.PHONY: profile-open
+profile-open:
+	@echo "📊 최신 프로파일 결과 열기..."
+	@LATEST_SVG=$$(ls -t profiles/*.svg 2>/dev/null | head -1); \
+	if [ -n "$$LATEST_SVG" ]; then \
+		echo "📂 열기: $$LATEST_SVG"; \
+		open "$$LATEST_SVG"; \
+	else \
+		echo "❌ 프로파일 결과가 없습니다. 먼저 프로파일링을 실행하세요."; \
+	fi
+
+# 프로파일 결과 목록
+.PHONY: profile-list
+profile-list:
+	@echo "📋 프로파일 결과 목록:"
+	@if [ -d profiles ] && [ -n "$$(ls profiles/*.svg 2>/dev/null)" ]; then \
+		ls -lah profiles/*.svg | while read line; do \
+			echo "  $$line"; \
+		done; \
+		echo ""; \
+		echo "💡 브라우저로 열기: make profile-open"; \
+	else \
+		echo "  📭 프로파일 결과가 없습니다."; \
+		echo "  🚀 프로파일링 시작: make profile"; \
+	fi
+
+# 프로파일 결과 정리
+.PHONY: profile-clean
+profile-clean:
+	@echo "🧹 프로파일 결과 정리..."
+	@if [ -d profiles ]; then \
+		find profiles -name "*.svg" -o -name "*.json" | wc -l | xargs echo "삭제할 파일 수:"; \
+		rm -rf profiles/*.svg profiles/*.json profiles/*/*.svg profiles/*/*.json 2>/dev/null || true; \
+		echo "✅ 정리 완료"; \
+	else \
+		echo "📭 정리할 파일이 없습니다."; \
+	fi
+
+# 프로파일링 도움말
+.PHONY: profile-help
+profile-help:
+	@echo "🔍 성능 프로파일링 명령어 가이드"
+	@echo "==============================="
+	@echo ""
+	@echo "📊 기본 프로파일링:"
+	@echo "  profile          : 기본 프로파일링 (30초)"
+	@echo "  profile-quick    : 빠른 프로파일링 (10초)"
+	@echo "  profile-top      : 실시간 성능 모니터링"
+	@echo ""
+	@echo "🚀 고급 프로파일링:"
+	@echo "  profile-load     : 부하 테스트와 함께 프로파일링"
+	@echo "  profile-detailed : 상세 프로파일링 (speedscope 형식)"
+	@echo "  profile-gil      : GIL 경합 분석"
+	@echo "  profile-api ENDPOINT=/path : 특정 API 프로파일링"
+	@echo ""
+	@echo "📁 결과 관리:"
+	@echo "  profile-list     : 프로파일 결과 목록"
+	@echo "  profile-open     : 최신 결과 브라우저에서 열기"
+	@echo "  profile-clean    : 프로파일 결과 정리"
+	@echo ""
+	@echo "💡 사용 예시:"
+	@echo "  make profile                        # 기본 프로파일링"
+	@echo "  make profile-api ENDPOINT=/chat     # 채팅 API 프로파일링"
+	@echo "  make profile-load                   # 부하 테스트 프로파일링"
+	@echo ""
+	@echo "📂 결과 위치: profiles/ 디렉토리"
+	@echo "🌐 시각화: SVG 파일을 브라우저에서 열어 flamegraph 확인"
+
+# ============================================================================
 # 📊 모니터링 명령어
 # ============================================================================
 
@@ -488,6 +689,13 @@ help:
 	@echo "  monitoring-start : 모니터링 시스템 시작"
 	@echo "  monitoring-stop  : 모니터링 시스템 중지"
 	@echo "  metrics-check    : 메트릭 확인"
+	@echo ""
+	@echo "🔍 성능 프로파일링:"
+	@echo "  profile          : 기본 프로파일링 (30초)"
+	@echo "  profile-quick    : 빠른 프로파일링 (10초)"
+	@echo "  profile-load     : 부하 테스트 프로파일링"
+	@echo "  profile-top      : 실시간 성능 모니터링"
+	@echo "  profile-help     : 프로파일링 상세 가이드"
 	@echo ""
 	@echo "🚀 통합 명령어:"
 	@echo "  full-start       : 전체 시스템 시작"
