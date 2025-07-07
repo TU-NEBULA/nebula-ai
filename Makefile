@@ -811,3 +811,52 @@ test-help:
 dev-help:
 	@echo "🛠️  개발 환경 명령어는 기본 명령어로 통합되었습니다."
 	@echo "📚 전체 명령어 가이드: make help"
+
+# Locust 부하 테스트 (기존 서비스 연결)
+.PHONY: load-test-http load-test-rmq load-test-profile load-test-ui-http load-test-ui-rmq load-test-ui-profile load-test-all load-test-setup load-test-clean
+
+load-test-http:  ## HTTP 부하 테스트 (headless)
+	@./scripts/run_locust_http.sh $(USERS) $(SPAWN_RATE) $(RUN_TIME)
+
+load-test-rmq:  ## RabbitMQ 부하 테스트 (headless)
+	@./scripts/run_locust_rmq.sh $(USERS) $(SPAWN_RATE) $(RUN_TIME)
+
+load-test-profile:  ## 프로필 API 부하 테스트 (headless)
+	@./scripts/run_locust_profile.sh $(USERS) $(SPAWN_RATE) $(RUN_TIME)
+
+load-test-ui-http:  ## HTTP 부하 테스트 UI 시작 (기존 서비스 연결)
+	@echo "🚀 HTTP 부하 테스트 UI 시작 중... (기존 서비스 연결)"
+	@echo "   웹 UI: http://localhost:8089"
+	@echo "   전제조건: 기존 API 서비스가 http://localhost:8000 에서 실행 중이어야 함"
+	@docker compose -f docker/locust/docker-compose.locust.yml up locust-http
+
+load-test-ui-rmq:  ## RabbitMQ 부하 테스트 UI 시작 (기존 서비스 연결)
+	@echo "🐰 RabbitMQ 부하 테스트 UI 시작 중... (기존 서비스 연결)"
+	@echo "   웹 UI: http://localhost:8090"
+	@echo "   전제조건: 기존 RabbitMQ가 localhost:5672 에서 실행 중이어야 함"
+	@docker compose -f docker/locust/docker-compose.locust.yml up locust-rmq
+
+load-test-ui-profile:  ## 프로필 API 부하 테스트 UI 시작
+	@echo "👤 프로필 API 부하 테스트 UI 시작 중..."
+	@echo "   웹 UI: http://localhost:8091"
+	@echo "   전제조건: 기존 API 서비스가 http://localhost:8000 에서 실행 중이어야 함"
+	@docker compose -f docker/locust/docker-compose.locust.yml up locust-profile
+
+load-test-all:  ## 모든 부하 테스트 실행 (기존 서비스 연결)
+	@echo "🔥 모든 부하 테스트 실행... (기존 서비스 연결)"
+	@$(MAKE) load-test-http USERS=200 SPAWN_RATE=20 RUN_TIME=3m
+	@$(MAKE) load-test-rmq USERS=300 SPAWN_RATE=30 RUN_TIME=3m
+	@$(MAKE) load-test-profile USERS=100 SPAWN_RATE=10 RUN_TIME=3m
+	@echo "✅ 모든 부하 테스트 완료!"
+
+load-test-setup:  ## 부하 테스트 환경 구축
+	@echo "🛠️  부하 테스트 환경 구축 중..."
+	@docker compose -f docker/locust/docker-compose.locust.yml build
+	@mkdir -p reports
+	@echo "✅ 부하 테스트 환경 구축 완료!"
+
+load-test-clean:  ## 부하 테스트 관련 정리
+	@echo "🧹 부하 테스트 정리 중..."
+	@docker compose -f docker/locust/docker-compose.locust.yml down -v
+	@rm -rf reports/
+	@echo "✅ 정리 완료!"

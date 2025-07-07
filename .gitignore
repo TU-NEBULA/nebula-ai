@@ -250,3 +250,7 @@ node_modules/
 
 # Added by Task Master AI
 # Task files
+
+# Locust 부하 테스트 결과
+reports/
+*.csv

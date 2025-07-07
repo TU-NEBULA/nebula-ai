@@ -1,0 +1,115 @@
+version: "3.9"
+
+services:
+
+  # HTTP 부하 테스트용 Locust - 기존 서비스에 연결
+  locust-http:
+    image: locustio/locust:2.22.0
+    volumes:
+      - ../../tests/performance/locust:/mnt/locust
+    command: >
+      -f /mnt/locust/http/locust_chat_http.py
+      --host=http://host.docker.internal:8000
+      --web-host=0.0.0.0
+    ports:
+      - "8089:8089"  # Locust Web UI
+    environment:
+      - LOCUST_HOST=http://host.docker.internal:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # RabbitMQ 부하 테스트용 Locust - 기존 RabbitMQ에 연결
+  locust-rmq:
+    image: locustio/locust:2.22.0
+    volumes:
+      - ../../tests/performance/locust:/mnt/locust
+    command: >
+      -f /mnt/locust/rmq/locust_bookmark_rmq.py
+      --web-host=0.0.0.0
+      --web-port=8090
+    ports:
+      - "8090:8090"  # Locust Web UI (다른 포트)
+    environment:
+      - AMQP_URL=amqp://guest:guest@host.docker.internal:5672/%2f
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # 프로필 API 부하 테스트용 Locust
+  locust-profile:
+    image: locustio/locust:2.22.0
+    volumes:
+      - ../../tests/performance/locust:/mnt/locust
+    command: >
+      -f /mnt/locust/http/profiles_test.py
+      --host=http://host.docker.internal:8000
+      --web-host=0.0.0.0
+      --web-port=8091
+    ports:
+      - "8091:8091"  # Locust Web UI (또 다른 포트)
+    environment:
+      - LOCUST_HOST=http://host.docker.internal:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # Headless 실행용 (CLI에서 사용)
+  locust-http-headless:
+    image: locustio/locust:2.22.0
+    volumes:
+      - ../../tests/performance/locust:/mnt/locust
+      - ../../reports:/mnt/reports
+    command: >
+      -f /mnt/locust/http/locust_chat_http.py
+      --host=http://host.docker.internal:8000
+      --headless
+      --users=${USERS:-200}
+      --spawn-rate=${SPAWN_RATE:-20}
+      --run-time=${RUN_TIME:-5m}
+      --csv=/mnt/reports/http_load_test
+    environment:
+      - LOCUST_HOST=http://host.docker.internal:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles:
+      - headless
+
+  locust-rmq-headless:
+    image: locustio/locust:2.22.0
+    volumes:
+      - ../../tests/performance/locust:/mnt/locust
+      - ../../reports:/mnt/reports
+    command: >
+      -f /mnt/locust/rmq/locust_bookmark_rmq.py
+      --headless
+      --users=${USERS:-500}
+      --spawn-rate=${SPAWN_RATE:-50}
+      --run-time=${RUN_TIME:-5m}
+      --csv=/mnt/reports/rmq_load_test
+    environment:
+      - AMQP_URL=amqp://guest:guest@host.docker.internal:5672/%2f
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles:
+      - headless
+
+  locust-profile-headless:
+    image: locustio/locust:2.22.0
+    volumes:
+      - ../../tests/performance/locust:/mnt/locust
+      - ../../reports:/mnt/reports
+    command: >
+      -f /mnt/locust/http/profiles_test.py
+      --host=http://host.docker.internal:8000
+      --headless
+      --users=${USERS:-100}
+      --spawn-rate=${SPAWN_RATE:-10}
+      --run-time=${RUN_TIME:-5m}
+      --csv=/mnt/reports/profile_load_test
+    environment:
+      - LOCUST_HOST=http://host.docker.internal:8000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    profiles:
+      - headless
+
+# 기존 서비스들은 별도로 실행되어 있다고 가정
+# 필요시 docker-compose.yml로 실행: docker compose up -d 
