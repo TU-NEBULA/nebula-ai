@@ -69,7 +69,8 @@ services:
     volumes:
       - ./app:/app/app
     depends_on:
-      - celery_worker
+      celery_worker:
+        condition: service_started
     environment:
       - REDIS_URL=redis://:dev_password_123@redis:6379/0
 
@@ -79,7 +80,7 @@ services:
     restart: unless-stopped
     environment:
       - FLOWER_PORT=5555
-      - CELERY_BROKER_URL=pyamqp://guest:guest@15.165.20.194:5672//
+      - CELERY_BROKER_URL=pyamqp://${RABBITMQ_USERNAME:-guest}:${RABBITMQ_PASSWORD:-guest}@${RABBITMQ_HOST:-15.165.20.194}:${RABBITMQ_PORT:-5672}//
       - CELERY_RESULT_BACKEND=redis://:dev_password_123@redis:6379/0
       - FLOWER_BASIC_AUTH=admin:admin123
     env_file:

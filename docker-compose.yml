@@ -16,6 +16,8 @@ services:
       - SYS_PTRACE
     security_opt:
       - seccomp:unconfined
+    depends_on:
+      - redis
 
   celery_worker:
     build: .
@@ -25,6 +27,19 @@ services:
       - ./app:/app/app  # 로컬 app 디렉토리를 컨테이너에 마운트
     env_file:
       - .env
+    depends_on:
+      - redis
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: always
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+      - ./docker/redis/redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
 
   flower:
     image: mher/flower
@@ -32,9 +47,13 @@ services:
     restart: always
     environment:
       - FLOWER_PORT=5555
-      - CELERY_BROKER_URL=amqp://guest:guest@rabbitmq:5672//
+      - CELERY_BROKER_URL=amqp://${RABBITMQ_USERNAME:-guest}:${RABBITMQ_PASSWORD:-guest}@${RABBITMQ_HOST:-localhost}:${RABBITMQ_PORT:-5672}//
+    env_file:
+      - .env
     ports:
       - "5555:5555"
+    depends_on:
+      - redis
 
   # py-spy 프로파일링 전용 사이드카 컨테이너
   profiler:
@@ -51,3 +70,6 @@ services:
       pip install py-spy &&
       py-spy --help
       "
+
+volumes:
+  redis_data:
