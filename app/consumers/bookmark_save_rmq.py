@@ -70,16 +70,19 @@ async def on_bookmark_save(message: IncomingMessage):
             # 4. 전체 워크플로우를 Celery 태스크로 위임
             # (유사도 계산 + 관계 발행 + S3 다운로드 + 벡터 저장)
             logger.info("🚀 북마크 처리 태스크 시작...")
-            save_bookmark_task.delay({
-                "user_id": user_id,
-                "star_id": bookmark_data["starId"],
-                "s3_key": bookmark_data["s3Key"],
-                "title": bookmark_data.get("title", ""),
-                "url": bookmark_data.get("url", ""),
-                "keywords": bookmark_data.get("keywords", []),
-                "memo": bookmark_data.get("memo", ""),
-                "summary": bookmark_data.get("summary", "")
-            })
+            await asyncio.to_thread(
+                save_bookmark_task.delay,
+                {
+                    "user_id": user_id,
+                    "star_id": bookmark_data["starId"],
+                    "s3_key": bookmark_data["s3Key"],
+                    "title": bookmark_data.get("title", ""),
+                    "url": bookmark_data.get("url", ""),
+                    "keywords": bookmark_data.get("keywords", []),
+                    "memo": bookmark_data.get("memo", ""),
+                    "summary": bookmark_data.get("summary", "")
+                }
+            )
 
             # 5. Consumer 처리 완료 로그 (실제 작업은 백그라운드에서 진행)
             logger.info("✅ 메시지 처리 완료 - 백그라운드 태스크 시작됨 - userId: {}, starId: {}", user_id, star_id)
